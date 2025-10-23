@@ -1,0 +1,1 @@
+{"version":3,"file":"797.extension.js","mappings":"oGAAO,MAAMA,EAAU,S","sources":[".././node_modules/openai/version.mjs"],"sourcesContent":["export const VERSION = '4.104.0'; // x-release-please-version\n//# sourceMappingURL=version.mjs.map"],"names":["VERSION"],"sourceRoot":""}

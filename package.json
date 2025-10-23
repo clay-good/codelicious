@@ -1,0 +1,587 @@
+{
+  "name": "codelicious",
+  "displayName": "Codelicious - AI Development Platform",
+  "description": "Open-source AI development platform with autonomous coding, 200k context, multi-model support, RAG, and world-class performance",
+  "version": "1.0.0",
+  "publisher": "codelicious",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/codelicious.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/codelicious/issues"
+  },
+  "homepage": "https://github.com/yourusername/codelicious#readme",
+  "keywords": [
+    "ai",
+    "code-generation",
+    "autonomous-coding",
+    "rag",
+    "claude",
+    "openai",
+    "gemini",
+    "ollama",
+    "code-assistant",
+    "productivity"
+  ],
+  "engines": {
+    "vscode": "^1.74.0",
+    "node": ">=18.0.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codelicious-sidebar",
+          "title": "Codelicious",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codelicious-sidebar": [
+        {
+          "type": "webview",
+          "id": "codelicious.chatView",
+          "name": "Chat"
+        },
+        {
+          "type": "webview",
+          "id": "codelicious.contextPanel",
+          "name": "Context Sources"
+        },
+        {
+          "type": "webview",
+          "id": "codelicious.analyticsView",
+          "name": "Analytics"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codelicious.openChat",
+        "title": "Codelicious: Open Chat",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.configureApiKeys",
+        "title": "Codelicious: Configure API Keys",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.reindexProject",
+        "title": "Codelicious: Reindex Project",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.showIndexStatus",
+        "title": "Codelicious: Show Index Status",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.clearCache",
+        "title": "Codelicious: Clear Cache",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.showCostTracking",
+        "title": "Codelicious: Show Cost Tracking",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.showAnalytics",
+        "title": "Codelicious: Show Analytics Dashboard",
+        "category": "Codelicious",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "codelicious.selectModel",
+        "title": "Codelicious: Select AI Model",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.configureAgentModels",
+        "title": "Codelicious: Configure Agent Models",
+        "category": "Codelicious",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "codelicious.compareModels",
+        "title": "Codelicious: Compare AI Models",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.generateTests",
+        "title": "Codelicious: Generate Tests for Current File",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.multiFileEdit",
+        "title": "Codelicious: Multi-File Edit",
+        "category": "Codelicious",
+        "icon": "$(files)"
+      },
+      {
+        "command": "codelicious.reviewCode",
+        "title": "Codelicious: Review Code",
+        "category": "Codelicious",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "codelicious.generateDocs",
+        "title": "Codelicious: Generate Documentation",
+        "category": "Codelicious",
+        "icon": "$(book)"
+      },
+      {
+        "command": "codelicious.buildPersistentIndex",
+        "title": "Codelicious: Build Persistent Index",
+        "category": "Codelicious",
+        "icon": "$(database)"
+      },
+      {
+        "command": "codelicious.queryArchitecture",
+        "title": "Codelicious: Query Architecture",
+        "category": "Codelicious",
+        "icon": "$(search)"
+      },
+      {
+        "command": "codelicious.showIndexStats",
+        "title": "Codelicious: Show Index Statistics",
+        "category": "Codelicious",
+        "icon": "$(info)"
+      },
+      {
+        "command": "codelicious.autonomousBuild",
+        "title": "Codelicious: Autonomous Build",
+        "category": "Codelicious",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "codelicious.analyzeTests",
+        "title": "Codelicious: Analyze Test Suite",
+        "category": "Codelicious",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "codelicious.fixFailingTests",
+        "title": "Codelicious: Fix Failing Tests",
+        "category": "Codelicious",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "codelicious.runTests",
+        "title": "Codelicious: Run All Tests",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.runTestsForFile",
+        "title": "Codelicious: Run Tests for Current File",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.runTestsWithCoverage",
+        "title": "Codelicious: Run Tests with Coverage",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.stopTests",
+        "title": "Codelicious: Stop Running Tests",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.analyzeFile",
+        "title": "Codelicious: Analyze Current File",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.analyzeWorkspace",
+        "title": "Codelicious: Analyze Workspace",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.analyzeDependencies",
+        "title": "Codelicious: Analyze Dependencies",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.extractMethod",
+        "title": "Codelicious: Extract Method",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.extractVariable",
+        "title": "Codelicious: Extract Variable",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.showCodeQualityReport",
+        "title": "Codelicious: Show Code Quality Report",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.viewLearnedPatterns",
+        "title": "Codelicious: View Learned Patterns",
+        "category": "Codelicious",
+        "icon": "$(library)"
+      },
+      {
+        "command": "codelicious.optimizePatternCache",
+        "title": "Codelicious: Optimize Pattern Cache",
+        "category": "Codelicious",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "codelicious.exportPatterns",
+        "title": "Codelicious: Export Learned Patterns",
+        "category": "Codelicious",
+        "icon": "$(export)"
+      },
+      {
+        "command": "codelicious.triggerLearning",
+        "title": "Codelicious: Trigger Pattern Learning",
+        "category": "Codelicious",
+        "icon": "$(mortar-board)"
+      },
+      {
+        "command": "codelicious.showCacheStats",
+        "title": "Codelicious: Show Pattern Cache Statistics",
+        "category": "Codelicious",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "codelicious.showQuickActions",
+        "title": "Codelicious: Quick Actions",
+        "category": "Codelicious",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "codelicious.startTutorial",
+        "title": "Codelicious: Start Tutorial",
+        "category": "Codelicious",
+        "icon": "$(mortar-board)"
+      },
+      {
+        "command": "codelicious.showHealthStatus",
+        "title": "Codelicious: Show System Health",
+        "category": "Codelicious",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "codelicious.showPerformanceMetrics",
+        "title": "Codelicious: Show Performance Metrics",
+        "category": "Codelicious",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "codelicious.showActivityLog",
+        "title": "Codelicious: Show Activity Log",
+        "category": "Codelicious",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "codelicious.runConfigurationWizard",
+        "title": "Codelicious: Run Configuration Wizard",
+        "category": "Codelicious",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "codelicious.processSpecification",
+        "title": "Codelicious: Process Specification",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.processSpecificationFile",
+        "title": "Codelicious: Process Specification File",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.parseSpecification",
+        "title": "Codelicious: Parse Specification",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.showSpecificationStatus",
+        "title": "Codelicious: Show Specification Status",
+        "category": "Codelicious"
+      },
+      {
+        "command": "codelicious.generateCommitMessage",
+        "title": "Codelicious: Generate Commit Message",
+        "category": "Codelicious",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "codelicious.generatePRDescription",
+        "title": "Codelicious: Generate PR Description",
+        "category": "Codelicious",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "codelicious.analyzeChanges",
+        "title": "Codelicious: Analyze Changes",
+        "category": "Codelicious",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "codelicious.listMCPTools",
+        "title": "Codelicious: List MCP Tools",
+        "category": "Codelicious",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "codelicious.showMCPStats",
+        "title": "Codelicious: Show MCP Statistics",
+        "category": "Codelicious",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "codelicious.searchMCPTools",
+        "title": "Codelicious: Search MCP Tools",
+        "category": "Codelicious",
+        "icon": "$(search)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "codelicious.openChat",
+        "key": "cmd+shift+l",
+        "mac": "cmd+shift+l",
+        "win": "ctrl+shift+l",
+        "linux": "ctrl+shift+l"
+      },
+      {
+        "command": "codelicious.showQuickActions",
+        "key": "cmd+shift+k",
+        "mac": "cmd+shift+k",
+        "win": "ctrl+shift+k",
+        "linux": "ctrl+shift+k"
+      },
+      {
+        "command": "codelicious.generateTests",
+        "key": "cmd+shift+t",
+        "mac": "cmd+shift+t",
+        "win": "ctrl+shift+t",
+        "linux": "ctrl+shift+t"
+      },
+      {
+        "command": "codelicious.reviewCode",
+        "key": "cmd+shift+r",
+        "mac": "cmd+shift+r",
+        "win": "ctrl+shift+r",
+        "linux": "ctrl+shift+r"
+      }
+    ],
+    "configuration": {
+      "title": "Codelicious",
+      "properties": {
+        "codelicious.indexing.progressive": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable progressive indexing"
+        },
+        "codelicious.indexing.background": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run indexing in background"
+        },
+        "codelicious.indexing.maxMemory": {
+          "type": "string",
+          "default": "2GB",
+          "description": "Maximum memory for indexing"
+        },
+        "codelicious.models.preferLocal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer local models when available"
+        },
+        "codelicious.models.fallbackToCloud": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fallback to cloud models if local fails"
+        },
+        "codelicious.models.costLimit": {
+          "type": "number",
+          "default": 10.0,
+          "description": "Daily cost limit in USD"
+        },
+        "codelicious.models.defaultProvider": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "openai",
+            "gemini"
+          ],
+          "description": "Default AI provider"
+        },
+        "codelicious.models.defaultModel": {
+          "type": "string",
+          "default": "claude-3-5-sonnet-20241022",
+          "description": "Default AI model. Recommended: claude-3-5-sonnet-20241022 (Claude Sonnet 4.5) for best code generation, problem solving, and refactoring quality."
+        },
+        "codelicious.chat.enableStreaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable streaming responses for real-time AI output"
+        },
+        "codelicious.execution.sandbox": {
+          "type": "boolean",
+          "default": true,
+          "description": "Execute commands in sandbox"
+        },
+        "codelicious.execution.timeout": {
+          "type": "number",
+          "default": 30000,
+          "description": "Command timeout in milliseconds"
+        },
+        "codelicious.execution.requireConfirmation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require confirmation for destructive operations"
+        },
+        "codelicious.embeddingServer.url": {
+          "type": "string",
+          "default": "http://localhost:8765",
+          "description": "URL for local embedding server"
+        },
+        "codelicious.chromadb.url": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL for ChromaDB vector database"
+        },
+        "codelicious.chromadb.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable ChromaDB for semantic search"
+        },
+        "codelicious.agents.autoWriteFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically write generated code to files"
+        },
+        "codelicious.agents.autoExecuteTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically execute tests after code generation"
+        },
+        "codelicious.agents.requireApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require user approval before writing files"
+        },
+        "codelicious.agents.defaultModel": {
+          "type": "string",
+          "default": "claude-3-5-sonnet-20241022",
+          "description": "Default model for all agents. Recommended: 'claude-3-5-sonnet-20241022' (Claude Sonnet 4.5) for best quality. Leave empty to use orchestrator's automatic routing. This applies to all agents unless overridden below."
+        },
+        "codelicious.agents.preFilter.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for pre-filter agent (empty = use default model)"
+        },
+        "codelicious.agents.codeGenerator.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for code generation agent (empty = use default model)"
+        },
+        "codelicious.agents.securityReviewer.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for security review agent (empty = use default model)"
+        },
+        "codelicious.agents.qualityReviewer.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for quality review agent (empty = use default model)"
+        },
+        "codelicious.agents.testingValidator.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model for testing validation agent (empty = use default model)"
+        },
+        "codelicious.mcp.server.url": {
+          "type": "string",
+          "default": "http://localhost:3100",
+          "description": "MCP server URL for external tool integration"
+        },
+        "codelicious.mcp.server.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for MCP server authentication (optional)"
+        },
+        "codelicious.mcp.server.timeout": {
+          "type": "number",
+          "default": 30000,
+          "description": "Timeout for MCP tool invocations (milliseconds)"
+        },
+        "codelicious.mcp.server.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum retries for failed MCP tool invocations"
+        },
+        "codelicious.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable MCP (Model Context Protocol) integration for external tools"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "webpack --mode production",
+    "watch": "webpack --mode development --watch",
+    "compile": "tsc -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "npm run test:unit && npm run test:integration && npm run test:e2e",
+    "test:unit": "jest --testMatch='**/*.test.ts'",
+    "test:integration": "jest --testMatch='**/*.integration.ts' --passWithNoTests",
+    "test:e2e": "jest --testMatch='**/*.e2e.ts' --passWithNoTests",
+    "coverage": "jest --coverage",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.40.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "ts-loader": "^9.4.0",
+    "typescript": "^5.0.0",
+    "vsce": "^2.15.0",
+    "webpack": "^5.80.0",
+    "webpack-cli": "^5.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "axios": "^1.6.0",
+    "chromadb": "^1.8.1",
+    "openai": "^4.28.0",
+    "@google/generative-ai": "^0.1.3",
+    "tree-sitter": "^0.21.0",
+    "tree-sitter-typescript": "^0.21.0",
+    "tree-sitter-python": "^0.21.0",
+    "tree-sitter-javascript": "^0.21.0",
+    "tree-sitter-rust": "^0.21.0",
+    "tree-sitter-go": "^0.21.0",
+    "tree-sitter-java": "^0.21.0",
+    "ignore": "^5.3.0",
+    "fast-glob": "^3.3.0",
+    "lru-cache": "^10.0.0",
+    "uuid": "^9.0.0"
+  }
+}
+

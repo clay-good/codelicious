@@ -1,0 +1,9 @@
+sentence-transformers==2.2.2
+chromadb==0.4.22
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.5.3
+numpy==1.24.3
+torch==2.1.2
+transformers==4.36.2
+
