@@ -3,16 +3,16 @@
   "displayName": "Codelicious - AI Development Platform",
   "description": "Open-source AI development platform with autonomous coding, 200k context, multi-model support, RAG, and world-class performance",
   "version": "1.0.0",
-  "publisher": "codelicious",
+  "publisher": "ClayGood",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/codelicious.git"
+    "url": "https://github.com/clay-good/codelicious.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/codelicious/issues"
+    "url": "https://claygood.com"
   },
-  "homepage": "https://github.com/yourusername/codelicious#readme",
+  "homepage": "https://claygood.com",
   "keywords": [
     "ai",
     "code-generation",
@@ -539,16 +539,22 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "webpack --mode production",
+    "build": "NODE_ENV=production webpack --mode production",
     "watch": "webpack --mode development --watch",
     "compile": "tsc -p ./",
     "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
     "test": "npm run test:unit && npm run test:integration && npm run test:e2e",
     "test:unit": "jest --testMatch='**/*.test.ts'",
     "test:integration": "jest --testMatch='**/*.integration.ts' --passWithNoTests",
     "test:e2e": "jest --testMatch='**/*.e2e.ts' --passWithNoTests",
     "coverage": "jest --coverage",
-    "package": "vsce package"
+    "audit": "npm audit",
+    "audit:fix": "npm audit fix",
+    "clean": "rm -rf dist out *.vsix",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "publish:ovsx": "ovsx publish"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

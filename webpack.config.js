@@ -9,7 +9,11 @@ module.exports = {
     libraryTarget: 'commonjs2',
     devtoolModuleFilenameTemplate: '../[resource-path]'
   },
-  devtool: 'source-map',
+  devtool: process.env.NODE_ENV === 'production' ? false : 'source-map',
+  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+  optimization: {
+    minimize: process.env.NODE_ENV === 'production',
+  },
   externals: {
     vscode: 'commonjs vscode',
     // ChromaDB optional dependencies

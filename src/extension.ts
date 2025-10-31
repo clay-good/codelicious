@@ -992,7 +992,7 @@ function showWelcomeMessage(context: vscode.ExtensionContext): void {
  await vscode.commands.executeCommand('codelicious.configureApiKeys');
  break;
  case 'Learn More':
- vscode.env.openExternal(vscode.Uri.parse('https://github.com/clay-good/reviewr'));
+ vscode.env.openExternal(vscode.Uri.parse('https://github.com/clay-good/codelicious'));
  break;
  }
  });

@@ -6,7 +6,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/codelicious.git
+git clone https://github.com/clay-good/codelicious.git
 cd codelicious
 
 # Install dependencies
@@ -440,8 +440,8 @@ cat ~/.config/Code/User/settings.json | grep codelicious
 ## Resources
 
 - Documentation: See ARCHITECTURE.md, INSTALLATION.md, DEVELOPMENT.md
-- GitHub: https://github.com/yourusername/codelicious
-- Issues: https://github.com/yourusername/codelicious/issues
+- GitHub: https://github.com/clay-good/codelicious
+- Issues: https://github.com/clay-good/codelicious/issues
 
 ---
 

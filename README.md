@@ -1,11 +1,11 @@
 # Codelicious
 
-A fully open-source AI development platform that transforms VS Code into an intelligent coding environment with world-class autonomous coding capabilities.
+An AI-powered development platform that transforms VS Code into an intelligent coding environment with world-class autonomous coding capabilities.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.74.0+-blue.svg)](https://code.visualstudio.com/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-1007%20passing-brightgreen.svg)](https://github.com/yourusername/codelicious)
+[![Tests](https://img.shields.io/badge/tests-1007%20passing-brightgreen.svg)](https://github.com/clay-good/codelicious)
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ Codelicious is a local-first AI coding assistant that prioritizes privacy, perfo
 
 ### Why Codelicious?
 
-- **Open Source**: Fully transparent, community-driven development
+- **Professional Grade**: Enterprise-quality code with 1,007 passing tests
 - **Privacy-First**: Local processing with optional cloud models
 - **BYOK Model**: Bring Your Own Key - you control your AI providers
 - **Production-Ready**: 1,007 passing tests, comprehensive validation
@@ -93,45 +93,13 @@ Codelicious is a local-first AI coding assistant that prioritizes privacy, perfo
 
 ### Quick Start
 
-1. **Clone the repository**
- ```bash
- git clone https://github.com/yourusername/codelicious.git
- cd codelicious
- ```
+1. **Install from VS Code Marketplace**
+ - Open VS Code
+ - Go to Extensions (Ctrl+Shift+X / Cmd+Shift+X)
+ - Search for "Codelicious"
+ - Click Install
 
-2. **Install dependencies**
- ```bash
- npm install
- pip install -r requirements.txt
- ```
-
-3. **Build the extension**
- ```bash
- npm run build
- ```
-
-4. **Install in VS Code**
-
- Development mode:
- ```bash
- # Open in VS Code and press F5
- code .
- ```
-
- Production install:
- ```bash
- npm run package
- code --install-extension ./dist/codelicious-0.1.0.vsix
- ```
-
-5. **Start the embedding server** (optional, for local embeddings)
- ```bash
- cd server
- chmod +x start_server.sh
- ./start_server.sh
- ```
-
-6. **Configure API keys**
+2. **Configure API Keys**
  - Open VS Code Command Palette (`Cmd+Shift+P` or `Ctrl+Shift+P`)
  - Run "Codelicious: Configure API Keys"
  - Enter your API keys for desired providers (Claude, OpenAI, Gemini, or Ollama)
@@ -502,4 +470,4 @@ Codelicious takes security seriously:
 - **Local-First**: All processing can be done locally
 - **BYOK Model**: You control your API keys and data
 - **No Telemetry**: No usage data sent to external servers
-- **Open Source**: Fully transparent and auditable
+- **Professional**: Enterprise-grade quality and reliability
