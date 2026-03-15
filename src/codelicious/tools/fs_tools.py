@@ -42,11 +42,27 @@ class FSTooling:
         except Exception as e:
             return {"success": False, "stdout": "", "stderr": str(e)}
 
+    PROTECTED_PATHS = frozenset({
+        ".codelicious/config.json",
+        ".codelicious/skills",
+        "src/codelicious/tools/command_runner.py",
+        "src/codelicious/tools/fs_tools.py",
+        "src/codelicious/tools/registry.py",
+    })
+
+    def _is_protected_path(self, rel_path: str) -> bool:
+        """Check if the path is protected from LLM writes."""
+        normalized = str(Path(rel_path))
+        return any(normalized == p or normalized.startswith(p + "/") for p in self.PROTECTED_PATHS)
+
     def native_write_file(self, rel_path: str, content: str) -> ToolResponse:
         """
         Atomically writes file to the sandbox using os.replace to prevent TOCTOU races,
         and invalidates the local target in the .codelicious/cache.json map.
         """
+        if self._is_protected_path(rel_path):
+            return {"success": False, "stdout": "", "stderr": f"Security Violation: '{rel_path}' is a protected path and cannot be modified by the agent."}
+
         target = (self.repo_path / rel_path).resolve()
         try:
             self._assert_in_sandbox(target)

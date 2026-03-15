@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "proxilion-build"
-version = "1.1.0"
-description = "Autonomous code generation engine. Reads a spec or explores a project directory, builds verified software through an LLM-driven parse-plan-execute-verify loop."
-requires-python = ">=3.10"
+name = "codelicious"
+version = "1.0.0"
+description = "Autonomous code generation engine powered by Open Weight HuggingFace models."
+requires-python = ">=3.9"
 authors = [
-    {name = "Clay Good"},
+    {name = "Codelicious Team"},
 ]
 dependencies = []
 
@@ -16,29 +16,7 @@ dependencies = []
 test = ["pytest>=7.0"]
 
 [project.scripts]
-proxilion-build = "proxilion_build.cli:main"
-
-[project.urls]
-Homepage = "https://proxilion.com"
-Repository = "https://github.com/clay-good/proxilion-build"
+codelicious = "codelicious.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.ruff]
-target-version = "py310"
-line-length = 99
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-
-[tool.ruff.lint.per-file-ignores]
-"proxilion_build/scaffolder.py" = ["E501"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["proxilion_build"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-line-ending = "lf"

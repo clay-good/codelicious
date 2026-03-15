@@ -1,3 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+.codelicious/db.sqlite3
+.codelicious/cache.json
+.codelicious/state.json
+.codelicious/audit.log
+.codelicious/security.log
+venv/
+.venv/
+
 # Dependencies
 node_modules/
 .pnpm-store/

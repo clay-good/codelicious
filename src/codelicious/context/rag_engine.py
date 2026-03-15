@@ -20,7 +20,7 @@ class RagEngine:
         self.db_path = self.repo_path / ".codelicious" / "db.sqlite3"
         self.api_key = os.environ.get("LLM_API_KEY", "")
         # Very fast, lightweight embedding model API endpoint on Huggingface
-        self.embed_endpoint = "https://api-inference.huggingface.co/pipeline/feature-extraction/BAAI/bge-small-en-v1.5"
+        self.embed_endpoint = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
         
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()

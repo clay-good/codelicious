@@ -1,5 +1,6 @@
 import subprocess
 import os
+import shlex
 from typing import TypedDict
 import logging
 from pathlib import Path
@@ -11,54 +12,99 @@ class ToolResponse(TypedDict):
     stdout: str
     stderr: str
 
+# Dangerous commands that are NEVER allowed regardless of context.
+# Modeled after proxilion-build's battle-tested denylist.
+DENIED_COMMANDS = frozenset({
+    "rm", "rmdir", "sudo", "su", "chmod", "chown", "chgrp",
+    "mkfs", "dd", "kill", "killall", "pkill",
+    "reboot", "shutdown", "halt", "poweroff", "init",
+    "fdisk", "gdisk", "parted", "mount", "umount",
+    "format", "diskpart",
+    "iptables", "nft", "ufw",
+    "useradd", "userdel", "usermod", "passwd", "groupadd",
+    "crontab", "at",
+    "nc", "ncat", "socat",  # network listeners
+    "curl", "wget",  # prevent exfiltration; agent has its own HTTP via Python
+})
+
+# Shell metacharacters that enable injection/chaining.
+# Blocking these prevents: cmd1 ; cmd2, cmd1 | cmd2, $(cmd), etc.
+BLOCKED_METACHARACTERS = frozenset("|&;$`(){}><!")
+
+
 class CommandRunner:
     """
-    Executes shell commands strictly if they are explicitly authorized
-    within the `.codelicious/config.json` allowlist. Blocks arbitrary execution.
+    Executes shell commands using a denylist security model.
+
+    Instead of only allowing a tiny set of commands (which cripples the agent),
+    this blocks known-dangerous binaries and shell injection metacharacters,
+    while using shell=False to prevent shell interpretation.
+
+    The denylist is hardcoded — NOT configurable via config files — to prevent
+    the LLM agent from escalating its own permissions.
     """
     def __init__(self, repo_path: Path, config: dict):
         self.repo_path = repo_path.resolve()
-        self.allowlisted_commands = set(config.get("allowlisted_commands", ["pytest", "npm", "cargo", "ruff", "eslint", "black"]))
 
-    def _is_safe(self, command: str) -> bool:
+    def _is_safe(self, command: str) -> tuple[bool, str]:
         """
-        Parses the base binary of the requested command against the configured allowlist.
+        Validates a command against the denylist and metacharacter filter.
+        Returns (is_safe, reason) tuple.
         """
-        if not command:
-            return False
-        
-        base_binary = command.split()[0]
-        return base_binary in self.allowlisted_commands
+        if not command or not command.strip():
+            return False, "Empty command"
+
+        # Check for shell metacharacters (injection prevention)
+        for char in BLOCKED_METACHARACTERS:
+            if char in command:
+                return False, f"Blocked shell metacharacter '{char}' detected. Command chaining/injection is not allowed."
+
+        # Extract base binary, resolving any path prefix (e.g. /bin/rm -> rm)
+        parts = command.strip().split()
+        base_binary = Path(parts[0]).name  # handles /usr/bin/rm -> rm
+
+        # Strip common script extensions to catch rm.sh etc.
+        for ext in (".sh", ".bash", ".zsh", ".bat", ".cmd"):
+            if base_binary.endswith(ext):
+                base_binary = base_binary[:-len(ext)]
+
+        if base_binary in DENIED_COMMANDS:
+            return False, f"Command '{base_binary}' is in the denied commands list."
+
+        return True, ""
 
     def safe_run(self, command: str) -> ToolResponse:
         """
-        Executes a command natively as a subprocess, returning captured stdout/stderr
-        formatted strictly for LLM context ingestion.
+        Executes a command as a subprocess using shell=False, returning
+        captured stdout/stderr formatted for LLM context ingestion.
         """
-        if not self._is_safe(command):
-            error_msg = f"Security Violation: Command '{command}' base binary is not in the allowlist. Allowed boundaries: {self.allowlisted_commands}"
+        is_safe, reason = self._is_safe(command)
+        if not is_safe:
+            error_msg = f"Security Violation: {reason}"
             logger.warning(error_msg)
             return {"success": False, "stdout": "", "stderr": error_msg}
 
         try:
-            logger.debug(f"Executing sandboxed command: {command}")
-            # We strictly enforce execution relative to the project directory
+            # Parse into argument list for shell=False execution
+            args = shlex.split(command)
+            logger.debug(f"Executing sandboxed command: {args}")
+
             res = subprocess.run(
-                command, 
-                shell=True, 
-                cwd=self.repo_path, 
-                capture_output=True, 
-                text=True, 
+                args,
+                shell=False,  # CRITICAL: never use shell=True
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
                 timeout=120  # Hard timeout to prevent frozen LLM loops
             )
-            
+
             return {
                 "success": res.returncode == 0,
                 "stdout": res.stdout,
                 "stderr": res.stderr
             }
-            
+
         except subprocess.TimeoutExpired:
-            return {"success": False, "stdout": "", "stderr": f"Command timed out after 120s."}
+            return {"success": False, "stdout": "", "stderr": "Command timed out after 120s."}
         except Exception as e:
             return {"success": False, "stdout": "", "stderr": f"Subprocess Execution Error: {str(e)}"}
