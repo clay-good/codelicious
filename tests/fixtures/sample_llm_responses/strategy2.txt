@@ -1,0 +1,227 @@
+I'll create the database layer with connection pooling and CRUD operations for the User and Session models.
+
+```python src/database.py
+"""Database layer with connection pooling and CRUD operations."""
+
+import sqlite3
+from contextlib import contextmanager
+from typing import Optional, Dict, Any
+from datetime import datetime
+import uuid
+
+
+class ConnectionPool:
+    """Simple connection pool manager for SQLite."""
+
+    def __init__(self, database_path: str, pool_size: int = 5):
+        self.database_path = database_path
+        self.pool_size = pool_size
+        self._connections = []
+        self._init_pool()
+
+    def _init_pool(self):
+        """Initialize the connection pool."""
+        for _ in range(self.pool_size):
+            conn = sqlite3.connect(self.database_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            self._connections.append(conn)
+
+    @contextmanager
+    def get_connection(self):
+        """Get a connection from the pool."""
+        if not self._connections:
+            raise RuntimeError("Connection pool exhausted")
+
+        conn = self._connections.pop()
+        try:
+            yield conn
+        finally:
+            self._connections.append(conn)
+
+    def close_all(self):
+        """Close all connections in the pool."""
+        for conn in self._connections:
+            conn.close()
+        self._connections.clear()
+
+
+class UserDatabase:
+    """CRUD operations for User model."""
+
+    def __init__(self, pool: ConnectionPool):
+        self.pool = pool
+
+    def create(self, email: str, is_active: bool = True) -> str:
+        """Create a new user and return the user ID."""
+        user_id = str(uuid.uuid4())
+        created_at = datetime.utcnow().isoformat()
+
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO users (id, email, created_at, is_active)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, email, created_at, is_active)
+            )
+            conn.commit()
+
+        return user_id
+
+    def get_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a user by ID."""
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM users WHERE id = ?",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return dict(row)
+            return None
+
+    def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a user by email."""
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM users WHERE email = ?",
+                (email,)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return dict(row)
+            return None
+
+
+class SessionDatabase:
+    """CRUD operations for Session model."""
+
+    def __init__(self, pool: ConnectionPool):
+        self.pool = pool
+
+    def create(self, user_id: str, token: str, expires_at: str) -> str:
+        """Create a new session and return the session ID."""
+        session_id = str(uuid.uuid4())
+
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sessions (id, user_id, token, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, user_id, token, expires_at)
+            )
+            conn.commit()
+
+        return session_id
+
+    def get_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a session by token."""
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM sessions WHERE token = ?",
+                (token,)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return dict(row)
+            return None
+
+    def delete_expired(self) -> int:
+        """Delete all expired sessions and return the count."""
+        now = datetime.utcnow().isoformat()
+
+        with self.pool.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM sessions WHERE expires_at < ?",
+                (now,)
+            )
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+        return deleted_count
+```
+
+```python tests/test_database.py
+"""Tests for database layer."""
+
+import pytest
+import tempfile
+import os
+from src.database import ConnectionPool, UserDatabase, SessionDatabase
+from datetime import datetime, timedelta
+
+
+@pytest.fixture
+def db_pool():
+    """Create a temporary database pool for testing."""
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        db_path = tmp.name
+
+    pool = ConnectionPool(db_path)
+
+    # Create tables
+    with pool.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token TEXT UNIQUE NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+    yield pool
+
+    pool.close_all()
+    os.unlink(db_path)
+
+
+def test_user_create(db_pool):
+    """Test creating a user."""
+    user_db = UserDatabase(db_pool)
+    user_id = user_db.create(email="test@example.com")
+
+    assert user_id is not None
+    assert len(user_id) == 36  # UUID format
+
+
+def test_user_get_by_id(db_pool):
+    """Test retrieving a user by ID."""
+    user_db = UserDatabase(db_pool)
+    user_id = user_db.create(email="test@example.com")
+
+    user = user_db.get_by_id(user_id)
+    assert user is not None
+    assert user["email"] == "test@example.com"
+
+
+def test_session_create(db_pool):
+    """Test creating a session."""
+    user_db = UserDatabase(db_pool)
+    session_db = SessionDatabase(db_pool)
+
+    user_id = user_db.create(email="test@example.com")
+    expires = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    session_id = session_db.create(user_id, "token123", expires)
+
+    assert session_id is not None
+```

@@ -1,0 +1,20 @@
+[
+    {
+        "id": "task_001",
+        "title": "Create hello.py",
+        "description": "Create a file called hello.py that prints Hello World",
+        "file_paths": ["hello.py"],
+        "depends_on": [],
+        "validation": "File exists and prints Hello World",
+        "status": "pending"
+    },
+    {
+        "id": "task_002",
+        "title": "Create test_hello.py",
+        "description": "Create tests/test_hello.py to verify hello.py output",
+        "file_paths": ["tests/test_hello.py"],
+        "depends_on": ["task_001"],
+        "validation": "Tests pass",
+        "status": "pending"
+    }
+]
