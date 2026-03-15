@@ -4,6 +4,7 @@ from codelicious.tools.fs_tools import FSTooling
 from codelicious.tools.command_runner import CommandRunner
 from codelicious.tools.audit_logger import AuditLogger
 from codelicious.context.cache_engine import CacheManager
+from codelicious.context.rag_engine import RagEngine
 
 logger = logging.getLogger("codelicious.tools.registry")
 
@@ -15,6 +16,7 @@ class ToolRegistry:
         self.fs_tools = FSTooling(repo_path, cache_manager)
         self.command_runner = CommandRunner(repo_path, config)
         self.audit = AuditLogger(repo_path)
+        self.rag = RagEngine(repo_path)
         
         # Mapping Tool Name -> Function execution
         self.registry: dict[str, Callable] = {
@@ -22,6 +24,7 @@ class ToolRegistry:
             "write_file": self.fs_tools.native_write_file,
             "list_directory": self.fs_tools.native_list_directory,
             "run_command": self.command_runner.safe_run,
+            "semantic_search": self.rag.semantic_search,
         }
         
     def dispatch(self, tool_name: str, kwargs: dict) -> dict[str, Any]:
@@ -129,6 +132,23 @@ class ToolRegistry:
                             }
                         },
                         "required": ["command"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "semantic_search",
+                    "description": "Performs a vector database similarity search to instantly find relevant codebase context. Use this instead of guessing file paths.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The natural language query describing the architecture or logic you need to locate (e.g., 'authentication middleware flow')."
+                            }
+                        },
+                        "required": ["query"]
                     }
                 }
             }

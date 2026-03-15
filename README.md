@@ -43,17 +43,49 @@ Unlike tools that forget their lessons between sessions, Codelicious continuousl
 
 ---
 
-## Quick Start (Coming Soon)
+## Quick Start
 
 ```bash
-# Install the autonomous engine
-pip install -e "."
+# Clone the repository
+git clone https://github.com/codelicious-ai/codelicious.git
+cd codelicious
 
-# Export your LLM Provider configurations
-export LLM_API_KEY=hf_...
-export MODEL_PLANNER=deepseek-v3
-export MODEL_CODER=qwen2.5-coder
+# Install the autonomous engine globally
+pip install -e .
+
+# Export your LLM Provider configurations (HuggingFace Serverless by default)
+export LLM_API_KEY=hf_your_key_here
+export MODEL_PLANNER=deepseek-ai/DeepSeek-V3
+export MODEL_CODER=Qwen/Qwen2.5-Coder-32B-Instruct
+
+# (Optional) Provide git credentials for PR/MR creation orchestration
+export GITHUB_TOKEN=ghp_...
+# OR
+export GITLAB_TOKEN=glpat-...
 
 # Initiate complete Outcome as a Service flow
-codelicious /path/to/repo
+codelicious /Users/user/Documents/your-repo
 ```
+
+---
+
+## Repository Architecture and Explicit File Paths
+
+Codelicious maintains a rigid, simplified directory structure to maintain extreme execution speed and low context footprints:
+
+| Component | Absolute Path within Repo | Purpose |
+| :--- | :--- | :--- |
+| **CLI Entrypoint** | `src/codelicious/cli.py` | Command line parser, cache hydration, loops initialize. |
+| **Agentic Loop** | `src/codelicious/loop_controller.py` | The main `while` loop that calls the LLM iteratively. |
+| **Git Orchestrator** | `src/codelicious/git/git_orchestrator.py` | PR/MR management and branch isolation enforcer. |
+| **Tool Registry** | `src/codelicious/tools/registry.py` | Maps LLM JSON tool payloads to Python functions. |
+| **FS Sandbox Tools** | `src/codelicious/tools/fs_tools.py` | High-security `read_file` and `write_file` implementations. |
+| **Shell Runner** | `src/codelicious/tools/command_runner.py` | Executes shell commands restricted strictly by config. |
+| **Audit Logger** | `src/codelicious/tools/audit_logger.py` | Dumps all payloads to console and `audit.log`. |
+| **Cache Engine** | `src/codelicious/context/cache_engine.py` | Serializes LLM state to the local repo's JSON ledgers. |
+| **RAG Engine** | `src/codelicious/context/rag_engine.py` | Instant codebase semantic search using local SQLite vectors. |
+| **Persistent Ledger** | `[Target Repo]/.codelicious/state.json` | Stores long-term memory of tasks and resolutions. |
+| **Runtime Index** | `[Target Repo]/.codelicious/cache.json` | Stores file tree hashes to limit context bloat. |
+| **Vector Database** | `[Target Repo]/.codelicious/db.sqlite3` | Lightweight semantic embedding storage for instant RAG. |
+| **Audit Log** | `[Target Repo]/.codelicious/audit.log` | Verbosely stores every agent interaction. |
+| **Configuration** | `[Target Repo]/.codelicious/config.json` | Defines LLM endpoints, secrets, and shell allowlists. |
