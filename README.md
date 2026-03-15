@@ -54,14 +54,14 @@ cd codelicious
 pip install -e .
 
 # Export your LLM Provider configurations (HuggingFace Serverless by default)
+# IMPORTANT: For Hugging Face Fine-Grained Tokens, ensure you grant the "Make calls to the Serverless Inference API" permission!
 export LLM_API_KEY=hf_your_key_here
 export MODEL_PLANNER=deepseek-ai/DeepSeek-V3
 export MODEL_CODER=Qwen/Qwen2.5-Coder-32B-Instruct
 
-# (Optional) Provide git credentials for PR/MR creation orchestration
-export GITHUB_TOKEN=ghp_...
-# OR
-export GITLAB_TOKEN=glpat-...
+# (Optional) If you want Codelicious to automatically open PRs on GitHub, 
+# simply ensure you have the GitHub CLI (`gh`) installed and authenticated locally.
+# Codelicious natively inherits your local .git scope!
 
 # Initiate complete Outcome as a Service flow
 codelicious /Users/user/Documents/your-repo
