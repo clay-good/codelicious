@@ -76,7 +76,9 @@ def _warn_if_extreme_truncation(
         context,
         tokens_included,
         total_content_tokens,
-        (1 - tokens_included / total_content_tokens) * 100 if total_content_tokens > 0 else 0,
+        (1 - tokens_included / total_content_tokens) * 100
+        if total_content_tokens > 0
+        else 0,
     )
     if total_content_tokens > 0 and tokens_included < total_content_tokens * 0.5:
         logger.warning(
@@ -152,7 +154,9 @@ def build_task_prompt(
     task_section = task_header + task_desc + task_footer
     parts.append(task_section)
     tokens_used += estimate_tokens(task_section)
-    total_content_before_build += estimate_tokens(task_header + task.description + task_footer)
+    total_content_before_build += estimate_tokens(
+        task_header + task.description + task_footer
+    )
     logger.debug("Priority 1: %d tokens used", tokens_used)
 
     # 2. Existing file contents (always included)
@@ -206,7 +210,9 @@ def build_task_prompt(
         logger.debug("Priority 5: %d tokens used", tokens_used)
 
     user_prompt = "\n".join(parts)
-    _warn_if_extreme_truncation(tokens_used, total_content_before_build, "build_task_prompt")
+    _warn_if_extreme_truncation(
+        tokens_used, total_content_before_build, "build_task_prompt"
+    )
     logger.info("Task prompt built: %d tokens used", tokens_used)
     return system_prompt, user_prompt
 
@@ -281,6 +287,8 @@ def build_fix_prompt(
             tokens_used += code_tokens
 
     user_prompt = "\n".join(parts)
-    _warn_if_extreme_truncation(tokens_used, total_content_before_build, "build_fix_prompt")
+    _warn_if_extreme_truncation(
+        tokens_used, total_content_before_build, "build_fix_prompt"
+    )
     logger.info("Fix prompt built: %d tokens used", tokens_used)
     return system_prompt, user_prompt

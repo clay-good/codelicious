@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 
-from proxilion_build.scaffolder import (
+from codelicious.scaffolder import (
     _build_permissions,
     _detect_conventions,
     scaffold,

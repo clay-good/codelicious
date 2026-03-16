@@ -1,6 +1,5 @@
 """Tests for security event audit logging (spec-07 Phase 6)."""
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -27,7 +26,9 @@ class TestSecurityEvent:
             "DENIED_PATH_WRITE",
         ]
         for event_name in expected_events:
-            assert hasattr(SecurityEvent, event_name), f"Missing SecurityEvent.{event_name}"
+            assert hasattr(SecurityEvent, event_name), (
+                f"Missing SecurityEvent.{event_name}"
+            )
             assert SecurityEvent[event_name].value == event_name
 
     def test_security_event_is_string_enum(self):
@@ -78,7 +79,7 @@ class TestAuditLoggerSecurityLogging:
         audit_logger.set_current_tool("run_command")
         audit_logger.log_security_event(
             SecurityEvent.COMMAND_DENIED,
-            "'rm -rf /' base binary 'rm' is in denied list"
+            "'rm -rf /' base binary 'rm' is in denied list",
         )
 
         audit_log = temp_repo / ".codelicious" / "audit.log"
@@ -107,7 +108,7 @@ class TestAuditLoggerSecurityLogging:
         audit_logger.set_current_tool("write_file")
         audit_logger.log_security_event(
             SecurityEvent.SELF_MODIFICATION_BLOCKED,
-            "LLM attempted to write .codelicious/config.json"
+            "LLM attempted to write .codelicious/config.json",
         )
 
         security_log = temp_repo / ".codelicious" / "security.log"
@@ -130,7 +131,7 @@ class TestAuditLoggerSecurityLogging:
             SecurityEvent.PATH_TRAVERSAL_BLOCKED,
             "Attempted to escape sandbox",
             iteration=99,
-            tool="malicious_tool"
+            tool="malicious_tool",
         )
 
         security_log = temp_repo / ".codelicious" / "security.log"
@@ -179,7 +180,7 @@ class TestAuditLoggerSecurityLogging:
         audit_logger.set_current_tool("run_command")
         audit_logger.log_sandbox_violation(
             "Blocked metacharacter '|' in command",
-            event_type=SecurityEvent.METACHAR_BLOCKED
+            event_type=SecurityEvent.METACHAR_BLOCKED,
         )
 
         security_log = temp_repo / ".codelicious" / "security.log"
@@ -209,11 +210,10 @@ class TestAuditLoggerSecurityLogging:
     def test_security_log_only_contains_security_events(self, temp_repo, audit_logger):
         """Verify security.log only contains security events, not tool intents/outcomes."""
         audit_logger.log_tool_intent("read_file", {"path": "test.txt"})
-        audit_logger.log_tool_outcome("read_file", {"success": True, "stdout": "content"})
-        audit_logger.log_security_event(
-            SecurityEvent.COMMAND_DENIED,
-            "Blocked command"
+        audit_logger.log_tool_outcome(
+            "read_file", {"success": True, "stdout": "content"}
         )
+        audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Blocked command")
 
         security_log = temp_repo / ".codelicious" / "security.log"
         audit_log = temp_repo / ".codelicious" / "audit.log"
@@ -223,7 +223,9 @@ class TestAuditLoggerSecurityLogging:
 
         # Security log should only have security event
         assert "COMMAND_DENIED" in security_content
-        assert "read_file" not in security_content  # Tool intent/outcome not in security log
+        assert (
+            "read_file" not in security_content
+        )  # Tool intent/outcome not in security log
 
         # Audit log should have everything
         assert "COMMAND_DENIED" in audit_content
@@ -233,10 +235,7 @@ class TestAuditLoggerSecurityLogging:
         """Verify timestamp format is ISO 8601."""
         import re
 
-        audit_logger.log_security_event(
-            SecurityEvent.COMMAND_DENIED,
-            "Test message"
-        )
+        audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Test message")
 
         security_log = temp_repo / ".codelicious" / "security.log"
         content = security_log.read_text()

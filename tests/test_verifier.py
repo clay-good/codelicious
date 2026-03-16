@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from proxilion_build.verifier import (
+from codelicious.verifier import (
     CheckResult,
     VerificationResult,
     check_custom_command,
@@ -328,7 +328,7 @@ def test_check_custom_command_invalid_syntax(tmp_path: pathlib.Path) -> None:
 
 def test_truncate_long_output(tmp_path: pathlib.Path) -> None:
     (tmp_path / "tests").mkdir()
-    from proxilion_build.verifier import _truncate
+    from codelicious.verifier import _truncate
 
     short = "short text"
     assert _truncate(short) == short
@@ -447,7 +447,7 @@ def test_nested_dangerous_call(tmp_path: pathlib.Path) -> None:
 
 def test_detect_languages_invalid_package_json(tmp_path: pathlib.Path) -> None:
     """detect_languages skips invalid package.json without crashing."""
-    from proxilion_build.verifier import detect_languages
+    from codelicious.verifier import detect_languages
 
     (tmp_path / "package.json").write_text("{invalid json", encoding="utf-8")
     result = detect_languages(tmp_path)
@@ -456,7 +456,7 @@ def test_detect_languages_invalid_package_json(tmp_path: pathlib.Path) -> None:
 
 def test_check_lint_eslint_not_found(tmp_path: pathlib.Path) -> None:
     """check_lint for typescript returns skipped when eslint is not found."""
-    from proxilion_build.verifier import check_lint
+    from codelicious.verifier import check_lint
 
     with patch("subprocess.run", side_effect=FileNotFoundError("eslint not found")):
         result = check_lint(tmp_path, "typescript", tool_available=True)
@@ -466,7 +466,7 @@ def test_check_lint_eslint_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_lint_timeout(tmp_path: pathlib.Path) -> None:
     """check_lint returns passed=False when linter times out."""
-    from proxilion_build.verifier import check_lint
+    from codelicious.verifier import check_lint
 
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ruff", 60)):
         result = check_lint(tmp_path, "python", tool_available=True)
@@ -476,7 +476,7 @@ def test_check_lint_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
     """check_coverage returns skipped when pytest is not found."""
-    from proxilion_build.verifier import check_coverage
+    from codelicious.verifier import check_coverage
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
@@ -488,7 +488,7 @@ def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
     """check_coverage returns passed=False when it times out."""
-    from proxilion_build.verifier import check_coverage
+    from codelicious.verifier import check_coverage
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
@@ -500,7 +500,7 @@ def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_pip_audit_not_found(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns skipped when pip-audit is not found."""
-    from proxilion_build.verifier import check_pip_audit
+    from codelicious.verifier import check_pip_audit
 
     with patch("subprocess.run", side_effect=FileNotFoundError("pip-audit")):
         result = check_pip_audit(tmp_path, tool_available=True)
@@ -510,7 +510,7 @@ def test_check_pip_audit_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns passed=False when it times out."""
-    from proxilion_build.verifier import check_pip_audit
+    from codelicious.verifier import check_pip_audit
 
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
         result = check_pip_audit(tmp_path, tool_available=True)
@@ -520,7 +520,7 @@ def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_playwright_not_found(tmp_path: pathlib.Path) -> None:
     """check_playwright returns skipped when npx is not found."""
-    from proxilion_build.verifier import check_playwright
+    from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
     with patch("subprocess.run", side_effect=FileNotFoundError("npx")):
@@ -531,7 +531,7 @@ def test_check_playwright_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_playwright_timeout(tmp_path: pathlib.Path) -> None:
     """check_playwright returns passed=False when it times out."""
-    from proxilion_build.verifier import check_playwright
+    from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("npx", 300)):
@@ -551,7 +551,7 @@ def test_check_syntax_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_verify_with_tools_and_languages(tmp_path: pathlib.Path) -> None:
     """verify() with tools and languages dict includes lint and pip-audit checks."""
-    from proxilion_build.verifier import verify
+    from codelicious.verifier import verify
 
     (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
     result = verify(

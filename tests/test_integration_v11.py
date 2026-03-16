@@ -16,7 +16,7 @@ class TestParserIntegration:
 
     def test_parser_handles_sample_spec(self):
         """Parse sample_spec_v11.md and verify 2 sections."""
-        from proxilion_build.parser import parse_spec
+        from codelicious.parser import parse_spec
 
         spec_path = _FIXTURES / "sample_spec_v11.md"
         sections = parse_spec(spec_path)
@@ -60,7 +60,7 @@ class TestPlanJsonSchema:
 
     def test_plan_json_can_be_loaded_as_tasks(self):
         """The sample plan can be deserialized into Task objects."""
-        from proxilion_build.planner import Task
+        from codelicious.planner import Task
 
         plan_path = _FIXTURES / "sample_plan_v11.json"
         data = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -76,7 +76,7 @@ class TestExecutorResponseStrategies:
 
     def test_strict_format(self):
         """Strategy 1: --- FILE: path --- / --- END FILE ---."""
-        from proxilion_build.executor import parse_llm_response
+        from codelicious.executor import parse_llm_response
 
         response = '--- FILE: hello.py ---\nprint("Hello, World!")\n--- END FILE ---\n'
         results = parse_llm_response(response)
@@ -86,7 +86,7 @@ class TestExecutorResponseStrategies:
 
     def test_markdown_with_filename(self):
         """Strategy 2: ```lang filepath blocks."""
-        from proxilion_build.executor import parse_llm_response
+        from codelicious.executor import parse_llm_response
 
         response = '```python hello.py\nprint("Hello, World!")\n```\n'
         results = parse_llm_response(response)
@@ -95,7 +95,7 @@ class TestExecutorResponseStrategies:
 
     def test_markdown_preceded_by_path(self):
         """Strategy 3: path on line before code block."""
-        from proxilion_build.executor import parse_llm_response
+        from codelicious.executor import parse_llm_response
 
         response = 'hello.py\n```python\nprint("Hello, World!")\n```\n'
         results = parse_llm_response(response)
@@ -104,7 +104,7 @@ class TestExecutorResponseStrategies:
 
     def test_single_file_fallback(self):
         """Strategy 4: single code block with expected file hint."""
-        from proxilion_build.executor import parse_llm_response
+        from codelicious.executor import parse_llm_response
 
         response = '```\nprint("Hello, World!")\n```\n'
         results = parse_llm_response(response, expected_files=["hello.py"])
@@ -117,7 +117,7 @@ class TestVerifierOnFixtures:
 
     def test_verifier_on_valid_python(self, tmp_path):
         """Syntax check passes for valid Python."""
-        from proxilion_build.verifier import check_syntax
+        from codelicious.verifier import check_syntax
 
         valid = tmp_path / "valid.py"
         valid.write_text('def greet():\n    return "hello"\n')
@@ -127,7 +127,7 @@ class TestVerifierOnFixtures:
 
     def test_verifier_on_invalid_python(self, tmp_path):
         """Syntax check fails for invalid Python."""
-        from proxilion_build.verifier import check_syntax
+        from codelicious.verifier import check_syntax
 
         invalid = tmp_path / "broken.py"
         invalid.write_text("def greet(\n    return\n")
@@ -137,7 +137,7 @@ class TestVerifierOnFixtures:
 
     def test_verifier_security_scan_clean_file(self, tmp_path):
         """Security scan passes for a clean file."""
-        from proxilion_build.verifier import check_security
+        from codelicious.verifier import check_security
 
         clean = tmp_path / "clean.py"
         clean.write_text(

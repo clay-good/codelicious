@@ -14,7 +14,7 @@ console_logger.setLevel(logging.INFO)
 
 if not console_logger.handlers:
     ch = logging.StreamHandler()
-    formatter = logging.Formatter('%(levelname)s %(message)s')
+    formatter = logging.Formatter("%(levelname)s %(message)s")
     ch.setFormatter(formatter)
     console_logger.addHandler(ch)
 
@@ -25,6 +25,7 @@ class SecurityEvent(str, Enum):
     These events are logged to both audit.log and security.log for
     easy review of security-relevant actions.
     """
+
     COMMAND_DENIED = "COMMAND_DENIED"
     METACHAR_BLOCKED = "METACHAR_BLOCKED"
     PATH_TRAVERSAL_BLOCKED = "PATH_TRAVERSAL_BLOCKED"
@@ -45,6 +46,7 @@ class AuditLogger:
     Security events are also logged to a dedicated .codelicious/security.log
     for easy review of security-relevant actions.
     """
+
     def __init__(self, repo_path: Path):
         self.log_file = repo_path / ".codelicious" / "audit.log"
         self.security_log_file = repo_path / ".codelicious" / "security.log"
@@ -81,7 +83,9 @@ class AuditLogger:
         Security log format:
         2026-03-15T15:06:23Z [SECURITY] EVENT_NAME: message (iteration N, tool: tool_name)
         """
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         context = f"iteration {self._current_iteration}, tool: {self._current_tool or 'unknown'}"
         full_message = f"{message} ({context})"
         log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
@@ -143,19 +147,21 @@ class AuditLogger:
     def log_tool_outcome(self, tool_name: str, response: dict):
         """Called immediately after native python execution, before returning to Qwen/DeepSeek context."""
         success = response.get("success", False)
-        
+
         if success:
-            stdout_preview = response.get('stdout', '')[:200].replace('\n', ' ')
+            stdout_preview = response.get("stdout", "")[:200].replace("\n", " ")
             msg = f"Success: '{tool_name}' returned -> {stdout_preview}..."
             console_logger.info(msg)
             self._write_to_file("INFO", "TOOL_SUCCESS", msg)
         else:
-            err = response.get('stderr', '')
+            err = response.get("stderr", "")
             msg = f"Failed: '{tool_name}' errored -> {err}"
             console_logger.error(msg)
             self._write_to_file("ERROR", "TOOL_FAILED", msg)
 
-    def log_sandbox_violation(self, detail: str, event_type: SecurityEvent | None = None):
+    def log_sandbox_violation(
+        self, detail: str, event_type: SecurityEvent | None = None
+    ):
         """Log a sandbox violation as a security event.
 
         Args:

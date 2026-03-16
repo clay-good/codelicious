@@ -9,7 +9,13 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import List
 
-__all__ = ["API_KEY_ENV_VARS", "Config", "PROVIDER_DEFAULTS", "PolicyConfig", "build_config"]
+__all__ = [
+    "API_KEY_ENV_VARS",
+    "Config",
+    "PROVIDER_DEFAULTS",
+    "PolicyConfig",
+    "build_config",
+]
 
 logger = logging.getLogger("codelicious.config")
 
@@ -27,17 +33,25 @@ def _parse_env_int(var_name: str, default: int, min_val: int | None = None) -> i
     try:
         val = int(raw)
     except ValueError:
-        logger.warning("%s=%r is not a valid integer, using default %d", var_name, raw, default)
+        logger.warning(
+            "%s=%r is not a valid integer, using default %d", var_name, raw, default
+        )
         return default
     if min_val is not None and val < min_val:
         logger.warning(
-            "%s=%d is below minimum %d, using default %d", var_name, val, min_val, default
+            "%s=%d is below minimum %d, using default %d",
+            var_name,
+            val,
+            min_val,
+            default,
         )
         return default
     return val
 
 
-def _parse_env_float(var_name: str, default: float, min_val: float | None = None) -> float:
+def _parse_env_float(
+    var_name: str, default: float, min_val: float | None = None
+) -> float:
     """Parse a float environment variable with fallback to default."""
     raw = os.environ.get(var_name)
     if raw is None:
@@ -45,11 +59,17 @@ def _parse_env_float(var_name: str, default: float, min_val: float | None = None
     try:
         val = float(raw)
     except ValueError:
-        logger.warning("%s=%r is not a valid float, using default %.2f", var_name, raw, default)
+        logger.warning(
+            "%s=%r is not a valid float, using default %.2f", var_name, raw, default
+        )
         return default
     if min_val is not None and val < min_val:
         logger.warning(
-            "%s=%.2f is below minimum %.2f, using default %.2f", var_name, val, min_val, default
+            "%s=%.2f is below minimum %.2f, using default %.2f",
+            var_name,
+            val,
+            min_val,
+            default,
         )
         return default
     return val
@@ -80,9 +100,13 @@ class PolicyConfig:
         enabled_raw = os.environ.get("CODELICIOUS_POLICY_ENABLED", "").strip().lower()
         enabled = enabled_raw in ("1", "true", "yes")
 
-        allowed_models_raw = os.environ.get("CODELICIOUS_POLICY_ALLOWED_MODELS", "").strip()
+        allowed_models_raw = os.environ.get(
+            "CODELICIOUS_POLICY_ALLOWED_MODELS", ""
+        ).strip()
         if allowed_models_raw:
-            allowed_models = [m.strip() for m in allowed_models_raw.split(",") if m.strip()]
+            allowed_models = [
+                m.strip() for m in allowed_models_raw.split(",") if m.strip()
+            ]
         else:
             allowed_models = []
 
@@ -232,7 +256,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.patience = int(env_patience)
         except ValueError:
-            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_PATIENCE: {env_patience}")
+            raise ValueError(
+                f"Invalid value for CODELICIOUS_BUILD_PATIENCE: {env_patience}"
+            )
 
     if config.patience < 1:
         raise ValueError(f"Patience must be a positive integer, got {config.patience}")
@@ -251,7 +277,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             )
 
     if config.max_context_tokens < 1000:
-        raise ValueError(f"max_context_tokens must be >= 1000, got {config.max_context_tokens}")
+        raise ValueError(
+            f"max_context_tokens must be >= 1000, got {config.max_context_tokens}"
+        )
 
     # Verify command
     env_verify = os.environ.get("CODELICIOUS_BUILD_VERIFY_COMMAND")
@@ -303,7 +331,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         config.verification_timeout = cli_timeout
 
     if config.verification_timeout < 1:
-        raise ValueError(f"verification_timeout must be >= 1, got {config.verification_timeout}")
+        raise ValueError(
+            f"verification_timeout must be >= 1, got {config.verification_timeout}"
+        )
 
     # Replan after failures
     cli_replan = getattr(cli_args, "replan_after_failures", None)
@@ -319,7 +349,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.coverage_threshold = int(env_cov)
         except ValueError:
-            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_COVERAGE_THRESHOLD: {env_cov}")
+            raise ValueError(
+                f"Invalid value for CODELICIOUS_BUILD_COVERAGE_THRESHOLD: {env_cov}"
+            )
 
     if config.coverage_threshold < 0 or config.coverage_threshold > 100:
         raise ValueError(
@@ -365,7 +397,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.max_turns = int(env_max_turns)
         except ValueError:
-            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_TURNS: {env_max_turns}")
+            raise ValueError(
+                f"Invalid value for CODELICIOUS_BUILD_MAX_TURNS: {env_max_turns}"
+            )
 
     # Max iterations
     env_max_iter = os.environ.get("CODELICIOUS_BUILD_MAX_ITERATIONS")
@@ -376,7 +410,9 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.max_iterations = int(env_max_iter)
         except ValueError:
-            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_ITERATIONS: {env_max_iter}")
+            raise ValueError(
+                f"Invalid value for CODELICIOUS_BUILD_MAX_ITERATIONS: {env_max_iter}"
+            )
 
     if config.max_iterations < 1:
         raise ValueError(f"max_iterations must be >= 1, got {config.max_iterations}")

@@ -436,7 +436,9 @@ Before attempting the same approach again:
 # ---------------------------------------------------------------------------
 
 _PENDING_TASK_RE = re.compile(r"^\s*###\s*\[\s*\]\s", re.MULTILINE)
-_COMPLETED_TASK_RE = re.compile(r"^\s*###\s*\[x\]\s*Task:\s*(.+)", re.IGNORECASE | re.MULTILINE)
+_COMPLETED_TASK_RE = re.compile(
+    r"^\s*###\s*\[x\]\s*Task:\s*(.+)", re.IGNORECASE | re.MULTILINE
+)
 
 
 def _extract_section(content: str, header: str) -> str:

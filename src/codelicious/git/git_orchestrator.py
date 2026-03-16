@@ -1,26 +1,24 @@
 import subprocess
-import os
 import json
-import urllib.request
-import urllib.error
 from pathlib import Path
 import logging
 
 logger = logging.getLogger("codelicious.git")
+
 
 class GitManager:
     """
     Deterministically handles all git branching, committing, and API PR/MR orchestration
     outside the LLM's control flow to guarantee safe isolation.
     """
-    
+
     def __init__(self, repo_path: Path):
         self.repo_path = repo_path
         self.forbidden_branches = {"main", "master", "production"}
-        
+
         # Load local configurations
         config_path = self.repo_path / ".codelicious" / "config.json"
-        
+
         self.config = {}
         if config_path.exists():
             try:
@@ -52,7 +50,9 @@ class GitManager:
     def assert_safe_branch(self):
         """Ensures the agent never executes against main/master directly."""
         if not self._has_git():
-            logger.warning("A .git folder was not found so no git orchestration will occur. USER: Please add a .git or change directory to build within a repository.")
+            logger.warning(
+                "A .git folder was not found so no git orchestration will occur. USER: Please add a .git or change directory to build within a repository."
+            )
             return
 
         try:
@@ -60,7 +60,9 @@ class GitManager:
             if branch in self.forbidden_branches:
                 # Enforce generation of a deterministic feature branch
                 feature_branch = "codelicious/auto-build"
-                logger.info(f"Current branch is {branch}. Codelicious requires an isolated feature branch. Checking out {feature_branch}.")
+                logger.info(
+                    f"Current branch is {branch}. Codelicious requires an isolated feature branch. Checking out {feature_branch}."
+                )
                 self.checkout_or_create_feature_branch(feature_branch)
             else:
                 logger.info(f"Operating on safe feature branch: {branch}")
@@ -83,7 +85,7 @@ class GitManager:
 
         try:
             self._run_cmd(["git", "add", "."])
-            
+
             # Check if there's anything to commit
             status = self._run_cmd(["git", "status", "--porcelain"])
             if not status:
@@ -92,15 +94,19 @@ class GitManager:
 
             self._run_cmd(["git", "commit", "-m", commit_message])
             logger.info(f"Committed changes seamlessly: {commit_message}")
-            
+
             # Push to origin
             current_branch = self._run_cmd(["git", "branch", "--show-current"])
             logger.info(f"Pushing branch {current_branch} to origin.")
-            subprocess.run(["git", "push", "--set-upstream", "origin", current_branch], cwd=self.repo_path, capture_output=True)
-            
+            subprocess.run(
+                ["git", "push", "--set-upstream", "origin", current_branch],
+                cwd=self.repo_path,
+                capture_output=True,
+            )
+
             # Since a commit just happened, ensure a Draft PR exists for it
             self.ensure_draft_pr_exists(commit_message)
-            
+
         except Exception as e:
             logger.error(f"Failed to commit or push: {e}")
 
@@ -108,50 +114,66 @@ class GitManager:
         """Uses the local `gh` CLI to orchestrate Draft PRs if one doesn't exist."""
         if not self._has_git():
             return
-            
+
         logger.info("Checking for existing active PRs via `gh` CLI...")
-        
+
         # Check if gh CLI is installed
         gh_check = subprocess.run(["gh", "--version"], capture_output=True)
         if gh_check.returncode != 0:
-            logger.warning("GitHub CLI (`gh`) not found! Cannot automatically orchestrate PR API. Continuing locally.")
+            logger.warning(
+                "GitHub CLI (`gh`) not found! Cannot automatically orchestrate PR API. Continuing locally."
+            )
             return
 
         # Check if a PR already exists for this branch
-        pr_status = subprocess.run(["gh", "pr", "view"], cwd=self.repo_path, capture_output=True)
-        
+        pr_status = subprocess.run(
+            ["gh", "pr", "view"], cwd=self.repo_path, capture_output=True
+        )
+
         if pr_status.returncode != 0:
             logger.info("No PR found for this branch. Creating a new Draft PR.")
             title = f"Autonomous Implementation: {spec_summary}"
-            body = "This PR was generated entirely by Codelicious using DeepSeek and Qwen."
-            
-            subprocess.run(["gh", "pr", "create", "--draft", "--title", title, "--body", body], cwd=self.repo_path, capture_output=True)
+            body = (
+                "This PR was generated entirely by Codelicious using DeepSeek and Qwen."
+            )
+
+            subprocess.run(
+                ["gh", "pr", "create", "--draft", "--title", title, "--body", body],
+                cwd=self.repo_path,
+                capture_output=True,
+            )
             logger.info("Successfully created Draft PR via `gh`.")
         else:
             logger.info("Draft PR already exists. Commits have been appended.")
 
     def transition_pr_to_review(self):
         """
-        Called when the entire spec loop passes verification. 
+        Called when the entire spec loop passes verification.
         Drops the 'Draft' flag and requests reviewers explicitly from config.json.
         """
         if not self._has_git():
             return
-            
+
         logger.info("Loop Completed. Transitioning Pull Request from Draft to Active.")
-        
+
         gh_check = subprocess.run(["gh", "--version"], capture_output=True)
         if gh_check.returncode != 0:
             return
-            
+
         subprocess.run(["gh", "pr", "ready"], cwd=self.repo_path, capture_output=True)
-        
+
         reviewers = self.config.get("default_reviewers", [])
         if reviewers:
             logger.info(f"Requesting urgent human reviews from: {reviewers}")
             reviewer_args = []
             for r in reviewers:
                 reviewer_args.extend(["--reviewer", r])
-            subprocess.run(["gh", "pr", "edit"] + reviewer_args, cwd=self.repo_path, capture_output=True)
-            
-        logger.info("Successfully transitioned outcome to 'Outcome as a Service' completion queue.")
+            subprocess.run(
+                ["gh", "pr", "edit"] + reviewer_args,
+                cwd=self.repo_path,
+                capture_output=True,
+            )
+
+        logger.info(
+            "Successfully transitioned outcome to 'Outcome as a Service' completion queue."
+        )

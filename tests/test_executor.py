@@ -7,16 +7,16 @@ import time
 
 import pytest
 
-from proxilion_build.errors import ExecutionError, LLMClientError
-from proxilion_build.executor import (
+from codelicious.errors import ExecutionError, LLMClientError
+from codelicious.executor import (
     _normalize_path,
     _parse_strict_format,
     execute_fix,
     execute_task,
     parse_llm_response,
 )
-from proxilion_build.planner import Task
-from proxilion_build.sandbox import Sandbox
+from codelicious.planner import Task
+from codelicious.sandbox import Sandbox
 
 
 def _make_task(

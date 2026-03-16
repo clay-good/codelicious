@@ -78,7 +78,9 @@ _SENSITIVE_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
 _REDACTED: str = "***REDACTED***"
 
 LOG_FORMAT: str = "{asctime} [{levelname}] {name}.{funcName}: {message}"
-VERBOSE_LOG_FORMAT: str = "{asctime} [{levelname}] {name}.{funcName}:{lineno}: {message}"
+VERBOSE_LOG_FORMAT: str = (
+    "{asctime} [{levelname}] {name}.{funcName}:{lineno}: {message}"
+)
 
 
 def sanitize_message(message: str) -> str:
@@ -113,7 +115,8 @@ class SanitizingFilter(logging.Filter):
                 }
             elif isinstance(record.args, tuple):
                 record.args = tuple(
-                    sanitize_message(str(a)) if isinstance(a, str) else a for a in record.args
+                    sanitize_message(str(a)) if isinstance(a, str) else a
+                    for a in record.args
                 )
         return True
 

@@ -6,13 +6,13 @@ import pathlib
 
 import pytest
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     EmptySpecError,
     FileEncodingError,
     FileTooLargeError,
     SpecFileNotFoundError,
 )
-from proxilion_build.parser import Section, parse_spec
+from codelicious.parser import Section, parse_spec
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
@@ -271,10 +271,10 @@ def test_parse_spec_null_bytes_in_content(tmp_path: pathlib.Path) -> None:
         # If it succeeds, sections must be a list
         assert isinstance(sections, list)
     except Exception as exc:
-        # Any exception raised must be a ProxilionBuildError subclass (no bare exceptions)
-        from proxilion_build.errors import ProxilionBuildError
+        # Any exception raised must be a CodeliciousError subclass (no bare exceptions)
+        from codelicious.errors import CodeliciousError
 
-        assert isinstance(exc, ProxilionBuildError), f"Unexpected exception type: {type(exc)}"
+        assert isinstance(exc, CodeliciousError), f"Unexpected exception type: {type(exc)}"
 
 
 def test_parse_spec_extremely_long_line(tmp_path: pathlib.Path) -> None:

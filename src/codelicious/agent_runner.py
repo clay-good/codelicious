@@ -174,7 +174,9 @@ def _check_agent_errors(
         returncode,
         stderr_text[:500],
     )
-    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
+    raise CodeliciousError(
+        f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}"
+    )
 
 
 def _parse_agent_output(
@@ -322,10 +324,14 @@ def run_agent(
         )
 
     # Build command using helper
-    cmd = _build_agent_command(prompt, project_root, config, claude_bin, resume_session_id)
+    cmd = _build_agent_command(
+        prompt, project_root, config, claude_bin, resume_session_id
+    )
 
     timeout_s_raw = getattr(config, "agent_timeout_s", 1800)
-    timeout_s: float = float(timeout_s_raw) if isinstance(timeout_s_raw, (int, float)) else 1800
+    timeout_s: float = (
+        float(timeout_s_raw) if isinstance(timeout_s_raw, (int, float)) else 1800
+    )
 
     model = getattr(config, "model", "")
     effort = getattr(config, "effort", "")
@@ -382,8 +388,12 @@ def run_agent(
         finally:
             stdout_queue.put(None)  # Signal EOF
 
-    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True, name="stderr-drainer")
-    stdout_thread = threading.Thread(target=_drain_stdout, daemon=True, name="stdout-drainer")
+    stderr_thread = threading.Thread(
+        target=_drain_stderr, daemon=True, name="stderr-drainer"
+    )
+    stdout_thread = threading.Thread(
+        target=_drain_stdout, daemon=True, name="stdout-drainer"
+    )
     stderr_thread.start()
     stdout_thread.start()
 

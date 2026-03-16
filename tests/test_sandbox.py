@@ -7,14 +7,14 @@ import unittest.mock
 
 import pytest
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     DeniedPathError,
     DisallowedExtensionError,
     FileCountLimitError,
     FileSizeLimitError,
     PathTraversalError,
 )
-from proxilion_build.sandbox import Sandbox
+from codelicious.sandbox import Sandbox
 
 
 @pytest.fixture
@@ -307,7 +307,7 @@ def test_write_file_overwrites_existing_file(sandbox: Sandbox, tmp_path: pathlib
 
 def test_file_size_exactly_at_limit_passes(tmp_path: pathlib.Path) -> None:
     """Content exactly at max_file_size is accepted."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     limit = 100
     sb = Sandbox(tmp_path, max_file_size=limit)
@@ -318,7 +318,7 @@ def test_file_size_exactly_at_limit_passes(tmp_path: pathlib.Path) -> None:
 
 def test_file_size_one_over_limit_fails(tmp_path: pathlib.Path) -> None:
     """Content one byte over max_file_size is rejected."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     limit = 100
     sb = Sandbox(tmp_path, max_file_size=limit)
@@ -329,7 +329,7 @@ def test_file_size_one_over_limit_fails(tmp_path: pathlib.Path) -> None:
 
 def test_file_count_exactly_at_limit_passes(tmp_path: pathlib.Path) -> None:
     """Writing exactly max_file_count files succeeds."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     limit = 3
     sb = Sandbox(tmp_path, max_file_count=limit)
@@ -342,7 +342,7 @@ def test_file_count_exactly_at_limit_passes(tmp_path: pathlib.Path) -> None:
 
 def test_file_count_one_over_limit_fails(tmp_path: pathlib.Path) -> None:
     """Writing one more than max_file_count is rejected."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     limit = 3
     sb = Sandbox(tmp_path, max_file_count=limit)
@@ -354,7 +354,7 @@ def test_file_count_one_over_limit_fails(tmp_path: pathlib.Path) -> None:
 
 def test_overwrite_existing_file_does_not_increment_count(tmp_path: pathlib.Path) -> None:
     """Overwriting an existing file is allowed when the limit has not been reached."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     # Use limit=3 so there is headroom to overwrite without hitting the ceiling
     limit = 3
@@ -368,7 +368,7 @@ def test_overwrite_existing_file_does_not_increment_count(tmp_path: pathlib.Path
 
 def test_write_empty_content_succeeds(tmp_path: pathlib.Path) -> None:
     """Writing an empty string to a new file succeeds."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     sb.write_file("empty.py", "")
@@ -380,7 +380,7 @@ def test_write_empty_content_succeeds(tmp_path: pathlib.Path) -> None:
 
 def test_resolve_path_double_dot_in_middle(tmp_path: pathlib.Path) -> None:
     """'src/../etc/passwd' resolves and is rejected as a traversal."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     with pytest.raises(PathTraversalError):
@@ -389,7 +389,7 @@ def test_resolve_path_double_dot_in_middle(tmp_path: pathlib.Path) -> None:
 
 def test_resolve_path_encoded_dot_dot(tmp_path: pathlib.Path) -> None:
     """URL-encoded traversal '..%2fetc' is treated as a literal path component."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     # The path component "..%2fetc" is not a traversal (% is literal)
@@ -405,7 +405,7 @@ def test_resolve_path_encoded_dot_dot(tmp_path: pathlib.Path) -> None:
 
 def test_resolve_path_unicode_slash(tmp_path: pathlib.Path) -> None:
     """Unicode fullwidth solidus does not bypass path resolution."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     # '\uff0f' is a unicode slash lookalike — should be treated as a normal char
@@ -419,7 +419,7 @@ def test_resolve_path_unicode_slash(tmp_path: pathlib.Path) -> None:
 
 def test_resolve_path_trailing_slash(tmp_path: pathlib.Path) -> None:
     """A path with a trailing slash resolves to a path inside the sandbox."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     resolved = sb.resolve_path("src/")
@@ -428,7 +428,7 @@ def test_resolve_path_trailing_slash(tmp_path: pathlib.Path) -> None:
 
 def test_validate_write_very_long_path(tmp_path: pathlib.Path) -> None:
     """A path component longer than 255 characters is handled without crashing."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     long_name = "a" * 260 + ".py"
@@ -441,7 +441,7 @@ def test_validate_write_very_long_path(tmp_path: pathlib.Path) -> None:
 
 def test_validate_write_hidden_file_allowed(tmp_path: pathlib.Path) -> None:
     """A hidden file like '.gitignore' in ALLOWED_EXACT_NAMES is accepted."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     sb.write_file(".gitignore", "*.pyc")
@@ -453,7 +453,7 @@ def test_validate_write_hidden_file_allowed(tmp_path: pathlib.Path) -> None:
 
 def test_write_file_rejects_symlink_target(tmp_path: pathlib.Path) -> None:
     """Writing through a symlink to a different location is rejected."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     # Create the target file first
@@ -469,7 +469,7 @@ def test_write_file_rejects_symlink_target(tmp_path: pathlib.Path) -> None:
 
 def test_write_file_cleans_up_temp_on_error(tmp_path: pathlib.Path) -> None:
     """Temp file is cleaned up when os.replace raises OSError."""
-    from proxilion_build.sandbox import Sandbox
+    from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     temp_files_before = list(tmp_path.glob("*.tmp"))

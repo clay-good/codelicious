@@ -41,7 +41,7 @@ class ClaudeCodeEngine(BuildEngine):
         5. REFLECT  — optional quality review
         6. PR       — push + create pull request
         """
-        from codelicious.agent_runner import run_agent, AgentResult
+        from codelicious.agent_runner import run_agent
         from codelicious.scaffolder import scaffold, scaffold_claude_dir
         from codelicious.prompts import (
             AGENT_BUILD_SPEC,
