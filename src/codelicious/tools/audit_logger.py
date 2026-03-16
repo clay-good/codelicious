@@ -1,6 +1,7 @@
 import json
 import logging
 import datetime
+from enum import Enum
 from pathlib import Path
 
 # Provide a specifically colored console logger for visibility
@@ -17,17 +18,53 @@ if not console_logger.handlers:
     ch.setFormatter(formatter)
     console_logger.addHandler(ch)
 
+
+class SecurityEvent(str, Enum):
+    """Security event categories for audit logging.
+
+    These events are logged to both audit.log and security.log for
+    easy review of security-relevant actions.
+    """
+    COMMAND_DENIED = "COMMAND_DENIED"
+    METACHAR_BLOCKED = "METACHAR_BLOCKED"
+    PATH_TRAVERSAL_BLOCKED = "PATH_TRAVERSAL_BLOCKED"
+    EXTENSION_BLOCKED = "EXTENSION_BLOCKED"
+    SELF_MODIFICATION_BLOCKED = "SELF_MODIFICATION_BLOCKED"
+    FILE_SIZE_EXCEEDED = "FILE_SIZE_EXCEEDED"
+    FILE_COUNT_EXCEEDED = "FILE_COUNT_EXCEEDED"
+    SYMLINK_ESCAPE_BLOCKED = "SYMLINK_ESCAPE_BLOCKED"
+    SECURITY_PATTERN_DETECTED = "SECURITY_PATTERN_DETECTED"
+    DENIED_PATH_WRITE = "DENIED_PATH_WRITE"
+
+
 class AuditLogger:
     """
-    Guarantees that 100% of LLM actions, intents, and sandbox interceptions 
+    Guarantees that 100% of LLM actions, intents, and sandbox interceptions
     are verbosely printed and appended to .codelicious/audit.log.
+
+    Security events are also logged to a dedicated .codelicious/security.log
+    for easy review of security-relevant actions.
     """
     def __init__(self, repo_path: Path):
         self.log_file = repo_path / ".codelicious" / "audit.log"
+        self.security_log_file = repo_path / ".codelicious" / "security.log"
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        # Touch file to ensure it exists initially
+        # Touch files to ensure they exist initially
         if not self.log_file.exists():
             self.log_file.touch()
+        if not self.security_log_file.exists():
+            self.security_log_file.touch()
+        # Track current iteration for security event logging
+        self._current_iteration: int = 0
+        self._current_tool: str = ""
+
+    def set_iteration(self, iteration: int) -> None:
+        """Set the current iteration number for security event logging."""
+        self._current_iteration = iteration
+
+    def set_current_tool(self, tool_name: str) -> None:
+        """Set the current tool name for security event logging."""
+        self._current_tool = tool_name
 
     def _write_to_file(self, level: str, tag: str, message: str):
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -37,6 +74,64 @@ class AuditLogger:
         except Exception as e:
             # Fallback if logging fails, at least print to stdout
             print(f"FATAL: Audit log write failed: {e}")
+
+    def _write_to_security_log(self, event: SecurityEvent, message: str) -> None:
+        """Write a security event to both audit.log and security.log.
+
+        Security log format:
+        2026-03-15T15:06:23Z [SECURITY] EVENT_NAME: message (iteration N, tool: tool_name)
+        """
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        context = f"iteration {self._current_iteration}, tool: {self._current_tool or 'unknown'}"
+        full_message = f"{message} ({context})"
+        log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
+
+        # Write to audit.log
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(log_line)
+        except Exception as e:
+            print(f"FATAL: Audit log write failed: {e}")
+
+        # Write to security.log (security events only)
+        try:
+            with open(self.security_log_file, "a", encoding="utf-8") as f:
+                f.write(log_line)
+        except Exception as e:
+            print(f"FATAL: Security log write failed: {e}")
+
+        # Also log to console with warning level for visibility
+        console_logger.warning(f"[SECURITY] {event.value}: {full_message}")
+
+    def log_security_event(
+        self,
+        event: SecurityEvent,
+        message: str,
+        *,
+        iteration: int | None = None,
+        tool: str | None = None,
+    ) -> None:
+        """Log a security event to audit.log and security.log.
+
+        Args:
+            event: The type of security event.
+            message: Description of what happened.
+            iteration: Override the current iteration number (optional).
+            tool: Override the current tool name (optional).
+        """
+        # Allow overriding iteration and tool for specific events
+        old_iteration = self._current_iteration
+        old_tool = self._current_tool
+        if iteration is not None:
+            self._current_iteration = iteration
+        if tool is not None:
+            self._current_tool = tool
+
+        self._write_to_security_log(event, message)
+
+        # Restore original values
+        self._current_iteration = old_iteration
+        self._current_tool = old_tool
 
     def log_tool_intent(self, tool_name: str, kwargs: dict):
         """Called immediately when the LLM outputs a tool call JSON, before execution."""
@@ -60,7 +155,17 @@ class AuditLogger:
             console_logger.error(msg)
             self._write_to_file("ERROR", "TOOL_FAILED", msg)
 
-    def log_sandbox_violation(self, detail: str):
-        msg = f"SANDBOX TRAP: {detail}"
-        console_logger.warning(msg)
-        self._write_to_file("WARN", "SECURITY_BOUNDARY", msg)
+    def log_sandbox_violation(self, detail: str, event_type: SecurityEvent | None = None):
+        """Log a sandbox violation as a security event.
+
+        Args:
+            detail: Description of the violation.
+            event_type: Specific security event type. If None, uses a generic format.
+        """
+        if event_type is not None:
+            self.log_security_event(event_type, detail)
+        else:
+            # Fallback for legacy code that doesn't specify event type
+            msg = f"SANDBOX TRAP: {detail}"
+            console_logger.warning(msg)
+            self._write_to_file("WARN", "SECURITY_BOUNDARY", msg)
