@@ -18,6 +18,7 @@ from codelicious.engines.base import BuildResult
 @pytest.fixture
 def mock_config():
     """Create a minimal mock config object."""
+
     class MockConfig:
         model = ""
         effort = ""
@@ -74,9 +75,7 @@ class TestBuildResultSuccess:
 
             # Also mock the verifier to avoid ImportError
             with mock.patch("codelicious.verifier.verify") as mock_verify:
-                mock_verify.return_value = mock.MagicMock(
-                    all_passed=True, checks=[]
-                )
+                mock_verify.return_value = mock.MagicMock(all_passed=True, checks=[])
 
                 result = engine.run_build_cycle(
                     repo_path=tmp_path,

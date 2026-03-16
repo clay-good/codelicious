@@ -11,9 +11,9 @@
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 260 tests passed in 3.45s |
-| Lint | PASS | All checks passed (ruff check) |
-| Format | PASS | Files unchanged (already formatted) |
+| Tests | PASS | 260 tests passed in 3.32s |
+| Lint | PASS | All checks passed (ruff check --select=F,W) |
+| Format | PASS | 46 files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection |
 
 ---
@@ -36,7 +36,7 @@
 | P1-10 | `planner.py:378-432` | Path traversal bypass - double-decoding doesn't catch triple-encoding |
 | P1-11 | `agent_runner.py:356-365` | Command injection risk - prompt passed to subprocess without validation |
 
-### Important (P2) - 13 Issues
+### Important (P2) - 14 Issues
 
 | ID | Location | Description |
 |----|----------|-------------|
@@ -53,6 +53,7 @@
 | P2-11 | `executor.py:256-260` | Regex catastrophic backtracking - malicious backticks could freeze parser |
 | P2-12 | `build_logger.py:163-178` | Race in file creation - permissions set after file opened |
 | P2-13 | `logger.py:25-67` | Incomplete secret redaction - missing SSH keys, webhooks, etc. |
+| P2-14 | `audit_logger.py:8-10` | Global log level mutation - addLevelName() affects all loggers, breaks non-TTY output |
 
 ### Minor (P3) - 18 Issues
 

@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codelicious"
 version = "1.0.0"
-description = "Autonomous code generation engine powered by Open Weight HuggingFace models."
-requires-python = ">=3.9"
+description = "Headless autonomous developer CLI. Write specs, get PRs."
+requires-python = ">=3.10"
 authors = [
-    {name = "Codelicious Team"},
+    {name = "Clay Good"},
 ]
 dependencies = []
 
