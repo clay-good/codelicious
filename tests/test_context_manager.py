@@ -54,7 +54,9 @@ def test_available_tokens_default() -> None:
 
 
 def test_available_tokens_with_system() -> None:
-    b = ContextBudget(max_tokens=50_000, response_reservation=2000, system_prompt_tokens=1000)
+    b = ContextBudget(
+        max_tokens=50_000, response_reservation=2000, system_prompt_tokens=1000
+    )
     assert b.available_tokens == 50_000 - 2000 - 1000
 
 
@@ -106,7 +108,9 @@ def test_build_task_prompt_small_context() -> None:
 
 def test_build_task_prompt_includes_completed_tasks() -> None:
     task = FakeTask()
-    completed = [FakeTask(title=f"Task {i}", description=f"Did thing {i}") for i in range(5)]
+    completed = [
+        FakeTask(title=f"Task {i}", description=f"Did thing {i}") for i in range(5)
+    ]
     budget = ContextBudget(max_tokens=100_000)
 
     _, user_out = build_task_prompt(
@@ -239,7 +243,9 @@ def test_system_prompt_exceeds_window_raises() -> None:
     # Force available_tokens to 0 by making system_prompt_tokens = max_tokens
     budget.system_prompt_tokens = budget.max_tokens
 
-    with pytest.raises(ContextBudgetError, match="System prompt exceeds context window"):
+    with pytest.raises(
+        ContextBudgetError, match="System prompt exceeds context window"
+    ):
         build_task_prompt(
             task=task,
             system_prompt=huge_system,
@@ -282,7 +288,9 @@ def test_extreme_truncation_logged(caplog: pytest.LogCaptureFixture) -> None:
             task=task,
             system_prompt="s",
             existing_file_contents={},
-            completed_tasks=[FakeTask(title=f"T{i}", description="y" * 5000) for i in range(5)],
+            completed_tasks=[
+                FakeTask(title=f"T{i}", description="y" * 5000) for i in range(5)
+            ],
             project_file_tree=["file.py"] * 200,
             budget=budget,
         )

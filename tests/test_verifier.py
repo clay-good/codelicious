@@ -67,7 +67,9 @@ def test_check_security_finds_exec(tmp_path: pathlib.Path) -> None:
 def test_check_security_finds_hardcoded_secret(
     tmp_path: pathlib.Path,
 ) -> None:
-    (tmp_path / "secrets.py").write_text("api_key = 'sk-abcdefghij0123456789'\n", encoding="utf-8")
+    (tmp_path / "secrets.py").write_text(
+        "api_key = 'sk-abcdefghij0123456789'\n", encoding="utf-8"
+    )
     result = check_security(tmp_path)
     assert result.passed is False
     assert "secret" in result.details.lower() or "sk-" in result.details
@@ -77,7 +79,9 @@ def test_check_security_finds_hardcoded_secret(
 
 
 def test_check_security_passes_clean(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "clean.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (tmp_path / "clean.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
     result = check_security(tmp_path)
     assert result.passed is True
 
@@ -261,14 +265,18 @@ def test_check_security_finds_os_system(tmp_path: pathlib.Path) -> None:
 
 
 def test_check_security_finds_dunder_import(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "danger.py").write_text("__import__('os').system('ls')\n", encoding="utf-8")
+    (tmp_path / "danger.py").write_text(
+        "__import__('os').system('ls')\n", encoding="utf-8"
+    )
     result = check_security(tmp_path)
     assert result.passed is False
     assert "__import__(" in result.details
 
 
 def test_check_security_finds_shell_true(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "danger.py").write_text("subprocess.run('cmd', shell=True)\n", encoding="utf-8")
+    (tmp_path / "danger.py").write_text(
+        "subprocess.run('cmd', shell=True)\n", encoding="utf-8"
+    )
     result = check_security(tmp_path)
     assert result.passed is False
     assert "shell=True" in result.details
@@ -481,7 +489,9 @@ def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     with patch("subprocess.run", side_effect=FileNotFoundError("pytest")):
-        result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
+        result = check_coverage(
+            tmp_path, language="python", threshold=80, tool_available=True
+        )
     assert result.passed is True
     assert "skipped" in result.message.lower()
 
@@ -493,7 +503,9 @@ def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pytest", 180)):
-        result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
+        result = check_coverage(
+            tmp_path, language="python", threshold=80, tool_available=True
+        )
     assert result.passed is False
     assert "timed out" in result.message.lower()
 
@@ -512,7 +524,9 @@ def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns passed=False when it times out."""
     from codelicious.verifier import check_pip_audit
 
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
+    with patch(
+        "subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)
+    ):
         result = check_pip_audit(tmp_path, tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -610,7 +624,9 @@ def test_security_scan_mixed_triple_quotes(tmp_path: pathlib.Path) -> None:
     assert result.passed is True
 
 
-def test_security_scan_eval_in_docstring_no_false_positive(tmp_path: pathlib.Path) -> None:
+def test_security_scan_eval_in_docstring_no_false_positive(
+    tmp_path: pathlib.Path,
+) -> None:
     """eval() inside a docstring is not flagged."""
     code = (
         "def safe_function():\n"

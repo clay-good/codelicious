@@ -131,7 +131,9 @@ def test_validate_rejects_when_file_count_exhausted(
 # -- write_file ------------------------------------------------------------
 
 
-def test_write_file_creates_with_correct_content(sandbox: Sandbox, tmp_path: pathlib.Path) -> None:
+def test_write_file_creates_with_correct_content(
+    sandbox: Sandbox, tmp_path: pathlib.Path
+) -> None:
     sandbox.write_file("hello.py", "print('hello')")
     result = (tmp_path / "hello.py").read_text(encoding="utf-8")
     assert result == "print('hello')"
@@ -143,7 +145,9 @@ def test_write_file_dry_run_does_not_create(tmp_path: pathlib.Path) -> None:
     assert not (tmp_path / "nope.py").exists()
 
 
-def test_write_file_creates_parent_directories(sandbox: Sandbox, tmp_path: pathlib.Path) -> None:
+def test_write_file_creates_parent_directories(
+    sandbox: Sandbox, tmp_path: pathlib.Path
+) -> None:
     sandbox.write_file("deep/nested/dir/file.py", "content")
     assert (tmp_path / "deep" / "nested" / "dir" / "file.py").exists()
 
@@ -151,7 +155,9 @@ def test_write_file_creates_parent_directories(sandbox: Sandbox, tmp_path: pathl
 # -- read_file -------------------------------------------------------------
 
 
-def test_read_file_returns_correct_content(sandbox: Sandbox, tmp_path: pathlib.Path) -> None:
+def test_read_file_returns_correct_content(
+    sandbox: Sandbox, tmp_path: pathlib.Path
+) -> None:
     target = tmp_path / "readme.md"
     target.write_text("hello world", encoding="utf-8")
     assert sandbox.read_file("readme.md") == "hello world"
@@ -188,7 +194,9 @@ def test_list_files_excludes_denied(sandbox: Sandbox, tmp_path: pathlib.Path) ->
 # -- symlink escape --------------------------------------------------------
 
 
-def test_symlink_outside_project_rejected(sandbox: Sandbox, tmp_path: pathlib.Path) -> None:
+def test_symlink_outside_project_rejected(
+    sandbox: Sandbox, tmp_path: pathlib.Path
+) -> None:
     outside = tmp_path.parent / "outside_file.txt"
     outside.write_text("escaped", encoding="utf-8")
     try:
@@ -295,7 +303,9 @@ def test_write_file_cleanup_failure_logged(
     assert any("clean up temp file" in r.message for r in caplog.records)
 
 
-def test_write_file_overwrites_existing_file(sandbox: Sandbox, tmp_path: pathlib.Path) -> None:
+def test_write_file_overwrites_existing_file(
+    sandbox: Sandbox, tmp_path: pathlib.Path
+) -> None:
     sandbox.write_file("overwrite.py", "version 1")
     sandbox.write_file("overwrite.py", "version 2")
     content = (tmp_path / "overwrite.py").read_text(encoding="utf-8")
@@ -352,7 +362,9 @@ def test_file_count_one_over_limit_fails(tmp_path: pathlib.Path) -> None:
         sb.write_file("one_more.py", "x = 1")
 
 
-def test_overwrite_existing_file_does_not_increment_count(tmp_path: pathlib.Path) -> None:
+def test_overwrite_existing_file_does_not_increment_count(
+    tmp_path: pathlib.Path,
+) -> None:
     """Overwriting an existing file is allowed when the limit has not been reached."""
     from codelicious.sandbox import Sandbox
 

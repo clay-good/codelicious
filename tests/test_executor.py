@@ -330,9 +330,7 @@ def test_backslash_paths_normalized() -> None:
 
 def test_parse_response_with_nested_code_blocks() -> None:
     """Nested markdown code blocks inside file content are handled without crash."""
-    response = (
-        '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
-    )
+    response = '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
     # May succeed or return empty; must not raise an unhandled exception
     result = parse_llm_response(response, expected_files=["main.py"])
     assert isinstance(result, list)
@@ -361,9 +359,7 @@ def test_parse_response_binary_content() -> None:
 def test_parse_response_conflicting_formats() -> None:
     """A response mixing strict and markdown formats is parsed deterministically."""
     # Strict format block takes priority
-    response = (
-        "--- FILE: strict.py ---\nx = 1\n--- END FILE ---\n```python\n# markdown.py\ny = 2\n```\n"
-    )
+    response = "--- FILE: strict.py ---\nx = 1\n--- END FILE ---\n```python\n# markdown.py\ny = 2\n```\n"
     result = parse_llm_response(response)
     assert isinstance(result, list)
     assert len(result) >= 1
@@ -554,7 +550,9 @@ def test_write_files_normalizes_path_comparison(tmp_path: pathlib.Path) -> None:
     assert "src/main.py" in result.files_written
     assert result.skipped_count == 0
     # Verify file was actually written
-    assert (tmp_path / "src" / "main.py").read_text(encoding="utf-8") == "print('hello')"
+    assert (tmp_path / "src" / "main.py").read_text(
+        encoding="utf-8"
+    ) == "print('hello')"
 
 
 # -- spec-v14 Phase 4: Executor response parsing backtracking -----------------

@@ -15,7 +15,9 @@ from codelicious.scaffolder import (
 # -- scaffold_claude_dir creates full directory structure -------------------
 
 
-def test_scaffold_claude_dir_creates_directory_structure(tmp_path: pathlib.Path) -> None:
+def test_scaffold_claude_dir_creates_directory_structure(
+    tmp_path: pathlib.Path,
+) -> None:
     files = scaffold_claude_dir(tmp_path)
     assert len(files) >= 11
     # Check key files exist

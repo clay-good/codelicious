@@ -206,11 +206,11 @@ def test_crlf_line_endings_parsed_correctly(tmp_path: pathlib.Path) -> None:
         assert s_lf.level == s_crlf.level
 
 
-def test_heading_inside_code_block_not_treated_as_heading(tmp_path: pathlib.Path) -> None:
+def test_heading_inside_code_block_not_treated_as_heading(
+    tmp_path: pathlib.Path,
+) -> None:
     """A # line inside a fenced code block is body text, not a new section."""
-    content = (
-        "# Real Heading\nSome intro.\n```\n# This is code, not a heading\nx = 1\n```\nMore body.\n"
-    )
+    content = "# Real Heading\nSome intro.\n```\n# This is code, not a heading\nx = 1\n```\nMore body.\n"
     f = tmp_path / "spec.md"
     f.write_text(content, encoding="utf-8")
 
@@ -274,7 +274,9 @@ def test_parse_spec_null_bytes_in_content(tmp_path: pathlib.Path) -> None:
         # Any exception raised must be a CodeliciousError subclass (no bare exceptions)
         from codelicious.errors import CodeliciousError
 
-        assert isinstance(exc, CodeliciousError), f"Unexpected exception type: {type(exc)}"
+        assert isinstance(exc, CodeliciousError), (
+            f"Unexpected exception type: {type(exc)}"
+        )
 
 
 def test_parse_spec_extremely_long_line(tmp_path: pathlib.Path) -> None:
