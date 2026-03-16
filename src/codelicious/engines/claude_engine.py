@@ -231,7 +231,7 @@ class ClaudeCodeEngine(BuildEngine):
         build_complete = check_build_complete(repo_path)
 
         return BuildResult(
-            success=build_complete or True,  # Success if we got this far
+            success=build_complete,
             message=f"Build cycle complete in {elapsed:.1f}s",
             session_id=session_id,
             elapsed_s=elapsed,
