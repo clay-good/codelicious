@@ -2,18 +2,18 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-15
-**Current Spec:** spec-07 (Sandbox Security Hardening)
-**Phase:** COMPLETE - All phases and acceptance criteria done
-**Status:** VERIFIED GREEN ✓ (Pass 3/3) - COMPLETE + SECURITY REVIEW
+**Last Updated:** 2026-03-16
+**Current Spec:** spec-08 (Hardening, Reliability, and Code Quality)
+**Phase:** Phase 1 COMPLETE - BuildResult.success bug fixed
+**Status:** VERIFIED GREEN ✓ - 260 tests passing
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 256 tests passed in 14.32s |
+| Tests | PASS | 260 tests passed in 3.45s |
 | Lint | PASS | All checks passed (ruff check) |
-| Format | PASS | 45 files unchanged (already formatted) |
+| Format | PASS | Files unchanged (already formatted) |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection |
 
 ---
@@ -74,6 +74,25 @@ Various code quality, documentation, and minor security hardening issues across 
 
 ## Completed Tasks
 
+### spec-08: Hardening, Reliability, and Code Quality (IN PROGRESS)
+
+- [x] Phase 1: Fix BuildResult.success Always-True Bug (claude_engine.py)
+- [ ] Phase 2: Implement CacheManager.flush_cache
+- [ ] Phase 3: Unify Metacharacter Constants and Add Interpreter Denylist
+- [ ] Phase 4: Unify FSTooling Write Path Through Sandbox
+- [ ] Phase 5: Fix Git Staging to Use Explicit File Lists
+- [ ] Phase 6: Bound Message History in HuggingFace Engine
+- [ ] Phase 7: Fix Logging to Use Percent-Style Formatting Everywhere
+- [ ] Phase 8: Fix audit_logger.py Global Log Level Mutation
+- [ ] Phase 9: Fix conftest.py Stale proxilion-build References
+- [ ] Phase 10: Sanitize LLM API Error Bodies in Exception Messages
+- [ ] Phase 11: Cap RAG Engine top_k and Add SQLite Index
+- [ ] Phase 12: Declare Dev Dependencies in pyproject.toml
+- [ ] Phase 13: Fix BuildSession.__exit__ Success Reporting
+- [ ] Phase 14: Add Missing .gitignore Entries
+- [ ] Phase 15: Comprehensive Test Suite Expansion and Verification
+- [ ] Phase 16: Update Documentation and State
+
 ### spec-07: Sandbox Security Hardening (COMPLETE ✓)
 
 - [x] Phase 1: Denylist Command Execution Model (command_runner.py)
@@ -95,6 +114,7 @@ Various code quality, documentation, and minor security hardening issues across 
 | test_parser.py | ~20 | Spec parsing |
 | test_context_manager.py | ~20 | Context budget management |
 | test_scaffolder*.py | ~30 | Claude.md scaffolding |
+| test_claude_engine.py | 4 | BuildResult.success correctness (spec-08 Phase 1) |
 
 ---
 
