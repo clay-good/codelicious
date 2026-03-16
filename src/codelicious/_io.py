@@ -1,4 +1,4 @@
-"""Shared I/O utilities for proxilion-build."""
+"""Shared I/O utilities for codelicious."""
 
 from __future__ import annotations
 

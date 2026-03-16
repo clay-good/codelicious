@@ -8,8 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from proxilion_build.context_manager import ContextBudget, build_fix_prompt, build_task_prompt
-from proxilion_build.errors import (
+from codelicious.context_manager import ContextBudget, build_fix_prompt, build_task_prompt
+from codelicious.errors import (
     ExecutionError,
     LLMAuthenticationError,
     LLMClientError,
@@ -19,12 +19,12 @@ from proxilion_build.errors import (
     LLMTimeoutError,
     SandboxViolationError,
 )
-from proxilion_build.planner import Task
-from proxilion_build.sandbox import Sandbox
+from codelicious.planner import Task
+from codelicious.sandbox import Sandbox
 
 __all__ = ["ExecutionResult", "execute_fix", "execute_task", "parse_llm_response"]
 
-logger = logging.getLogger("proxilion_build.executor")
+logger = logging.getLogger("codelicious.executor")
 
 _CODE_SYSTEM_PROMPT: str = """\
 You are an expert software developer. Generate code for the given task.
@@ -67,7 +67,7 @@ def _normalize_file_path(raw: str) -> str:
 
     Returns a clean relative path string.
     """
-    from proxilion_build.errors import SandboxViolationError
+    from codelicious.errors import SandboxViolationError
 
     path = raw.strip().replace("\\", "/")
     # Collapse multiple slashes

@@ -1,6 +1,6 @@
 """JSON-Lines progress event stream for external monitoring.
 
-Writes machine-parseable events to ``.proxilion-build/progress.jsonl``
+Writes machine-parseable events to ``.codelicious/progress.jsonl``
 in the project directory. This is the integration point for external
 tooling that wants to monitor build progress.
 """
@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timezone
 from typing import IO, Any
 
-logger = logging.getLogger("proxilion_build.progress")
+logger = logging.getLogger("codelicious.progress")
 
 __all__ = ["ProgressReporter"]
 

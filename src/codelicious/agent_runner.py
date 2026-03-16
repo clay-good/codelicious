@@ -21,11 +21,11 @@ import time
 from dataclasses import dataclass
 from typing import IO
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     AgentTimeout,
     ClaudeAuthError,
     ClaudeRateLimitError,
-    ProxilionBuildError,
+    CodeliciousError,
 )
 
 __all__ = ["AgentResult", "run_agent"]
@@ -36,7 +36,7 @@ _THREAD_JOIN_TIMEOUT_S: int = 10  # Seconds to wait for background threads to ex
 _STDERR_SUMMARY_INTERVAL_S: float = 60.0  # Seconds between stderr summary log lines
 _FINAL_WAIT_TIMEOUT_S: int = 30  # Seconds for final proc.wait() after loop
 
-logger = logging.getLogger("proxilion_build.agent_runner")
+logger = logging.getLogger("codelicious.agent_runner")
 
 
 @dataclass
@@ -129,7 +129,7 @@ def _check_agent_errors(
         If authentication failed.
     ClaudeRateLimitError
         If rate limit was hit.
-    ProxilionBuildError
+    CodeliciousError
         If process exited with non-zero code for other reasons.
     """
     if returncode == 0:
@@ -174,7 +174,7 @@ def _check_agent_errors(
         returncode,
         stderr_text[:500],
     )
-    raise ProxilionBuildError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
+    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
 
 
 def _parse_agent_output(
@@ -204,7 +204,7 @@ def _parse_agent_output(
         If authentication failed.
     ClaudeRateLimitError
         If rate limit was hit.
-    ProxilionBuildError
+    CodeliciousError
         If process exited with non-zero code for other reasons.
     """
     # Check for errors first
@@ -299,7 +299,7 @@ def run_agent(
     # Validate project root
     project_root = pathlib.Path(project_root).resolve()
     if not project_root.is_dir():
-        raise ProxilionBuildError(
+        raise CodeliciousError(
             f"Project root does not exist or is not a directory: {project_root}"
         )
 

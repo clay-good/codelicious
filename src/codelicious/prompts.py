@@ -1,4 +1,4 @@
-"""Agent prompt templates for proxilion-build.
+"""Agent prompt templates for codelicious.
 
 All prompt text used in agent mode lives in this module. No other module
 contains agent prompt strings. This separation makes prompts auditable,
@@ -35,7 +35,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 AGENT_BUILD_SPEC: str = """\
-You are proxilion-build, an autonomous build agent for {{project_name}}.
+You are codelicious, an autonomous build agent for {{project_name}}.
 
 ## Your mission
 
@@ -62,16 +62,16 @@ produces a commit MUST have a PR on GitHub.
 - Check `git log --oneline -20` to see what's already been done.
 - **If ALL tasks are `- [x]` (nothing left to do):**
   1. Update CLAUDE.md with any best practices you discovered.
-  2. Update .proxilion-build/STATE.md to reflect completion.
-  3. Write "DONE" to `.proxilion-build/BUILD_COMPLETE` and stop.
+  2. Update .codelicious/STATE.md to reflect completion.
+  3. Write "DONE" to `.codelicious/BUILD_COMPLETE` and stop.
 
 ### Step 3: Set up git branch
 
 - Run `git branch --show-current` to check your current branch.
 - If you're on main/master, create a feature branch:
-  `git checkout -b proxilion-build/<spec-name>`
-- If a `proxilion-build/*` branch already exists for this spec, check
-  it out: `git checkout proxilion-build/<spec-name>`
+  `git checkout -b codelicious/<spec-name>`
+- If a `codelicious/*` branch already exists for this spec, check
+  it out: `git checkout codelicious/<spec-name>`
 - Push to set upstream: `git push -u origin <branch-name>`
   If push fails, continue — commit locally and push later.
 
@@ -96,7 +96,7 @@ This is the critical step. Do ALL of these IN ORDER:
    ```
    gh pr create --draft --base main \
      --title "<concise title of what you're building>" \
-     --body "## Summary\n<what this PR does>\n\nBuilt by proxilion-build."
+     --body "## Summary\n<what this PR does>\n\nBuilt by codelicious."
    ```
 5. **If PR already exists**, your push already updated it — just confirm
    with `gh pr view --json url` and log the URL.
@@ -109,9 +109,9 @@ This is the critical step. Do ALL of these IN ORDER:
 ### Step 6: Mark progress
 
 - Mark the task done in the spec file: change `- [ ]` to `- [x]`.
-- Update .proxilion-build/STATE.md with current status.
+- Update .codelicious/STATE.md with current status.
 - Commit and push this progress update (the PR auto-updates).
-- Write "DONE" to `.proxilion-build/BUILD_COMPLETE`
+- Write "DONE" to `.codelicious/BUILD_COMPLETE`
 
 ## Rules
 
@@ -142,7 +142,7 @@ Branch: {{branch_name}}
 Run tests and lint. Fix all failures. When green, commit and push to the
 branch above. If no PR exists, create one with `gh pr create --draft`.
 
-Then write "DONE" to .proxilion-build/BUILD_COMPLETE
+Then write "DONE" to .codelicious/BUILD_COMPLETE
 """
 
 AGENT_REFLECT: str = """\
@@ -153,24 +153,24 @@ GUARDRAILS: Do NOT modify code. Read only.
 Use the **reviewer** agent to deep-review all modules in parallel. Add
 findings to STATE.md with severity (P1/P2/P3) and file:line citations.
 
-If solid, write "DONE" to .proxilion-build/BUILD_COMPLETE
+If solid, write "DONE" to .codelicious/BUILD_COMPLETE
 """
 
 AGENT_ANALYZE: str = """\
 Analyze {{project_name}} before building. Read-only — no code changes, no git.
 
 Use the **explorer** agent to map the codebase in parallel. Read specs,
-manifests, tests, and CLAUDE.md. Write .proxilion-build/STATE.md with:
+manifests, tests, and CLAUDE.md. Write .codelicious/STATE.md with:
 tech stack, test command, architecture, conventions, risks, and task list.
 
-When done, write "DONE" to .proxilion-build/BUILD_COMPLETE
+When done, write "DONE" to .codelicious/BUILD_COMPLETE
 """
 
 AGENT_DOCS: str = """\
 You are updating documentation for {{project_name}}.
 
 Sync all docs with the current code. Run /update-state. When accurate,
-write "DONE" to .proxilion-build/BUILD_COMPLETE
+write "DONE" to .codelicious/BUILD_COMPLETE
 """
 
 AGENT_CI_FIX: str = """\
@@ -183,14 +183,14 @@ Branch: {{branch_name}}
 
 Fix all failures. Run /verify-all. When green, commit the fix with a
 descriptive message and push to the branch. Then write "DONE" to
-.proxilion-build/BUILD_COMPLETE
+.codelicious/BUILD_COMPLETE
 """
 
 AGENT_VERIFY: str = """\
 Verify {{project_name}} is green (pass {{verify_pass}}/{{max_verify_passes}}).
 
 Run /verify-all. Fix every failure. If green, write "DONE" to
-.proxilion-build/BUILD_COMPLETE. If issues remain, document in STATE.md.
+.codelicious/BUILD_COMPLETE. If issues remain, document in STATE.md.
 """
 
 
@@ -207,7 +207,7 @@ def check_build_complete(project_root: pathlib.Path) -> bool:
     Tolerates case variations (DONE, Done, done) and trailing
     whitespace/punctuation from Claude.
     """
-    sentinel = project_root / ".proxilion-build" / _BUILD_COMPLETE_FILENAME
+    sentinel = project_root / ".codelicious" / _BUILD_COMPLETE_FILENAME
     try:
         content = sentinel.read_text(encoding="utf-8").strip().lower()
     except (FileNotFoundError, OSError):
@@ -217,7 +217,7 @@ def check_build_complete(project_root: pathlib.Path) -> bool:
 
 def clear_build_complete(project_root: pathlib.Path) -> None:
     """Remove the completion sentinel before a new build invocation."""
-    sentinel = project_root / ".proxilion-build" / _BUILD_COMPLETE_FILENAME
+    sentinel = project_root / ".codelicious" / _BUILD_COMPLETE_FILENAME
     if sentinel.is_file():
         sentinel.unlink()
 
@@ -262,13 +262,13 @@ PHASE_0_TOOLS: list[str] = [
 
 
 PHASE_0_INIT: str = """\
-You are a context initialization agent for proxilion-build. You are exploring
+You are a context initialization agent for codelicious. You are exploring
 the project {{project_name}}.
 
 RULES:
 - You MUST NOT write or modify any source code files.
 - You MUST NOT run tests or execute any code.
-- You may only read files, search the codebase, and write .proxilion-build/STATE.md.
+- You may only read files, search the codebase, and write .codelicious/STATE.md.
 
 INSTRUCTIONS:
 
@@ -287,7 +287,7 @@ INSTRUCTIONS:
 5. Read lockfiles and manifests to determine exact versions (package.json,
    pyproject.toml, Cargo.toml, go.mod, etc.). Never assume versions.
 
-6. Write .proxilion-build/STATE.md with ALL of the following sections:
+6. Write .codelicious/STATE.md with ALL of the following sections:
 
 ## Tech Stack
 Language version, runtime, framework, and key library versions sourced from
@@ -319,7 +319,7 @@ Cite specific files and line numbers where possible.
 
 
 PHASE_1_BUILD: str = """\
-You are a build agent for proxilion-build. Your job is to implement pending
+You are a build agent for codelicious. Your job is to implement pending
 tasks from the task list.
 
 CONTEXT:
@@ -331,14 +331,14 @@ CONTEXT:
 - Test command: {{test_command}}
 
 RULES:
-- Read .proxilion-build/STATE.md and CLAUDE.md in full before touching any file.
+- Read .codelicious/STATE.md and CLAUDE.md in full before touching any file.
 - Follow the brownfield protocol: read every existing file in the affected
   modules before writing anything. Never re-implement, duplicate, or delete
   working code.
 - Match existing naming conventions, code style, and structural patterns exactly.
 INSTRUCTIONS:
 
-1. Read .proxilion-build/STATE.md. Find the first task marked [ ] (pending).
+1. Read .codelicious/STATE.md. Find the first task marked [ ] (pending).
 
 2. Use TodoWrite to plan sub-steps for this task.
 
@@ -353,7 +353,7 @@ INSTRUCTIONS:
 5. Run the full test suite (use the command from "## How to Test" in STATE.md).
    Fix ALL test failures before proceeding.
 
-6. After all tests pass, update .proxilion-build/STATE.md:
+6. After all tests pass, update .codelicious/STATE.md:
    - Change the task marker from [ ] to [x].
    - Add a Notes: line under the task summarizing what was built.
    - Move the task entry to the ## Completed Tasks section.
@@ -370,7 +370,7 @@ INSTRUCTIONS:
 
 
 PHASE_2_REFLECT: str = """\
-You are a quality assurance agent for proxilion-build. Your job is to run a
+You are a quality assurance agent for codelicious. Your job is to run a
 systematic review of the codebase and identify gaps.
 
 CONTEXT:
@@ -382,7 +382,7 @@ CONTEXT:
 
 RULES:
 - You MUST NOT modify any source code or test files.
-- You may only read files and write to .proxilion-build/STATE.md.
+- You may only read files and write to .codelicious/STATE.md.
 
 INSTRUCTIONS:
 
@@ -404,7 +404,7 @@ For every finding:
 - Cite the specific file and line number.
 - Rate severity: P1 (blocking), P2 (correctness), P3 (quality).
 
-Add findings as new tasks to .proxilion-build/STATE.md in the ## Pending Tasks
+Add findings as new tasks to .codelicious/STATE.md in the ## Pending Tasks
 section using the format:
 ### [ ] Task: <descriptive name>
 Files: <file paths>
@@ -465,7 +465,7 @@ def extract_context(
     .. deprecated:: 3.0
         Not used by agent mode. Kept for backward compatibility.
     """
-    state_md = project_root / ".proxilion-build" / "STATE.md"
+    state_md = project_root / ".codelicious" / "STATE.md"
 
     ctx: dict[str, str] = {
         "project_name": project_root.name,

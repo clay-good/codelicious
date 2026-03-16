@@ -11,7 +11,7 @@ from typing import List
 
 __all__ = ["API_KEY_ENV_VARS", "Config", "PROVIDER_DEFAULTS", "PolicyConfig", "build_config"]
 
-logger = logging.getLogger("proxilion_build.config")
+logger = logging.getLogger("codelicious.config")
 
 
 # ---------------------------------------------------------------------------
@@ -77,23 +77,23 @@ class PolicyConfig:
     @classmethod
     def from_env(cls) -> "PolicyConfig":
         """Build PolicyConfig from environment variables."""
-        enabled_raw = os.environ.get("PROXILION_POLICY_ENABLED", "").strip().lower()
+        enabled_raw = os.environ.get("CODELICIOUS_POLICY_ENABLED", "").strip().lower()
         enabled = enabled_raw in ("1", "true", "yes")
 
-        allowed_models_raw = os.environ.get("PROXILION_POLICY_ALLOWED_MODELS", "").strip()
+        allowed_models_raw = os.environ.get("CODELICIOUS_POLICY_ALLOWED_MODELS", "").strip()
         if allowed_models_raw:
             allowed_models = [m.strip() for m in allowed_models_raw.split(",") if m.strip()]
         else:
             allowed_models = []
 
         daily_budget_usd = 50.0
-        budget_raw = os.environ.get("PROXILION_POLICY_DAILY_BUDGET", "").strip()
+        budget_raw = os.environ.get("CODELICIOUS_POLICY_DAILY_BUDGET", "").strip()
         if budget_raw:
             try:
                 parsed_budget = float(budget_raw)
                 if parsed_budget <= 0:
                     logger.warning(
-                        "PROXILION_POLICY_DAILY_BUDGET='%s' is not positive, using default $%.2f",
+                        "CODELICIOUS_POLICY_DAILY_BUDGET='%s' is not positive, using default $%.2f",
                         budget_raw,
                         50.0,
                     )
@@ -101,13 +101,13 @@ class PolicyConfig:
                     daily_budget_usd = parsed_budget
             except ValueError:
                 logger.warning(
-                    "Invalid PROXILION_POLICY_DAILY_BUDGET value '%s', using default $%.2f",
+                    "Invalid CODELICIOUS_POLICY_DAILY_BUDGET value '%s', using default $%.2f",
                     budget_raw,
                     50.0,
                 )
 
-        endpoint = os.environ.get("PROXILION_POLICYBIND_ENDPOINT", "").strip()
-        org_id = os.environ.get("PROXILION_POLICY_ORG_ID", "").strip()
+        endpoint = os.environ.get("CODELICIOUS_POLICYBIND_ENDPOINT", "").strip()
+        org_id = os.environ.get("CODELICIOUS_POLICY_ORG_ID", "").strip()
         logger.debug(
             "PolicyConfig: enabled=%s, endpoint=%s, org_id=%s, budget=$%.2f, models=%s",
             enabled,
@@ -140,7 +140,7 @@ API_KEY_ENV_VARS: dict[str, str] = {
 
 @dataclass
 class Config:
-    """Runtime configuration for proxilion-build."""
+    """Runtime configuration for codelicious."""
 
     provider: str = "anthropic"
     model: str = ""
@@ -172,7 +172,7 @@ class Config:
     auto_mode: bool = False  # Continuous build loop (one task per commit)
     spec_path: str = ""  # Path to spec file for auto mode
     log_dir: pathlib.Path = field(
-        default_factory=lambda: pathlib.Path.home() / ".proxilion-build" / "builds"
+        default_factory=lambda: pathlib.Path.home() / ".codelicious" / "builds"
     )
 
     def get_effective_model(self) -> str:
@@ -194,7 +194,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
     config = Config()
 
     # Provider
-    env_provider = os.environ.get("PROXILION_BUILD_PROVIDER")
+    env_provider = os.environ.get("CODELICIOUS_BUILD_PROVIDER")
     cli_provider = getattr(cli_args, "provider", None)
     provider_source = "default"
     if cli_provider:
@@ -211,7 +211,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         )
 
     # Model
-    env_model = os.environ.get("PROXILION_BUILD_MODEL")
+    env_model = os.environ.get("CODELICIOUS_BUILD_MODEL")
     cli_model = getattr(cli_args, "model", None)
     if cli_model:
         config.model = cli_model
@@ -224,7 +224,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         config.api_key = os.environ.get(api_key_var, "").strip()
 
     # Patience
-    env_patience = os.environ.get("PROXILION_BUILD_PATIENCE")
+    env_patience = os.environ.get("CODELICIOUS_BUILD_PATIENCE")
     cli_patience = getattr(cli_args, "patience", None)
     if cli_patience is not None:
         config.patience = cli_patience
@@ -232,13 +232,13 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.patience = int(env_patience)
         except ValueError:
-            raise ValueError(f"Invalid value for PROXILION_BUILD_PATIENCE: {env_patience}")
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_PATIENCE: {env_patience}")
 
     if config.patience < 1:
         raise ValueError(f"Patience must be a positive integer, got {config.patience}")
 
     # Max context tokens
-    env_max_ctx = os.environ.get("PROXILION_BUILD_MAX_CONTEXT_TOKENS")
+    env_max_ctx = os.environ.get("CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS")
     cli_max_ctx = getattr(cli_args, "max_context_tokens", None)
     if cli_max_ctx is not None:
         config.max_context_tokens = cli_max_ctx
@@ -247,14 +247,14 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             config.max_context_tokens = int(env_max_ctx)
         except ValueError:
             raise ValueError(
-                f"Invalid value for PROXILION_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}"
+                f"Invalid value for CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}"
             )
 
     if config.max_context_tokens < 1000:
         raise ValueError(f"max_context_tokens must be >= 1000, got {config.max_context_tokens}")
 
     # Verify command
-    env_verify = os.environ.get("PROXILION_BUILD_VERIFY_COMMAND")
+    env_verify = os.environ.get("CODELICIOUS_BUILD_VERIFY_COMMAND")
     cli_verify = getattr(cli_args, "verify_command", None)
     if cli_verify is not None:
         config.verify_command = cli_verify
@@ -311,7 +311,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         config.replan_after_failures = cli_replan
 
     # Coverage threshold
-    env_cov = os.environ.get("PROXILION_BUILD_COVERAGE_THRESHOLD")
+    env_cov = os.environ.get("CODELICIOUS_BUILD_COVERAGE_THRESHOLD")
     cli_cov = getattr(cli_args, "coverage_threshold", None)
     if cli_cov is not None:
         config.coverage_threshold = cli_cov
@@ -319,7 +319,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.coverage_threshold = int(env_cov)
         except ValueError:
-            raise ValueError(f"Invalid value for PROXILION_BUILD_COVERAGE_THRESHOLD: {env_cov}")
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_COVERAGE_THRESHOLD: {env_cov}")
 
     if config.coverage_threshold < 0 or config.coverage_threshold > 100:
         raise ValueError(
@@ -327,7 +327,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         )
 
     # Agent timeout
-    env_agent_timeout = os.environ.get("PROXILION_BUILD_AGENT_TIMEOUT")
+    env_agent_timeout = os.environ.get("CODELICIOUS_BUILD_AGENT_TIMEOUT")
     cli_agent_timeout = getattr(cli_args, "agent_timeout_s", None)
     if cli_agent_timeout is not None:
         config.agent_timeout_s = cli_agent_timeout
@@ -336,7 +336,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             config.agent_timeout_s = int(env_agent_timeout)
         except ValueError:
             raise ValueError(
-                f"Invalid value for PROXILION_BUILD_AGENT_TIMEOUT: {env_agent_timeout}"
+                f"Invalid value for CODELICIOUS_BUILD_AGENT_TIMEOUT: {env_agent_timeout}"
             )
 
     if config.agent_timeout_s < 60:
@@ -344,7 +344,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
 
     # Effort
     _VALID_EFFORT_LEVELS = {"", "low", "medium", "high", "max"}
-    env_effort = os.environ.get("PROXILION_BUILD_EFFORT")
+    env_effort = os.environ.get("CODELICIOUS_BUILD_EFFORT")
     cli_effort = getattr(cli_args, "effort", None)
     if cli_effort is not None:
         config.effort = cli_effort
@@ -357,7 +357,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         )
 
     # Max turns
-    env_max_turns = os.environ.get("PROXILION_BUILD_MAX_TURNS")
+    env_max_turns = os.environ.get("CODELICIOUS_BUILD_MAX_TURNS")
     cli_max_turns = getattr(cli_args, "max_turns", None)
     if cli_max_turns is not None:
         config.max_turns = cli_max_turns
@@ -365,10 +365,10 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.max_turns = int(env_max_turns)
         except ValueError:
-            raise ValueError(f"Invalid value for PROXILION_BUILD_MAX_TURNS: {env_max_turns}")
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_TURNS: {env_max_turns}")
 
     # Max iterations
-    env_max_iter = os.environ.get("PROXILION_BUILD_MAX_ITERATIONS")
+    env_max_iter = os.environ.get("CODELICIOUS_BUILD_MAX_ITERATIONS")
     cli_max_iter = getattr(cli_args, "iterations", None)
     if cli_max_iter is not None:
         config.max_iterations = cli_max_iter
@@ -376,7 +376,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.max_iterations = int(env_max_iter)
         except ValueError:
-            raise ValueError(f"Invalid value for PROXILION_BUILD_MAX_ITERATIONS: {env_max_iter}")
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_ITERATIONS: {env_max_iter}")
 
     if config.max_iterations < 1:
         raise ValueError(f"max_iterations must be >= 1, got {config.max_iterations}")
@@ -387,7 +387,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         config.reflect = False
 
     # Verify passes
-    env_verify_passes = os.environ.get("PROXILION_BUILD_VERIFY_PASSES")
+    env_verify_passes = os.environ.get("CODELICIOUS_BUILD_VERIFY_PASSES")
     cli_verify_passes = getattr(cli_args, "verify_passes", None)
     if cli_verify_passes is not None:
         config.verify_passes = cli_verify_passes
@@ -396,7 +396,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             config.verify_passes = int(env_verify_passes)
         except ValueError:
             raise ValueError(
-                f"Invalid value for PROXILION_BUILD_VERIFY_PASSES: {env_verify_passes}"
+                f"Invalid value for CODELICIOUS_BUILD_VERIFY_PASSES: {env_verify_passes}"
             )
 
     if config.verify_passes < 0:
@@ -414,7 +414,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
 
     # CI fix passes
     cli_ci_fix = getattr(cli_args, "ci_fix_passes", None)
-    env_ci_fix = os.environ.get("PROXILION_BUILD_CI_FIX_PASSES", "").strip()
+    env_ci_fix = os.environ.get("CODELICIOUS_BUILD_CI_FIX_PASSES", "").strip()
     if cli_ci_fix is not None:
         config.ci_fix_passes = cli_ci_fix
     elif env_ci_fix:
@@ -422,14 +422,14 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             config.ci_fix_passes = int(env_ci_fix)
         except ValueError:
             logger.warning(
-                "Invalid PROXILION_BUILD_CI_FIX_PASSES value '%s', using default %d",
+                "Invalid CODELICIOUS_BUILD_CI_FIX_PASSES value '%s', using default %d",
                 env_ci_fix,
                 config.ci_fix_passes,
             )
 
     # Auto mode
     cli_auto = getattr(cli_args, "auto", None)
-    env_auto = os.environ.get("PROXILION_BUILD_AUTO", "").strip().lower()
+    env_auto = os.environ.get("CODELICIOUS_BUILD_AUTO", "").strip().lower()
     if cli_auto:
         config.auto_mode = True
     elif env_auto in ("1", "true", "yes"):
@@ -437,7 +437,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
 
     # Spec path (for auto mode)
     cli_spec = getattr(cli_args, "spec", None)
-    env_spec = os.environ.get("PROXILION_BUILD_SPEC", "").strip()
+    env_spec = os.environ.get("CODELICIOUS_BUILD_SPEC", "").strip()
     if cli_spec:
         config.spec_path = str(pathlib.Path(cli_spec).resolve())
     elif env_spec:

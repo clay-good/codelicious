@@ -6,7 +6,7 @@ import logging
 import pathlib
 from dataclasses import dataclass
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     EmptySpecError,
     FileEncodingError,
     FileTooLargeError,
@@ -16,7 +16,7 @@ from proxilion_build.errors import (
 
 __all__ = ["MAX_FILE_SIZE", "Section", "parse_spec"]
 
-logger = logging.getLogger("proxilion_build.parser")
+logger = logging.getLogger("codelicious.parser")
 
 MAX_FILE_SIZE: int = 1_048_576  # 1 MB
 

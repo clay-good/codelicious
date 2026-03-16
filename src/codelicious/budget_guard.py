@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 import os
 
-from proxilion_build.context_manager import estimate_tokens
-from proxilion_build.errors import BudgetExhaustedError
+from codelicious.context_manager import estimate_tokens
+from codelicious.errors import BudgetExhaustedError
 
 __all__ = ["BudgetGuard"]
 
-logger = logging.getLogger("proxilion_build.budget_guard")
+logger = logging.getLogger("codelicious.budget_guard")
 
 # Model pricing constants (USD per million tokens)
 _INPUT_RATE_PER_MTOK: float = 3.00
@@ -43,20 +43,20 @@ class BudgetGuard:
         if max_cost_usd is not None:
             resolved_cost = max_cost_usd
         else:
-            env_cost = os.environ.get("PROXILION_MAX_BUILD_COST_USD")
+            env_cost = os.environ.get("CODELICIOUS_MAX_BUILD_COST_USD")
             if env_cost is not None:
                 try:
                     resolved_cost = float(env_cost)
                     if resolved_cost <= 0:
                         logger.warning(
-                            "PROXILION_MAX_BUILD_COST_USD=%s is not positive, using default %.2f",
+                            "CODELICIOUS_MAX_BUILD_COST_USD=%s is not positive, using default %.2f",
                             env_cost,
                             _DEFAULT_MAX_COST_USD,
                         )
                         resolved_cost = _DEFAULT_MAX_COST_USD
                 except ValueError:
                     logger.warning(
-                        "PROXILION_MAX_BUILD_COST_USD=%r is not a valid float, using default %.2f",
+                        "CODELICIOUS_MAX_BUILD_COST_USD=%r is not a valid float, using default %.2f",
                         env_cost,
                         _DEFAULT_MAX_COST_USD,
                     )

@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from proxilion_build.errors import ContextBudgetError
+from codelicious.errors import ContextBudgetError
 
 __all__ = [
     "ContextBudget",
@@ -17,7 +17,7 @@ __all__ = [
     "truncate_to_tokens",
 ]
 
-logger = logging.getLogger("proxilion_build.context_manager")
+logger = logging.getLogger("codelicious.context_manager")
 
 
 class TaskLike(Protocol):

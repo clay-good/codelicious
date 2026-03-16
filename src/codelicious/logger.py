@@ -122,8 +122,8 @@ def setup_logging(
     project_dir: pathlib.Path,
     verbose: bool = False,
 ) -> logging.Logger:
-    """Configure and return the proxilion_build logger."""
-    logger = logging.getLogger("proxilion_build")
+    """Configure and return the codelicious logger."""
+    logger = logging.getLogger("codelicious")
     logger.setLevel(logging.DEBUG)
 
     # Remove any existing handlers to allow reconfiguration
@@ -138,12 +138,12 @@ def setup_logging(
     console_handler.addFilter(sanitizing_filter)
     logger.addHandler(console_handler)
 
-    # File handler (.proxilion-build/proxilion-build.log) with rotation (10 MB, 1 backup)
+    # File handler (.codelicious/codelicious.log) with rotation (10 MB, 1 backup)
     try:
-        log_dir = project_dir / ".proxilion-build"
+        log_dir = project_dir / ".codelicious"
         log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        log_file = log_dir / "proxilion-build.log"
+        log_file = log_dir / "codelicious.log"
         file_handler = logging.handlers.RotatingFileHandler(
             str(log_file),
             maxBytes=10 * 1024 * 1024,

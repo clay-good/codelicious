@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("proxilion_build.verifier")
+logger = logging.getLogger("codelicious.verifier")
 
 __all__ = [
     "CheckResult",
@@ -1025,16 +1025,16 @@ def write_build_summary(
     state_skipped: list[str],
     last_verification: VerificationResult | None,
 ) -> pathlib.Path:
-    """Write a build summary to .proxilion-build/build-summary.md.
+    """Write a build summary to .codelicious/build-summary.md.
 
     Returns the path to the written file.
     The TypeScript queue worker reads this file and appends it to the PR description.
     """
-    build_state_dir = project_dir / ".proxilion-build"
+    build_state_dir = project_dir / ".codelicious"
     build_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     summary_path = build_state_dir / "build-summary.md"
 
-    lines: list[str] = ["## proxilion build summary", ""]
+    lines: list[str] = ["## codelicious build summary", ""]
 
     total = len(state_completed) + len(state_failed) + len(state_skipped)
     lines.append(

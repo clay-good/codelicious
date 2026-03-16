@@ -13,7 +13,7 @@ class ToolResponse(TypedDict):
     stderr: str
 
 # Dangerous commands that are NEVER allowed regardless of context.
-# Modeled after proxilion-build's battle-tested denylist.
+# Modeled after codelicious's battle-tested denylist.
 DENIED_COMMANDS = frozenset({
     "rm", "rmdir", "sudo", "su", "chmod", "chown", "chgrp",
     "mkfs", "dd", "kill", "killall", "pkill",

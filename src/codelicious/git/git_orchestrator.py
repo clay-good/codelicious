@@ -28,6 +28,16 @@ class GitManager:
             except json.JSONDecodeError:
                 logger.error("Failed to parse config.json.")
 
+    @property
+    def current_branch(self) -> str:
+        """Return the current git branch name."""
+        if not self._has_git():
+            return "unknown"
+        try:
+            return self._run_cmd(["git", "branch", "--show-current"])
+        except Exception:
+            return "unknown"
+
     def _has_git(self) -> bool:
         """Checks if the target repository is actually a git repository."""
         return (self.repo_path / ".git").is_dir()

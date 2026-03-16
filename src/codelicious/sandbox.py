@@ -10,7 +10,7 @@ import tempfile
 import threading
 from typing import Callable
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     DeniedPathError,
     DisallowedExtensionError,
     FileCountLimitError,
@@ -20,7 +20,7 @@ from proxilion_build.errors import (
 
 __all__ = ["Sandbox"]
 
-logger = logging.getLogger("proxilion_build.sandbox")
+logger = logging.getLogger("codelicious.sandbox")
 
 
 class Sandbox:
@@ -76,7 +76,7 @@ class Sandbox:
             ".git",
             ".env",
             "__pycache__",
-            ".proxilion-build",
+            ".codelicious",
         }
     )
 

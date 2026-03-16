@@ -11,13 +11,13 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     IntentRejectedError,
     InvalidPlanError,
     PlanningError,
     PromptInjectionWarning,
 )
-from proxilion_build.parser import Section
+from codelicious.parser import Section
 
 __all__ = [
     "DENIED_PATH_SEGMENTS",
@@ -30,7 +30,7 @@ __all__ = [
     "save_plan",
 ]
 
-logger = logging.getLogger("proxilion_build")
+logger = logging.getLogger("codelicious")
 
 _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
     {
@@ -45,7 +45,7 @@ _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
 )
 
 DENIED_PATH_SEGMENTS: frozenset[str] = frozenset(
-    {".git", ".env", "__pycache__", ".proxilion-build"}
+    {".git", ".env", "__pycache__", ".codelicious"}
 )
 
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
@@ -209,7 +209,7 @@ def classify_intent(spec_text: str, llm_call: Callable[[str, str], str]) -> bool
     middle, and end sections. Fails CLOSED on network/auth errors (rejects),
     but fails OPEN on parsing/other errors.
     """
-    from proxilion_build.errors import (
+    from codelicious.errors import (
         LLMAuthenticationError,
         LLMClientError,
         LLMProviderError,
@@ -434,8 +434,8 @@ def _parse_json_response(response: str) -> list[dict[str, Any]]:
 
 
 def _ensure_build_state_dir(project_dir: pathlib.Path) -> pathlib.Path:
-    """Create the .proxilion-build directory with restricted permissions."""
-    build_state_dir = project_dir / ".proxilion-build"
+    """Create the .codelicious directory with restricted permissions."""
+    build_state_dir = project_dir / ".codelicious"
     build_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     return build_state_dir
 
@@ -590,14 +590,14 @@ def replan(
 
 
 def save_plan(tasks: list[Task], project_dir: pathlib.Path) -> None:
-    """Save a task list to .proxilion-build/plan.json."""
+    """Save a task list to .codelicious/plan.json."""
     build_state_dir = _ensure_build_state_dir(project_dir)
     _write_plan_file(tasks, build_state_dir / "plan.json")
 
 
 def load_plan(project_dir: pathlib.Path) -> list[Task]:
-    """Load a task list from .proxilion-build/plan.json."""
-    plan_file = project_dir / ".proxilion-build" / "plan.json"
+    """Load a task list from .codelicious/plan.json."""
+    plan_file = project_dir / ".codelicious" / "plan.json"
     if not plan_file.is_file():
         raise PlanningError(f"Plan file not found: {plan_file}", path=str(plan_file))
 

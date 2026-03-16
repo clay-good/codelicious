@@ -1,8 +1,8 @@
 """Per-session build log directory and structured event management.
 
-Each ``proxilion-build run`` in agent mode creates one BuildSession that
+Each ``codelicious run`` in agent mode creates one BuildSession that
 writes meta.json, output.log, session.jsonl, and summary.json to a
-timestamped directory under ``~/.proxilion-build/builds/``.
+timestamped directory under ``~/.codelicious/builds/``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-logger = logging.getLogger("proxilion_build.build_logger")
+logger = logging.getLogger("codelicious.build_logger")
 
 __all__ = ["BuildSession", "cleanup_old_builds"]
 
@@ -29,14 +29,14 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
 
     Args:
         builds_dir: Project-level directory containing session directories
-                    (e.g., ~/.proxilion-build/builds/project_name)
+                    (e.g., ~/.codelicious/builds/project_name)
         retention_days: Default retention period (can be overridden by env var)
 
     Returns:
         Number of directories removed
     """
     # Check for environment variable override
-    env_retention = os.environ.get("PROXILION_BUILD_RETENTION_DAYS")
+    env_retention = os.environ.get("CODELICIOUS_BUILD_RETENTION_DAYS")
     if env_retention:
         try:
             env_days = int(env_retention)
@@ -44,7 +44,7 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
                 retention_days = env_days
         except ValueError:
             logger.warning(
-                "Invalid PROXILION_BUILD_RETENTION_DAYS=%s (not an integer), using default %d",
+                "Invalid CODELICIOUS_BUILD_RETENTION_DAYS=%s (not an integer), using default %d",
                 env_retention,
                 retention_days,
             )
@@ -111,7 +111,7 @@ class BuildSession:
         session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%Sz")
 
         if log_dir is None:
-            log_dir = pathlib.Path.home() / ".proxilion-build" / "builds"
+            log_dir = pathlib.Path.home() / ".codelicious" / "builds"
 
         # Clean up old build directories before starting new session
         # Wrapped in try/except so cleanup failure does not prevent the build
