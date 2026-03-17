@@ -1,91 +1,309 @@
 # Codelicious
 
-**Outcome as a Service.** Codelicious is an open-source, fully self-hosted autonomous developer CLI explicitly designed for Headless Agentic Workflows.
+**Outcome as a Service.** Write specs. Run `codelicious /path/to/repo`. Get a green, review-ready Pull Request.
 
-Write specs. Run `codelicious /path/to/repo`. Get a green, review-ready Pull Request.
+Codelicious is a headless, autonomous developer CLI that transforms markdown specifications into production-ready Pull Requests with zero human intervention. It orchestrates a dual-engine architecture powered by Claude Code and HuggingFace (DeepSeek for reasoning, Qwen for coding).
 
----
-
-## The Autonomous Workflow
-
-1. **Human Intent:** You write markdown specifications detailing feature requirements in your repo.
-2. **Ignition:** You run `codelicious /path/to/repo` in your terminal or CI environment.
-3. **The Build Cycle:**
-   - Codelicious reads all specs and caches repository state.
-   - DeepSeek-V3 plans the tasks.
-   - Qwen 2.5 Coder generates the code in a secure sandbox.
-   - Tests and linters run deterministically. Errors are fed back to Qwen automatically.
-4. **Git Orchestration:**
-   - On the first successful run, Codelicious creates a Draft PR/MR (GitHub or GitLab).
-   - As it moves through subsequent tasks in its plan, it continuously commits to this same feature branch.
-5. **Outcome Delivery:** 
-   - When all specs are fulfilled and the complete cycle is 100% green, Codelicious automatically marks the Draft PR as "Ready for Review" and requests human human review.
-   - You only intervene to approve the final, working product.
-
----
-
-## Why Codelicious?
-
-**1. Massive Cost Efficiency (Pennies vs Dollars)**
-Using Claude Code CLI or Devin for a full build cycle on a lightweight app often means paying for massive context windows repeatedly, easily costing $5–$20 per feature. Codelicious runs entirely on your own Hugging Face, TGI, or vLLM endpoints. By separating Reasoning (DeepSeek) and Execution (Qwen), and aggressively caching context locally in `.codelicious/cache.json`, you pay fractions of a cent per token—or literally $0 if running locally.
-
-**2. Headless Agentic Workflows**
-No VSCode GUI. No back-and-forth chat prompts. Codelicious runs purely dynamically. We utilize specific "Sub-Agents" (headless planners and semantic searchers powered by DeepSeek-V3) that recursively scour the repo to find your specifications, parse intent, and delegate coding to the Qwen Agent automatically.
-
-**3. 90% Probabilistic / 10% Deterministic Engine**
-Unlike previous iterations, Codelicious relies on the LLM to do almost *everything* (90%). The models control the layout, finding the specs, choosing what tests to run, and fixing code. The Python core is a razor-thin 10% deterministic shield: it merely prevents path traversal injections, prevents Git writes to `main`, and catches timeout errors. This gives Codelicious the unparalleled organic intelligence of Claude Code CLI.
-
-**4. Uncompromising Audit Logs**
-In an Outcome as a Service pipeline, trust is critical. Codelicious logs *everything*. Every LLM inference payload, every sandbox violation caught by the 10% shield, and every test outcome is streamed verbosely to your CLI stdout and permanently written to `.codelicious/audit.log`. You always know exactly why the agent made a decision.
-
-**5. Context Caching & State Management**
-Unlike tools that forget their lessons between sessions, Codelicious continuously writes its learnings, heuristics, and semantic search indexes to a centralized `.codelicious/state.json` and `.codelicious/cache.json` in your repository. It builds compounding intelligence on your specific codebase without massive re-indexing costs.
+```
+Spec -> Code -> Test -> Commit -> PR
+```
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/codelicious-ai/codelicious.git
+# 1. Clone and install
+git clone https://github.com/clay-good/codelicious.git
 cd codelicious
-
-# Install the autonomous engine globally
 pip install -e .
 
-# Export your LLM Provider configurations (HuggingFace Serverless by default)
-# IMPORTANT: For Hugging Face Fine-Grained Tokens, ensure you grant the "Make calls to the Serverless Inference API" permission!
-export LLM_API_KEY=hf_your_key_here
-export MODEL_PLANNER=deepseek-ai/DeepSeek-V3
-export MODEL_CODER=Qwen/Qwen2.5-Coder-32B-Instruct
+# 2. Run against your repo
+codelicious /path/to/your/repo
+```
 
-# (Optional) If you want Codelicious to automatically open PRs on GitHub, 
-# simply ensure you have the GitHub CLI (`gh`) installed and authenticated locally.
-# Codelicious natively inherits your local .git scope!
+### Engine Options
 
-# Initiate complete Outcome as a Service flow
-codelicious /Users/user/Documents/your-repo
+```bash
+# Claude Code CLI (requires `claude` binary installed + API credits)
+codelicious /path/to/your/repo
+
+# HuggingFace engine (free, no API costs)
+export HF_TOKEN=hf_your_token_here  # https://huggingface.co/settings/tokens
+codelicious /path/to/your/repo --engine huggingface
+```
+
+### Development Setup
+
+```bash
+pip install -e ".[dev]"    # Install with dev dependencies (pytest, ruff)
+pytest                      # Run tests
+ruff check src/ tests/      # Lint
 ```
 
 ---
 
-## Repository Architecture and Explicit File Paths
+## How Git, Commits, and PRs Work
 
-Codelicious maintains a rigid, simplified directory structure to maintain extreme execution speed and low context footprints:
+This is the part you need to understand. Codelicious works **inside a git repo you provide**. Here's the full workflow:
 
-| Component | Absolute Path within Repo | Purpose |
-| :--- | :--- | :--- |
-| **CLI Entrypoint** | `src/codelicious/cli.py` | Command line parser, cache hydration, loops initialize. |
-| **Agentic Loop** | `src/codelicious/loop_controller.py` | The main `while` loop that calls the LLM iteratively. |
-| **Git Orchestrator** | `src/codelicious/git/git_orchestrator.py` | PR/MR management and branch isolation enforcer. |
-| **Tool Registry** | `src/codelicious/tools/registry.py` | Maps LLM JSON tool payloads to Python functions. |
-| **FS Sandbox Tools** | `src/codelicious/tools/fs_tools.py` | High-security `read_file` and `write_file` implementations. |
-| **Shell Runner** | `src/codelicious/tools/command_runner.py` | Executes shell commands restricted strictly by config. |
-| **Audit Logger** | `src/codelicious/tools/audit_logger.py` | Dumps all payloads to console and `audit.log`. |
-| **Cache Engine** | `src/codelicious/context/cache_engine.py` | Serializes LLM state to the local repo's JSON ledgers. |
-| **RAG Engine** | `src/codelicious/context/rag_engine.py` | Instant codebase semantic search using local SQLite vectors. |
-| **Persistent Ledger** | `[Target Repo]/.codelicious/state.json` | Stores long-term memory of tasks and resolutions. |
-| **Runtime Index** | `[Target Repo]/.codelicious/cache.json` | Stores file tree hashes to limit context bloat. |
-| **Vector Database** | `[Target Repo]/.codelicious/db.sqlite3` | Lightweight semantic embedding storage for instant RAG. |
-| **Audit Log** | `[Target Repo]/.codelicious/audit.log` | Verbosely stores every agent interaction. |
-| **Configuration** | `[Target Repo]/.codelicious/config.json` | Defines LLM endpoints, secrets, and shell allowlists. |
+### Prerequisites
+
+Your target repo must:
+1. **Be a git repository** (has a `.git/` folder)
+2. **Have a remote named `origin`** pointing to GitHub or GitLab
+3. **Have `gh` CLI installed and authenticated** (for GitHub PRs) or `glab` for GitLab MRs
+
+### Step-by-Step Workflow
+
+```bash
+# 1. Navigate to your project repo
+cd /path/to/your/repo
+
+# 2. Make sure you're on main and up to date
+git checkout main
+git pull origin main
+
+# 3. Run codelicious with --push-pr to get the full pipeline
+codelicious /path/to/your/repo --push-pr
+```
+
+**What happens automatically:**
+
+1. Codelicious detects you're on `main` and creates a feature branch: `codelicious/auto-build`
+2. It reads your specs from `docs/specs/*.md`
+3. It implements the code, runs tests, verifies
+4. It commits changes to the feature branch
+5. With `--push-pr`, it pushes the branch and creates a **Draft PR** via `gh pr create --draft`
+6. When all verification passes, it marks the PR as **Ready for Review**
+
+### Manual Git Push (if you skip --push-pr)
+
+If you run without `--push-pr`, codelicious still commits locally but does NOT push. You handle it:
+
+```bash
+# After codelicious finishes:
+cd /path/to/your/repo
+git log --oneline -5           # See what codelicious committed
+git push -u origin HEAD        # Push the feature branch
+
+# Create the PR yourself:
+gh pr create --title "feat: autonomous implementation" --body "Built by Codelicious"
+# Or for GitLab:
+glab mr create --title "feat: autonomous implementation" --description "Built by Codelicious"
+```
+
+### Recommended Workflow for Iterative Builds
+
+```bash
+# First run — builds and creates draft PR
+codelicious /path/to/your/repo --push-pr
+
+# Subsequent runs — appends commits to the same branch/PR
+codelicious /path/to/your/repo --push-pr
+
+# When you're happy, the PR is already open — just review and merge
+```
+
+### Summary of Commands
+
+| Step | Command | When |
+|------|---------|------|
+| Install | `pip install -e .` | Once |
+| Build + auto PR | `codelicious /path/to/repo --push-pr` | Each build cycle |
+| Build only (no push) | `codelicious /path/to/repo` | When you want to review locally first |
+| Push manually | `git push -u origin HEAD` | After a no-push build |
+| Create PR (GitHub) | `gh pr create --draft` | After manual push |
+| Create MR (GitLab) | `glab mr create` | After manual push |
+
+---
+
+## Dual Engine Architecture
+
+Codelicious auto-detects the best available engine at startup:
+
+| Engine | Backend | How It Works |
+|--------|---------|--------------|
+| **Claude Code CLI** | `claude` binary | Spawns Claude Code as subprocess. 6-phase lifecycle: scaffold, build, verify, reflect, commit, PR. |
+| **HuggingFace** | DeepSeek-V3 + Qwen3-235B | Free HTTP API via SambaNova. DeepSeek plans, Qwen codes. 50-iteration agentic loop. No API costs. |
+
+Auto-detection priority: Claude Code CLI > HuggingFace > error with setup instructions.
+
+> **Note:** If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path — not a degraded mode.
+
+---
+
+## CLI Reference
+
+```
+codelicious <repo_path> [options]
+
+Options:
+  --engine {auto,claude,huggingface}  Build engine (default: auto)
+  --model MODEL                       Model override (e.g. claude-sonnet-4-6)
+  --agent-timeout SECONDS             Claude engine timeout (default: 1800)
+  --resume SESSION_ID                 Resume a previous Claude session
+  --verify-passes N                   Verification passes (default: 3)
+  --no-reflect                        Skip quality review phase
+  --push-pr                           Push and create/update PR
+  --max-iterations N                  HF engine max iterations (default: 50)
+  --dry-run                           Log phases without executing
+  --spec PATH                         Target a specific spec file
+```
+
+---
+
+## Writing Specs
+
+Place markdown specs in `docs/specs/` in your target repo. Codelicious will find and build them in order.
+
+```markdown
+# Feature: User Authentication
+
+## Requirements
+- [ ] Add login endpoint at POST /api/auth/login
+- [ ] Add JWT token generation
+- [ ] Add middleware for protected routes
+- [ ] Write tests for all auth flows
+
+## Acceptance Criteria
+- All tests pass
+- No hardcoded secrets
+- Rate limiting on login endpoint
+```
+
+---
+
+## Security Model
+
+Codelicious enforces defense-in-depth security, all hardcoded in Python (not configurable by the LLM):
+
+- **Command denylist** — 39 dangerous commands blocked (`rm`, `sudo`, `dd`, `kill`, etc.)
+- **Shell injection prevention** — `shell=False` + metacharacter blocking (`|`, `&`, `;`, `$`, etc.)
+- **File write protection** — LLM cannot modify its own tool source code or security config
+- **File extension allowlist** — only safe file types can be written
+- **Path traversal defense** — null byte detection, `..` rejection, symlink resolution
+- **Security scanning** — pre-commit scan for `eval()`, `exec()`, `shell=True`, hardcoded secrets
+
+---
+
+## Project Structure
+
+```
+src/codelicious/
+  cli.py                    # Entry point with engine selection
+  engines/
+    __init__.py             # select_engine() auto-detection
+    base.py                 # BuildEngine ABC + BuildResult
+    claude_engine.py        # Claude Code CLI 6-phase engine
+    huggingface_engine.py   # HuggingFace tool-dispatch engine
+  agent_runner.py           # Claude subprocess management
+  scaffolder.py             # CLAUDE.md + .claude/ generation
+  prompts.py                # All agent prompt templates
+  verifier.py               # Deterministic verification pipeline
+  tools/
+    registry.py             # Tool name -> function dispatch
+    fs_tools.py             # Sandboxed file operations
+    command_runner.py        # Denylist command execution
+    audit_logger.py         # Security event logging
+  git/
+    git_orchestrator.py     # Branch safety + PR management
+  context/
+    cache_engine.py         # State persistence
+    rag_engine.py           # SQLite vector search
+  errors.py                 # Typed exceptions
+  config.py                 # Environment + file config loading
+```
+
+## Runtime Files
+
+Codelicious creates a `.codelicious/` directory in the target repo (gitignored):
+
+| File | Purpose |
+|------|---------|
+| `state.json` | Task progress and memory |
+| `cache.json` | File hash index |
+| `db.sqlite3` | Vector embeddings for RAG |
+| `audit.log` | Full agent interaction log |
+| `security.log` | Security events only |
+| `STATE.md` | Human-readable build status |
+| `BUILD_COMPLETE` | Sentinel file (contains "DONE" when finished) |
+
+---
+
+## Architecture
+
+### Build Lifecycle
+
+```mermaid
+flowchart TB
+    User["Developer runs: codelicious /path/to/repo"]
+    EngineSelect{"Engine\nSelection"}
+    Claude["Claude Code CLI Engine"]
+    HF["HuggingFace Engine"]
+
+    subgraph Claude_Lifecycle["Claude Code 6-Phase Lifecycle"]
+        C1["1. SCAFFOLD\nWrite CLAUDE.md + .claude/"]
+        C2["2. ANALYZE\nExplore codebase"]
+        C3["3. BUILD\nImplement specs"]
+        C4["4. VERIFY\nSyntax + Tests + Security"]
+        C5["5. REFLECT\nQuality review"]
+        C6["6. PR\nCommit + Push + PR"]
+        C1 --> C2 --> C3 --> C4 --> C5 --> C6
+    end
+
+    subgraph HF_Lifecycle["HuggingFace Agentic Loop"]
+        H1["System prompt\nwith tool schemas"]
+        H2["LLM generates\ntool calls"]
+        H3["Tool dispatch\n(read/write/run)"]
+        H4["Result appended\nto history"]
+        H5{"Iteration\nlimit?"}
+        H1 --> H2 --> H3 --> H4 --> H5
+        H5 -->|No| H2
+        H5 -->|Yes| H6["Return result"]
+    end
+
+    User --> EngineSelect
+    EngineSelect -->|"claude binary found"| Claude
+    EngineSelect -->|"HF_TOKEN set"| HF
+    Claude --> Claude_Lifecycle
+    HF --> HF_Lifecycle
+
+    C6 --> Done["Review-ready PR"]
+    H6 --> Done
+```
+
+### Security Architecture
+
+```mermaid
+flowchart TB
+    LLM["LLM Agent\n(Claude or DeepSeek/Qwen)"]
+
+    subgraph Security_Layers["Defense-in-Depth Layers"]
+        direction TB
+        L1["Command Denylist\n39 dangerous commands blocked"]
+        L2["Metacharacter Filter\nShell injection chars blocked"]
+        L3["shell=False\nNo shell interpretation"]
+        L4["Extension Allowlist\n32 safe file types only"]
+        L5["Path Validation\nNull bytes, .., symlinks"]
+        L6["Protected Paths\nSecurity-critical files immutable"]
+        L7["Size/Count Limits\n1MB per file, 200 files per session"]
+        L8["Security Scanner\neval/exec/secrets detection"]
+        L9["Audit Logging\nAll operations logged"]
+    end
+
+    LLM --> L1 --> L2 --> L3
+    L3 --> L4 --> L5 --> L6 --> L7
+    L7 --> L8 --> L9
+    L9 --> FS["Filesystem\n(safe writes only)"]
+```
+
+---
+
+## Zero Dependencies
+
+The core engine uses only Python standard library (`urllib`, `json`, `sqlite3`, `subprocess`). No pip packages required at runtime.
+
+## License
+
+MIT
