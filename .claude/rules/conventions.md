@@ -5,7 +5,7 @@ paths:
 
 # Python Conventions
 
-- Line length: 99 characters max
+- Line length: 120 characters max
 - Quote style: double quotes
 - Indent: 4 spaces
 - Line endings: LF

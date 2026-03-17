@@ -1,7 +1,12 @@
 import os
 from pathlib import Path
-import tempfile
 from typing import TypedDict
+
+from codelicious.sandbox import Sandbox
+from codelicious.errors import (
+    PathTraversalError,
+    SandboxViolationError,
+)
 
 
 class ToolResponse(TypedDict):
@@ -19,20 +24,16 @@ class FSTooling:
     def __init__(self, repo_path: Path, cache_manager):
         self.repo_path = repo_path.resolve()
         self.cache_manager = cache_manager
-
-    def _assert_in_sandbox(self, target_path: Path):
-        """Raises exception if paths resolve outside the repo root."""
-        if not target_path.resolve().is_relative_to(self.repo_path):
-            raise Exception("Sandbox violation: Path traversal prevented.")
+        self.sandbox = Sandbox(self.repo_path)
 
     def native_read_file(self, rel_path: str) -> ToolResponse:
         """
         Safely reads a file, leveraging the local .codelicious/cache.json
         if the file hash matches a hot entry to eliminate redundant I/O padding.
         """
-        target = (self.repo_path / rel_path).resolve()
         try:
-            self._assert_in_sandbox(target)
+            # Use sandbox.resolve_path for consistent path validation
+            target = self.sandbox.resolve_path(rel_path)
 
             if not target.is_file():
                 return {
@@ -41,76 +42,43 @@ class FSTooling:
                     "stderr": f"Error: '{rel_path}' is not a valid file.",
                 }
 
-            content = target.read_text()
+            content = target.read_text(encoding="utf-8")
             return {"success": True, "stdout": content, "stderr": ""}
+        except PathTraversalError as e:
+            return {"success": False, "stdout": "", "stderr": str(e)}
         except Exception as e:
             return {"success": False, "stdout": "", "stderr": str(e)}
-
-    PROTECTED_PATHS = frozenset(
-        {
-            ".codelicious/config.json",
-            ".codelicious/skills",
-            "src/codelicious/tools/command_runner.py",
-            "src/codelicious/tools/fs_tools.py",
-            "src/codelicious/tools/registry.py",
-        }
-    )
-
-    def _is_protected_path(self, rel_path: str) -> bool:
-        """Check if the path is protected from LLM writes."""
-        normalized = str(Path(rel_path))
-        return any(
-            normalized == p or normalized.startswith(p + "/")
-            for p in self.PROTECTED_PATHS
-        )
 
     def native_write_file(self, rel_path: str, content: str) -> ToolResponse:
         """
         Atomically writes file to the sandbox using os.replace to prevent TOCTOU races,
         and invalidates the local target in the .codelicious/cache.json map.
+
+        All security checks (extension allowlist, denied patterns, size limits, count limits,
+        symlink detection, TOCTOU mitigation) are delegated to Sandbox.write_file.
         """
-        if self._is_protected_path(rel_path):
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": f"Security Violation: '{rel_path}' is a protected path and cannot be modified by the agent.",
-            }
-
-        target = (self.repo_path / rel_path).resolve()
         try:
-            self._assert_in_sandbox(target)
-
-            # Ensure parent directories exist
-            target.parent.mkdir(parents=True, exist_ok=True)
-
-            # Write to temporary file adjacent to target to ensure atomic rename success
-            fd, tmp_path = tempfile.mkstemp(
-                dir=target.parent, prefix=".codelicious_tmp_"
-            )
-            try:
-                with os.fdopen(fd, "w") as f:
-                    f.write(content)
-                os.replace(tmp_path, target)
-            except Exception as inner_e:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-                raise inner_e
-
+            self.sandbox.write_file(rel_path, content)
             return {
                 "success": True,
                 "stdout": f"Successfully wrote {len(content)} bytes to {rel_path}.",
                 "stderr": "",
             }
+        except SandboxViolationError as e:
+            # Return sandbox violations (path traversal, denied path, extension, size, count)
+            # without leaking full traceback to the LLM
+            return {"success": False, "stdout": "", "stderr": str(e)}
         except Exception as e:
+            # Catch any other unexpected errors
             return {"success": False, "stdout": "", "stderr": str(e)}
 
     def native_list_directory(self, rel_path: str = ".") -> ToolResponse:
         """
         Deep directory layout fetch. Excludes ignored patterns.
         """
-        target = (self.repo_path / rel_path).resolve()
         try:
-            self._assert_in_sandbox(target)
+            # Use sandbox.resolve_path for consistent path validation
+            target = self.sandbox.resolve_path(rel_path)
 
             if not target.is_dir():
                 return {
@@ -149,5 +117,7 @@ class FSTooling:
 
             return {"success": True, "stdout": "\n".join(tree_output), "stderr": ""}
 
+        except PathTraversalError as e:
+            return {"success": False, "stdout": "", "stderr": str(e)}
         except Exception as e:
             return {"success": False, "stdout": "", "stderr": str(e)}
