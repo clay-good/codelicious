@@ -4,10 +4,16 @@ __pycache__/
 *.pyo
 *.egg-info/
 *.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
 venv/
 .venv/
+env/
 
-# Codelicious runtime (generated per-repo)
+# Codelicious runtime (generated per-repo, never commit)
 .codelicious/db.sqlite3
 .codelicious/cache.json
 .codelicious/state.json
@@ -16,10 +22,12 @@ venv/
 .codelicious/BUILD_COMPLETE
 .codelicious/STATE.md
 
-# Environment variables
+# Environment variables / secrets
 .env
-.env.local
-.env.*.local
+.env.*
+*.pem
+*.key
+credentials.json
 
 # IDE
 .vscode/
@@ -37,10 +45,15 @@ Thumbs.db
 .ruff_cache/
 coverage/
 htmlcov/
+.coverage
 
-# Build
-dist/
-build/
-
-# Dependencies
+# Node (not used at runtime, but just in case)
 node_modules/
+package-lock.json
+yarn.lock
+
+# Legacy / stale
+scripts/
+setup.py
+setup.sh
+requirements.txt
