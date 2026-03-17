@@ -103,7 +103,7 @@ class AuditLogger:
             print(f"FATAL: Security log write failed: {e}")
 
         # Also log to console with warning level for visibility
-        console_logger.warning(f"[SECURITY] {event.value}: {full_message}")
+        console_logger.warning("[SECURITY] %s: %s", event.value, full_message)
 
     def log_security_event(
         self,

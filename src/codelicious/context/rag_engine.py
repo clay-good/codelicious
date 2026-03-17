@@ -67,7 +67,7 @@ class RagEngine:
                     return vectors[0]
                 return vectors
         except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
+            logger.error("Failed to generate embedding: %s", e)
             return []
 
     def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:

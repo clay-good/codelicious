@@ -54,8 +54,8 @@ class LLMClient:
                 "  Tip: Add the export to your ~/.zshrc for persistence."
             )
 
-        logger.info(f"LLM Planner: {self.planner_model} | Coder: {self.coder_model}")
-        logger.info(f"LLM Endpoint: {self.endpoint_url}")
+        logger.info("LLM Planner: %s | Coder: %s", self.planner_model, self.coder_model)
+        logger.info("LLM Endpoint: %s", self.endpoint_url)
 
     def chat_completion(
         self,
@@ -90,7 +90,7 @@ class LLMClient:
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        logger.debug(f"Calling {model} ({role})...")
+        logger.debug("Calling %s (%s)...", model, role)
 
         req = urllib.request.Request(
             self.endpoint_url,
@@ -105,11 +105,11 @@ class LLMClient:
                 return result
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
-            logger.error(f"HTTPError {e.code}: {error_body}")
-            raise RuntimeError(f"LLM API Error ({model}): {e.code} - {error_body}")
+            logger.error("HTTPError %s: %s", e.code, error_body)
+            raise RuntimeError("LLM API Error (%s): %s - %s" % (model, e.code, error_body))
         except Exception as e:
-            logger.error(f"Failed to connect to LLM API: {e}")
-            raise RuntimeError(f"LLM Connection Error: {e}")
+            logger.error("Failed to connect to LLM API: %s", e)
+            raise RuntimeError("LLM Connection Error: %s" % e)
 
     def parse_tool_calls(self, completion_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extracts tool execution requests from the OpenAI-compatible response."""

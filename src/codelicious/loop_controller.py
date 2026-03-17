@@ -172,7 +172,7 @@ class BuildLoop:
                     }
                 )
             except Exception as e:
-                logger.error(f"Failed to process tool call {tool_call}: {e}")
+                logger.error("Failed to process tool call %s: %s", tool_call, e)
                 self.messages.append(
                     {
                         "role": "tool",
@@ -201,7 +201,7 @@ class BuildLoop:
         completed = False
 
         for iteration in range(max_iterations):
-            logger.info(f"--- Iteration {iteration + 1}/{max_iterations} ---")
+            logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
 
             completed = self._execute_agentic_iteration()
 

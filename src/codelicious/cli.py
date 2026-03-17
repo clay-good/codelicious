@@ -59,10 +59,10 @@ def main():
 
     repo_path = Path(args.repo_path).resolve()
     if not repo_path.is_dir():
-        logger.error(f"Repository path {repo_path} does not exist or is not a directory.")
+        logger.error("Repository path %s does not exist or is not a directory.", repo_path)
         sys.exit(1)
 
-    logger.info(f"Starting Codelicious workflow in {repo_path}")
+    logger.info("Starting Codelicious workflow in %s", repo_path)
 
     # 1. Select build engine
     try:
@@ -80,9 +80,9 @@ def main():
     cache_manager.load_cache()
 
     # 4. Print startup banner
-    logger.info(f"Engine: {engine.name}")
-    logger.info(f"Project: {repo_path}")
-    logger.info(f"Branch: {git_manager.current_branch}")
+    logger.info("Engine: %s", engine.name)
+    logger.info("Project: %s", repo_path)
+    logger.info("Branch: %s", git_manager.current_branch)
 
     try:
         # 5. Run the build cycle
@@ -120,7 +120,7 @@ def main():
         logger.warning("\nExecution interrupted by user.")
         sys.exit(130)
     except Exception as e:
-        logger.exception(f"Fatal unhandled error in Codelicious core: {e}")
+        logger.exception("Fatal unhandled error in Codelicious core: %s", e)
         sys.exit(1)
 
 

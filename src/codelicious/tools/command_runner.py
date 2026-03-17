@@ -74,7 +74,7 @@ class CommandRunner:
         try:
             # Parse into argument list for shell=False execution
             args = shlex.split(command)
-            logger.debug(f"Executing sandboxed command: {args}")
+            logger.debug("Executing sandboxed command: %s", args)
 
             res = subprocess.run(
                 args,
