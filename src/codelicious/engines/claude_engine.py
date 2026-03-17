@@ -41,7 +41,7 @@ class ClaudeCodeEngine(BuildEngine):
         5. REFLECT  — optional quality review
         6. PR       — push + create pull request
         """
-        from codelicious.agent_runner import run_agent, AgentResult
+        from codelicious.agent_runner import run_agent
         from codelicious.scaffolder import scaffold, scaffold_claude_dir
         from codelicious.prompts import (
             AGENT_BUILD_SPEC,
@@ -208,9 +208,7 @@ class ClaudeCodeEngine(BuildEngine):
         # ── Phase 5: GIT COMMIT ────────────────────────────────────────
         logger.info("Phase 5/6: GIT — committing changes")
         try:
-            git_manager.commit_verified_changes(
-                commit_message=f"codelicious: build {project_name} from specs"
-            )
+            git_manager.commit_verified_changes(commit_message=f"codelicious: build {project_name} from specs")
             logger.info("Changes committed successfully.")
         except Exception as e:
             logger.warning("Git commit failed: %s", e)
@@ -231,7 +229,7 @@ class ClaudeCodeEngine(BuildEngine):
         build_complete = check_build_complete(repo_path)
 
         return BuildResult(
-            success=build_complete or True,  # Success if we got this far
+            success=build_complete,
             message=f"Build cycle complete in {elapsed:.1f}s",
             session_id=session_id,
             elapsed_s=elapsed,

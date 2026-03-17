@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from proxilion_build.verifier import (
+from codelicious.verifier import (
     CheckResult,
     VerificationResult,
     check_custom_command,
@@ -86,9 +86,7 @@ def test_check_security_passes_clean(tmp_path: pathlib.Path) -> None:
 
 
 def test_check_security_skips_comments(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "commented.py").write_text(
-        "# eval(user_input) is dangerous\nx = 1\n", encoding="utf-8"
-    )
+    (tmp_path / "commented.py").write_text("# eval(user_input) is dangerous\nx = 1\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is True
 
@@ -202,9 +200,7 @@ def test_verification_result_all_passed_true() -> None:
 def test_check_tests_passing(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_ok.py").write_text(
-        "def test_simple():\n    assert 1 + 1 == 2\n", encoding="utf-8"
-    )
+    (tests_dir / "test_ok.py").write_text("def test_simple():\n    assert 1 + 1 == 2\n", encoding="utf-8")
     result = check_tests(tmp_path)
     assert result.passed is True
     assert "passed" in result.message.lower()
@@ -216,9 +212,7 @@ def test_check_tests_passing(tmp_path: pathlib.Path) -> None:
 def test_check_tests_failing(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_fail.py").write_text(
-        "def test_bad():\n    assert False\n", encoding="utf-8"
-    )
+    (tests_dir / "test_fail.py").write_text("def test_bad():\n    assert False\n", encoding="utf-8")
     result = check_tests(tmp_path)
     assert result.passed is False
     assert "failed" in result.message.lower()
@@ -230,9 +224,7 @@ def test_check_tests_failing(tmp_path: pathlib.Path) -> None:
 def test_check_tests_timeout(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_slow.py").write_text(
-        "import time\ndef test_slow():\n    time.sleep(30)\n", encoding="utf-8"
-    )
+    (tests_dir / "test_slow.py").write_text("import time\ndef test_slow():\n    time.sleep(30)\n", encoding="utf-8")
     result = check_tests(tmp_path, timeout=1)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -299,10 +291,7 @@ def test_security_check_logs_unreadable_file(
             result = check_security(tmp_path)
 
     assert result.passed is True
-    assert any(
-        "unreadable" in r.message.lower() or "permission" in r.message.lower()
-        for r in caplog.records
-    )
+    assert any("unreadable" in r.message.lower() or "permission" in r.message.lower() for r in caplog.records)
 
 
 # -- check_custom_command: command not found --------------------------------
@@ -328,7 +317,7 @@ def test_check_custom_command_invalid_syntax(tmp_path: pathlib.Path) -> None:
 
 def test_truncate_long_output(tmp_path: pathlib.Path) -> None:
     (tmp_path / "tests").mkdir()
-    from proxilion_build.verifier import _truncate
+    from codelicious.verifier import _truncate
 
     short = "short text"
     assert _truncate(short) == short
@@ -363,8 +352,7 @@ def test_check_security_skips_indented_comments(tmp_path: pathlib.Path) -> None:
 def test_check_security_skips_multiline_strings(tmp_path: pathlib.Path) -> None:
     """Dangerous patterns inside triple-quoted strings must not be flagged."""
     docstring_content = (
-        '"""\nDo not use eval(user_input) in production code.\n'
-        'os.system("cmd") is dangerous.\n"""\nx = 1\n'
+        '"""\nDo not use eval(user_input) in production code.\nos.system("cmd") is dangerous.\n"""\nx = 1\n'
     )
     (tmp_path / "docs.py").write_text(docstring_content, encoding="utf-8")
     result = check_security(tmp_path)
@@ -447,7 +435,7 @@ def test_nested_dangerous_call(tmp_path: pathlib.Path) -> None:
 
 def test_detect_languages_invalid_package_json(tmp_path: pathlib.Path) -> None:
     """detect_languages skips invalid package.json without crashing."""
-    from proxilion_build.verifier import detect_languages
+    from codelicious.verifier import detect_languages
 
     (tmp_path / "package.json").write_text("{invalid json", encoding="utf-8")
     result = detect_languages(tmp_path)
@@ -456,7 +444,7 @@ def test_detect_languages_invalid_package_json(tmp_path: pathlib.Path) -> None:
 
 def test_check_lint_eslint_not_found(tmp_path: pathlib.Path) -> None:
     """check_lint for typescript returns skipped when eslint is not found."""
-    from proxilion_build.verifier import check_lint
+    from codelicious.verifier import check_lint
 
     with patch("subprocess.run", side_effect=FileNotFoundError("eslint not found")):
         result = check_lint(tmp_path, "typescript", tool_available=True)
@@ -466,7 +454,7 @@ def test_check_lint_eslint_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_lint_timeout(tmp_path: pathlib.Path) -> None:
     """check_lint returns passed=False when linter times out."""
-    from proxilion_build.verifier import check_lint
+    from codelicious.verifier import check_lint
 
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ruff", 60)):
         result = check_lint(tmp_path, "python", tool_available=True)
@@ -476,7 +464,7 @@ def test_check_lint_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
     """check_coverage returns skipped when pytest is not found."""
-    from proxilion_build.verifier import check_coverage
+    from codelicious.verifier import check_coverage
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
@@ -488,7 +476,7 @@ def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
     """check_coverage returns passed=False when it times out."""
-    from proxilion_build.verifier import check_coverage
+    from codelicious.verifier import check_coverage
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
@@ -500,7 +488,7 @@ def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_pip_audit_not_found(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns skipped when pip-audit is not found."""
-    from proxilion_build.verifier import check_pip_audit
+    from codelicious.verifier import check_pip_audit
 
     with patch("subprocess.run", side_effect=FileNotFoundError("pip-audit")):
         result = check_pip_audit(tmp_path, tool_available=True)
@@ -510,7 +498,7 @@ def test_check_pip_audit_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns passed=False when it times out."""
-    from proxilion_build.verifier import check_pip_audit
+    from codelicious.verifier import check_pip_audit
 
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
         result = check_pip_audit(tmp_path, tool_available=True)
@@ -520,7 +508,7 @@ def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_check_playwright_not_found(tmp_path: pathlib.Path) -> None:
     """check_playwright returns skipped when npx is not found."""
-    from proxilion_build.verifier import check_playwright
+    from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
     with patch("subprocess.run", side_effect=FileNotFoundError("npx")):
@@ -531,7 +519,7 @@ def test_check_playwright_not_found(tmp_path: pathlib.Path) -> None:
 
 def test_check_playwright_timeout(tmp_path: pathlib.Path) -> None:
     """check_playwright returns passed=False when it times out."""
-    from proxilion_build.verifier import check_playwright
+    from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("npx", 300)):
@@ -551,7 +539,7 @@ def test_check_syntax_timeout(tmp_path: pathlib.Path) -> None:
 
 def test_verify_with_tools_and_languages(tmp_path: pathlib.Path) -> None:
     """verify() with tools and languages dict includes lint and pip-audit checks."""
-    from proxilion_build.verifier import verify
+    from codelicious.verifier import verify
 
     (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
     result = verify(
@@ -583,9 +571,12 @@ def test_custom_command_rejects_shell_metacharacters(tmp_path: pathlib.Path) -> 
 
 
 def test_custom_command_allows_safe_commands(tmp_path: pathlib.Path) -> None:
-    """Safe commands like python3 -m pytest are allowed."""
-    result = check_custom_command(tmp_path, "python3 -m pytest")
-    # The command may fail due to pytest not finding tests, but it should not
+    """Safe commands like ruff check are allowed."""
+    # Note: python3 is blocked by the interpreter denylist (spec-08 Phase 3)
+    # to prevent arbitrary code execution via python3 -c.
+    # Use direct tool invocations like ruff instead.
+    result = check_custom_command(tmp_path, "ruff check .")
+    # The command may fail due to ruff not being installed, but it should not
     # be rejected by the safety checks
     assert "potentially destructive" not in result.message
     assert "shell metacharacters" not in result.message
@@ -598,19 +589,15 @@ def test_security_scan_mixed_triple_quotes(tmp_path: pathlib.Path) -> None:
     """Code with triple-single inside triple-double is handled correctly."""
     # Triple-single quotes inside a triple-double string should not close the string
     # We use concatenation to avoid escaping issues in the test itself
-    code = (
-        '"""\n'
-        "This is a docstring with triple-single ''' inside it.\n"
-        "More docstring content.\n"
-        '"""\n'
-        "x = 1\n"
-    )
+    code = '"""\nThis is a docstring with triple-single \'\'\' inside it.\nMore docstring content.\n"""\nx = 1\n'
     (tmp_path / "mixed_quotes.py").write_text(code, encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is True
 
 
-def test_security_scan_eval_in_docstring_no_false_positive(tmp_path: pathlib.Path) -> None:
+def test_security_scan_eval_in_docstring_no_false_positive(
+    tmp_path: pathlib.Path,
+) -> None:
     """eval() inside a docstring is not flagged."""
     code = (
         "def safe_function():\n"

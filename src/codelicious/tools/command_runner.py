@@ -1,35 +1,18 @@
 import subprocess
-import os
 import shlex
 from typing import TypedDict
 import logging
 from pathlib import Path
 
+from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
+
 logger = logging.getLogger("codelicious.tools.runner")
+
 
 class ToolResponse(TypedDict):
     success: bool
     stdout: str
     stderr: str
-
-# Dangerous commands that are NEVER allowed regardless of context.
-# Modeled after codelicious's battle-tested denylist.
-DENIED_COMMANDS = frozenset({
-    "rm", "rmdir", "sudo", "su", "chmod", "chown", "chgrp",
-    "mkfs", "dd", "kill", "killall", "pkill",
-    "reboot", "shutdown", "halt", "poweroff", "init",
-    "fdisk", "gdisk", "parted", "mount", "umount",
-    "format", "diskpart",
-    "iptables", "nft", "ufw",
-    "useradd", "userdel", "usermod", "passwd", "groupadd",
-    "crontab", "at",
-    "nc", "ncat", "socat",  # network listeners
-    "curl", "wget",  # prevent exfiltration; agent has its own HTTP via Python
-})
-
-# Shell metacharacters that enable injection/chaining.
-# Blocking these prevents: cmd1 ; cmd2, cmd1 | cmd2, $(cmd), etc.
-BLOCKED_METACHARACTERS = frozenset("|&;$`(){}><!")
 
 
 class CommandRunner:
@@ -43,6 +26,7 @@ class CommandRunner:
     The denylist is hardcoded — NOT configurable via config files — to prevent
     the LLM agent from escalating its own permissions.
     """
+
     def __init__(self, repo_path: Path, config: dict):
         self.repo_path = repo_path.resolve()
 
@@ -57,7 +41,10 @@ class CommandRunner:
         # Check for shell metacharacters (injection prevention)
         for char in BLOCKED_METACHARACTERS:
             if char in command:
-                return False, f"Blocked shell metacharacter '{char}' detected. Command chaining/injection is not allowed."
+                return (
+                    False,
+                    f"Blocked shell metacharacter '{char}' detected. Command chaining/injection is not allowed.",
+                )
 
         # Extract base binary, resolving any path prefix (e.g. /bin/rm -> rm)
         parts = command.strip().split()
@@ -66,7 +53,7 @@ class CommandRunner:
         # Strip common script extensions to catch rm.sh etc.
         for ext in (".sh", ".bash", ".zsh", ".bat", ".cmd"):
             if base_binary.endswith(ext):
-                base_binary = base_binary[:-len(ext)]
+                base_binary = base_binary[: -len(ext)]
 
         if base_binary in DENIED_COMMANDS:
             return False, f"Command '{base_binary}' is in the denied commands list."
@@ -95,16 +82,24 @@ class CommandRunner:
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=120  # Hard timeout to prevent frozen LLM loops
+                timeout=120,  # Hard timeout to prevent frozen LLM loops
             )
 
             return {
                 "success": res.returncode == 0,
                 "stdout": res.stdout,
-                "stderr": res.stderr
+                "stderr": res.stderr,
             }
 
         except subprocess.TimeoutExpired:
-            return {"success": False, "stdout": "", "stderr": "Command timed out after 120s."}
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "Command timed out after 120s.",
+            }
         except Exception as e:
-            return {"success": False, "stdout": "", "stderr": f"Subprocess Execution Error: {str(e)}"}
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": f"Subprocess Execution Error: {str(e)}",
+            }

@@ -6,7 +6,7 @@ import json
 import pathlib
 import threading
 
-from proxilion_build.progress import ProgressReporter
+from codelicious.progress import ProgressReporter
 
 # -- None path is a no-op ---------------------------------------------------
 

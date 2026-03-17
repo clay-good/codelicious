@@ -7,16 +7,16 @@ import time
 
 import pytest
 
-from proxilion_build.errors import ExecutionError, LLMClientError
-from proxilion_build.executor import (
+from codelicious.errors import ExecutionError, LLMClientError
+from codelicious.executor import (
     _normalize_path,
     _parse_strict_format,
     execute_fix,
     execute_task,
     parse_llm_response,
 )
-from proxilion_build.planner import Task
-from proxilion_build.sandbox import Sandbox
+from codelicious.planner import Task
+from codelicious.sandbox import Sandbox
 
 
 def _make_task(
@@ -238,14 +238,7 @@ def test_execution_result_skipped_count(tmp_path: pathlib.Path) -> None:
     task = _make_task(file_paths=["main.py"])
 
     # LLM returns two files but task only expects main.py; extra.py should be skipped
-    llm_response = (
-        "--- FILE: main.py ---\n"
-        "x = 1\n"
-        "--- END FILE ---\n"
-        "--- FILE: extra.py ---\n"
-        "y = 2\n"
-        "--- END FILE ---\n"
-    )
+    llm_response = "--- FILE: main.py ---\nx = 1\n--- END FILE ---\n--- FILE: extra.py ---\ny = 2\n--- END FILE ---\n"
 
     result = execute_task(
         task=task,
@@ -263,12 +256,7 @@ def test_execution_result_skipped_count(tmp_path: pathlib.Path) -> None:
 
 def test_file_marker_in_content_does_not_split() -> None:
     """The string '--- FILE: foo ---' inside file content must not trigger a split."""
-    response = (
-        "--- FILE: main.py ---\n"
-        "# This file references --- FILE: other.py ---\n"
-        "x = 1\n"
-        "--- END FILE ---\n"
-    )
+    response = "--- FILE: main.py ---\n# This file references --- FILE: other.py ---\nx = 1\n--- END FILE ---\n"
     result = parse_llm_response(response)
     # Should produce exactly one file, not two
     assert len(result) == 1
@@ -330,9 +318,7 @@ def test_backslash_paths_normalized() -> None:
 
 def test_parse_response_with_nested_code_blocks() -> None:
     """Nested markdown code blocks inside file content are handled without crash."""
-    response = (
-        '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
-    )
+    response = '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
     # May succeed or return empty; must not raise an unhandled exception
     result = parse_llm_response(response, expected_files=["main.py"])
     assert isinstance(result, list)
@@ -361,9 +347,7 @@ def test_parse_response_binary_content() -> None:
 def test_parse_response_conflicting_formats() -> None:
     """A response mixing strict and markdown formats is parsed deterministically."""
     # Strict format block takes priority
-    response = (
-        "--- FILE: strict.py ---\nx = 1\n--- END FILE ---\n```python\n# markdown.py\ny = 2\n```\n"
-    )
+    response = "--- FILE: strict.py ---\nx = 1\n--- END FILE ---\n```python\n# markdown.py\ny = 2\n```\n"
     result = parse_llm_response(response)
     assert isinstance(result, list)
     assert len(result) >= 1

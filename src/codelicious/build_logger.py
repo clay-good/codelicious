@@ -92,7 +92,9 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
 
     if removed_count > 0:
         logger.info(
-            "Cleaned up %d build directories older than %dd", removed_count, retention_days
+            "Cleaned up %d build directories older than %dd",
+            removed_count,
+            retention_days,
         )
 
     return removed_count
@@ -153,9 +155,7 @@ class BuildSession:
         os.chmod(str(meta_path), 0o600)
 
         # Open output.log and session.jsonl (line-buffered)
-        self._output_log = open(
-            self._session_dir / "output.log", "w", encoding="utf-8", buffering=1
-        )
+        self._output_log = open(self._session_dir / "output.log", "w", encoding="utf-8", buffering=1)
         try:
             os.chmod(str(self._session_dir / "output.log"), 0o600)
         except OSError as exc:
@@ -163,9 +163,7 @@ class BuildSession:
             # Don't re-raise -- permissions are a hardening measure, not critical
 
         try:
-            self._event_log = open(
-                self._session_dir / "session.jsonl", "w", encoding="utf-8", buffering=1
-            )
+            self._event_log = open(self._session_dir / "session.jsonl", "w", encoding="utf-8", buffering=1)
         except BaseException:
             self._output_log.close()
             raise

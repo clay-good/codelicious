@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pathlib
 
-from proxilion_build.scaffolder import _MANAGED_BLOCK, _SENTINEL_END, _SENTINEL_START, scaffold
+from codelicious.scaffolder import (
+    _MANAGED_BLOCK,
+    _SENTINEL_END,
+    _SENTINEL_START,
+    scaffold,
+)
 
 # -- create new CLAUDE.md ----------------------------------------------------
 

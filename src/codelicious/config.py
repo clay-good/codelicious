@@ -9,7 +9,13 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import List
 
-__all__ = ["API_KEY_ENV_VARS", "Config", "PROVIDER_DEFAULTS", "PolicyConfig", "build_config"]
+__all__ = [
+    "API_KEY_ENV_VARS",
+    "Config",
+    "PROVIDER_DEFAULTS",
+    "PolicyConfig",
+    "build_config",
+]
 
 logger = logging.getLogger("codelicious.config")
 
@@ -31,7 +37,11 @@ def _parse_env_int(var_name: str, default: int, min_val: int | None = None) -> i
         return default
     if min_val is not None and val < min_val:
         logger.warning(
-            "%s=%d is below minimum %d, using default %d", var_name, val, min_val, default
+            "%s=%d is below minimum %d, using default %d",
+            var_name,
+            val,
+            min_val,
+            default,
         )
         return default
     return val
@@ -49,7 +59,11 @@ def _parse_env_float(var_name: str, default: float, min_val: float | None = None
         return default
     if min_val is not None and val < min_val:
         logger.warning(
-            "%s=%.2f is below minimum %.2f, using default %.2f", var_name, val, min_val, default
+            "%s=%.2f is below minimum %.2f, using default %.2f",
+            var_name,
+            val,
+            min_val,
+            default,
         )
         return default
     return val
@@ -171,9 +185,7 @@ class Config:
     ci_fix_passes: int = 3  # Max CI fix attempts (0 = skip CI monitoring)
     auto_mode: bool = False  # Continuous build loop (one task per commit)
     spec_path: str = ""  # Path to spec file for auto mode
-    log_dir: pathlib.Path = field(
-        default_factory=lambda: pathlib.Path.home() / ".codelicious" / "builds"
-    )
+    log_dir: pathlib.Path = field(default_factory=lambda: pathlib.Path.home() / ".codelicious" / "builds")
 
     def get_effective_model(self) -> str:
         """Return the model name, falling back to the provider default."""
@@ -205,10 +217,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         provider_source = "env"
 
     if config.provider not in PROVIDER_DEFAULTS:
-        raise ValueError(
-            f"Unknown provider '{config.provider}'. "
-            f"Supported: {', '.join(sorted(PROVIDER_DEFAULTS))}"
-        )
+        raise ValueError(f"Unknown provider '{config.provider}'. Supported: {', '.join(sorted(PROVIDER_DEFAULTS))}")
 
     # Model
     env_model = os.environ.get("CODELICIOUS_BUILD_MODEL")
@@ -246,9 +255,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.max_context_tokens = int(env_max_ctx)
         except ValueError:
-            raise ValueError(
-                f"Invalid value for CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}"
-            )
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}")
 
     if config.max_context_tokens < 1000:
         raise ValueError(f"max_context_tokens must be >= 1000, got {config.max_context_tokens}")
@@ -322,9 +329,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             raise ValueError(f"Invalid value for CODELICIOUS_BUILD_COVERAGE_THRESHOLD: {env_cov}")
 
     if config.coverage_threshold < 0 or config.coverage_threshold > 100:
-        raise ValueError(
-            f"coverage_threshold must be between 0 and 100, got {config.coverage_threshold}"
-        )
+        raise ValueError(f"coverage_threshold must be between 0 and 100, got {config.coverage_threshold}")
 
     # Agent timeout
     env_agent_timeout = os.environ.get("CODELICIOUS_BUILD_AGENT_TIMEOUT")
@@ -335,9 +340,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.agent_timeout_s = int(env_agent_timeout)
         except ValueError:
-            raise ValueError(
-                f"Invalid value for CODELICIOUS_BUILD_AGENT_TIMEOUT: {env_agent_timeout}"
-            )
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_AGENT_TIMEOUT: {env_agent_timeout}")
 
     if config.agent_timeout_s < 60:
         raise ValueError(f"agent_timeout_s must be >= 60, got {config.agent_timeout_s}")
@@ -352,9 +355,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         config.effort = env_effort
 
     if config.effort not in _VALID_EFFORT_LEVELS:
-        raise ValueError(
-            f"Invalid effort level '{config.effort}'. Valid values: low, medium, high, max"
-        )
+        raise ValueError(f"Invalid effort level '{config.effort}'. Valid values: low, medium, high, max")
 
     # Max turns
     env_max_turns = os.environ.get("CODELICIOUS_BUILD_MAX_TURNS")
@@ -395,9 +396,7 @@ def build_config(cli_args: argparse.Namespace) -> Config:
         try:
             config.verify_passes = int(env_verify_passes)
         except ValueError:
-            raise ValueError(
-                f"Invalid value for CODELICIOUS_BUILD_VERIFY_PASSES: {env_verify_passes}"
-            )
+            raise ValueError(f"Invalid value for CODELICIOUS_BUILD_VERIFY_PASSES: {env_verify_passes}")
 
     if config.verify_passes < 0:
         raise ValueError(f"verify_passes must be >= 0, got {config.verify_passes}")

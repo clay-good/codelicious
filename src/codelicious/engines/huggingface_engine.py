@@ -93,10 +93,12 @@ class HuggingFaceEngine(BuildEngine):
             except Exception as e:
                 logger.error("LLM call failed: %s", e)
                 # Simple retry: add error context and continue
-                messages.append({
-                    "role": "user",
-                    "content": f"The previous LLM call failed with: {e}. Please continue your work.",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"The previous LLM call failed with: {e}. Please continue your work.",
+                    }
+                )
                 continue
 
             message_obj = response["choices"][0]["message"]
@@ -112,10 +114,12 @@ class HuggingFaceEngine(BuildEngine):
                     completed = True
                     break
                 else:
-                    messages.append({
-                        "role": "user",
-                        "content": "Please continue exploring or implementing using your toolset until you can declare ALL_SPECS_COMPLETE.",
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "Please continue exploring or implementing using your toolset until you can declare ALL_SPECS_COMPLETE.",
+                        }
+                    )
                     continue
 
             # Execute tool calls
@@ -124,29 +128,33 @@ class HuggingFaceEngine(BuildEngine):
                     args = json.loads(tool_call["function"]["arguments"])
                     name = tool_call["function"]["name"]
                     tool_result = tool_registry.dispatch(name, args)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": name,
-                        "content": json.dumps(tool_result),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": name,
+                            "content": json.dumps(tool_result),
+                        }
+                    )
                 except Exception as e:
                     logger.error("Tool call failed: %s: %s", tool_call, e)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": tool_call["function"]["name"],
-                        "content": json.dumps({
-                            "success": False,
-                            "stderr": f"Tool Execution Pipeline Error: {e}",
-                        }),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": tool_call["function"]["name"],
+                            "content": json.dumps(
+                                {
+                                    "success": False,
+                                    "stderr": f"Tool Execution Pipeline Error: {e}",
+                                }
+                            ),
+                        }
+                    )
 
         if completed:
             try:
-                git_manager.commit_verified_changes(
-                    commit_message="Auto-Implementation: All specs complete."
-                )
+                git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
             except Exception as e:
                 logger.error("Git commit failed: %s", e)
 

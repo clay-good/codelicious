@@ -44,9 +44,7 @@ _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
     }
 )
 
-DENIED_PATH_SEGMENTS: frozenset[str] = frozenset(
-    {".git", ".env", "__pycache__", ".codelicious"}
-)
+DENIED_PATH_SEGMENTS: frozenset[str] = frozenset({".git", ".env", "__pycache__", ".codelicious"})
 
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"SYSTEM:", re.IGNORECASE),
@@ -270,9 +268,7 @@ _MAX_TASK_COUNT: int = 100
 def _validate_task_count(tasks: list[Task]) -> None:
     """Reject plans with more than 100 tasks."""
     if len(tasks) > _MAX_TASK_COUNT:
-        raise InvalidPlanError(
-            f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}"
-        )
+        raise InvalidPlanError(f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}")
 
 
 def _validate_unique_task_ids(tasks: list[Task]) -> None:
@@ -293,9 +289,7 @@ def _validate_dependency_references(tasks: list[Task]) -> None:
     for task in tasks:
         for dep_id in task.depends_on:
             if dep_id not in task_ids:
-                raise InvalidPlanError(
-                    f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan"
-                )
+                raise InvalidPlanError(f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan")
 
 
 def _validate_no_circular_dependencies(tasks: list[Task]) -> None:
@@ -329,9 +323,7 @@ def _validate_replan_ids(new_tasks: list[Task], completed_ids: set[str]) -> None
     """Reject replan if new task IDs collide with completed task IDs."""
     conflicts = [task.id for task in new_tasks if task.id in completed_ids]
     if conflicts:
-        raise InvalidPlanError(
-            f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}"
-        )
+        raise InvalidPlanError(f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}")
 
 
 def _validate_topological_order(tasks: list[Task]) -> None:
@@ -408,8 +400,7 @@ def _validate_file_paths(tasks: list[Task]) -> None:
                 for part in pathlib.PurePosixPath(path_variant).parts:
                     if part in DENIED_PATH_SEGMENTS:
                         raise InvalidPlanError(
-                            f"Task '{task.id}' references denied path segment '{part}' "
-                            f"in file path: {fp}"
+                            f"Task '{task.id}' references denied path segment '{part}' in file path: {fp}"
                         )
 
 

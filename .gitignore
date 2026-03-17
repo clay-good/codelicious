@@ -4,31 +4,22 @@ __pycache__/
 *.pyo
 *.egg-info/
 *.egg
+venv/
+.venv/
+
+# Codelicious runtime (generated per-repo)
 .codelicious/db.sqlite3
 .codelicious/cache.json
 .codelicious/state.json
 .codelicious/audit.log
 .codelicious/security.log
-venv/
-.venv/
-
-# Dependencies
-node_modules/
-.pnpm-store/
-
-# Build outputs
-dist/
-.wrangler/
-worker/
-.next/
-out/
-build/
+.codelicious/BUILD_COMPLETE
+.codelicious/STATE.md
 
 # Environment variables
 .env
 .env.local
 .env.*.local
-.dev.vars
 
 # IDE
 .vscode/
@@ -41,22 +32,15 @@ build/
 .DS_Store
 Thumbs.db
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
 # Testing
+.pytest_cache/
+.ruff_cache/
 coverage/
-.nyc_output/
+htmlcov/
 
-# Temporary files
-tmp/
-temp/
-*.tmp
+# Build
+dist/
+build/
 
-# TypeScript
-*.tsbuildinfo.DS_Store
+# Dependencies
+node_modules/

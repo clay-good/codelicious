@@ -26,8 +26,14 @@ class LLMClient:
     Both use the same endpoint and API key. The caller chooses which model
     to use per-request via the model_override parameter.
     """
-    def __init__(self, endpoint_url: str = None, api_key: str = None,
-                 planner_model: str = None, coder_model: str = None):
+
+    def __init__(
+        self,
+        endpoint_url: str = None,
+        api_key: str = None,
+        planner_model: str = None,
+        coder_model: str = None,
+    ):
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "") or os.environ.get("HF_TOKEN", "")
         self.planner_model = planner_model or os.environ.get("MODEL_PLANNER", _DEFAULT_PLANNER_MODEL)
         self.coder_model = coder_model or os.environ.get("MODEL_CODER", _DEFAULT_CODER_MODEL)
@@ -51,8 +57,12 @@ class LLMClient:
         logger.info(f"LLM Planner: {self.planner_model} | Coder: {self.coder_model}")
         logger.info(f"LLM Endpoint: {self.endpoint_url}")
 
-    def chat_completion(self, messages: List[Dict[str, str]], tools: List[Dict] = None,
-                        role: str = "planner") -> Dict[str, Any]:
+    def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict] = None,
+        role: str = "planner",
+    ) -> Dict[str, Any]:
         """
         Executes a synchronous POST to the inference endpoint.
 
@@ -67,7 +77,7 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 8192
+            "max_tokens": 8192,
         }
 
         # Inject standard JSON schema tool definitions if provided
@@ -77,7 +87,7 @@ class LLMClient:
 
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
         }
 
         logger.debug(f"Calling {model} ({role})...")
@@ -86,7 +96,7 @@ class LLMClient:
             self.endpoint_url,
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
-            method="POST"
+            method="POST",
         )
 
         try:
@@ -94,7 +104,7 @@ class LLMClient:
                 result = json.loads(response.read().decode("utf-8"))
                 return result
         except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8')
+            error_body = e.read().decode("utf-8")
             logger.error(f"HTTPError {e.code}: {error_body}")
             raise RuntimeError(f"LLM API Error ({model}): {e.code} - {error_body}")
         except Exception as e:

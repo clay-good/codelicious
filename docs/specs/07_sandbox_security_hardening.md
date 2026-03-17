@@ -490,22 +490,22 @@ if the LLM tried anything suspicious.
 
 ## 4. Acceptance Criteria
 
-- [ ] Command execution uses denylist model (not allowlist)
-- [ ] All 30+ denied commands are blocked, including with path prefixes and script extensions
-- [ ] Shell metacharacters `|&;$\`(){}><! ` are blocked in all commands
-- [ ] `shell=False` is used for all subprocess execution
-- [ ] File writes are restricted to allowed extensions + exact names
-- [ ] Path traversal is prevented (null bytes, `..`, absolute paths, symlinks)
-- [ ] File size limit (1MB) is enforced
-- [ ] File count limit (200) is enforced per session
-- [ ] TOCTOU post-write verification prevents symlink race attacks
-- [ ] Atomic writes use fsync before rename
-- [ ] LLM cannot write to any security-critical source file
-- [ ] Security scanner detects eval, exec, os.system, shell=True, hardcoded secrets
-- [ ] Security scanner skips patterns in comments and string literals
-- [ ] All security boundaries are hardcoded frozensets, not configurable
-- [ ] Security events are logged to dedicated security.log
-- [ ] All tests pass: `python3 -m pytest tests/ -v`
+- [x] Command execution uses denylist model (not allowlist)
+- [x] All 30+ denied commands are blocked, including with path prefixes and script extensions
+- [x] Shell metacharacters `|&;$\`(){}><! ` are blocked in all commands
+- [x] `shell=False` is used for all subprocess execution
+- [x] File writes are restricted to allowed extensions + exact names
+- [x] Path traversal is prevented (null bytes, `..`, absolute paths, symlinks)
+- [x] File size limit (1MB) is enforced
+- [x] File count limit (200) is enforced per session
+- [x] TOCTOU post-write verification prevents symlink race attacks
+- [x] Atomic writes use fsync before rename
+- [x] LLM cannot write to any security-critical source file
+- [x] Security scanner detects eval, exec, os.system, shell=True, hardcoded secrets
+- [x] Security scanner skips patterns in comments and string literals
+- [x] All security boundaries are hardcoded frozensets, not configurable
+- [x] Security events are logged to dedicated security.log
+- [x] All tests pass: `python3 -m pytest tests/ -v`
 
 ---
 

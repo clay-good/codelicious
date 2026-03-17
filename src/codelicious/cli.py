@@ -10,10 +10,7 @@ from codelicious.engines import select_engine
 
 
 def setup_logger():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     return logging.getLogger("codelicious")
 
 
@@ -29,12 +26,32 @@ def main():
         help="Build engine to use (default: auto-detect)",
     )
     parser.add_argument("--model", type=str, default="", help="Model override (e.g. claude-sonnet-4-6)")
-    parser.add_argument("--agent-timeout", type=int, default=1800, help="Claude engine timeout in seconds (default: 1800)")
-    parser.add_argument("--resume", type=str, default="", help="Resume a previous Claude Code session by ID")
-    parser.add_argument("--verify-passes", type=int, default=3, help="Number of verification passes (default: 3)")
+    parser.add_argument(
+        "--agent-timeout",
+        type=int,
+        default=1800,
+        help="Claude engine timeout in seconds (default: 1800)",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default="",
+        help="Resume a previous Claude Code session by ID",
+    )
+    parser.add_argument(
+        "--verify-passes",
+        type=int,
+        default=3,
+        help="Number of verification passes (default: 3)",
+    )
     parser.add_argument("--no-reflect", action="store_true", help="Skip the reflect/review phase")
     parser.add_argument("--push-pr", action="store_true", help="Push changes and create/update PR")
-    parser.add_argument("--max-iterations", type=int, default=50, help="Max iterations for HF engine (default: 50)")
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=50,
+        help="Max iterations for HF engine (default: 50)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Log what would happen without executing")
 
     args = parser.parse_args()

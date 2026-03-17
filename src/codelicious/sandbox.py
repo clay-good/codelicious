@@ -241,9 +241,7 @@ class Sandbox:
         # Use raw path (before realpath resolution) to detect symlinks
         raw_path = self.project_dir / relative_path.strip()
         real_target = pathlib.Path(os.path.realpath(str(raw_path)))
-        if os.path.islink(str(raw_path)) or (
-            os.path.exists(str(raw_path)) and real_target != raw_path
-        ):
+        if os.path.islink(str(raw_path)) or (os.path.exists(str(raw_path)) and real_target != raw_path):
             raise PathTraversalError(
                 "Target path resolves to a different location (possible symlink)",
                 path=relative_path,
@@ -280,10 +278,7 @@ class Sandbox:
         # Post-mkdir verification: ensure parent directory is still within project_dir
         resolved_parent = pathlib.Path(os.path.realpath(str(parent)))
         resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
-        if (
-            not str(resolved_parent).startswith(str(resolved_project) + os.sep)
-            and resolved_parent != resolved_project
-        ):
+        if not str(resolved_parent).startswith(str(resolved_project) + os.sep) and resolved_parent != resolved_project:
             raise PathTraversalError(
                 "Parent directory escapes project directory after creation",
                 path=relative_path,
@@ -332,10 +327,7 @@ class Sandbox:
         # Post-write verification: ensure file still within sandbox (TOCTOU mitigation)
         resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
         final_resolved = pathlib.Path(os.path.realpath(resolved))
-        if (
-            not str(final_resolved).startswith(str(resolved_project) + os.sep)
-            and final_resolved != resolved_project
-        ):
+        if not str(final_resolved).startswith(str(resolved_project) + os.sep) and final_resolved != resolved_project:
             # Attempt to remove the escaped file
             try:
                 os.unlink(str(resolved))
