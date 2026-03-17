@@ -4,14 +4,14 @@
 
 **Last Updated:** 2026-03-16
 **Current Spec:** spec-08 (Hardening, Reliability, and Code Quality)
-**Phase:** Phase 2 COMPLETE - CacheManager.flush_cache implemented
-**Status:** VERIFIED GREEN ✓ - 274 tests passing
+**Phase:** Phase 3 COMPLETE - Unified security constants and interpreter denylist
+**Status:** VERIFIED GREEN ✓ - 469 tests passing
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 274 tests passed in 3.31s |
+| Tests | PASS | 469 tests passed in 3.41s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | 47 files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection |
@@ -79,7 +79,7 @@ Various code quality, documentation, and minor security hardening issues across 
 
 - [x] Phase 1: Fix BuildResult.success Always-True Bug (claude_engine.py)
 - [x] Phase 2: Implement CacheManager.flush_cache (cache_engine.py)
-- [ ] Phase 3: Unify Metacharacter Constants and Add Interpreter Denylist
+- [x] Phase 3: Unify Metacharacter Constants and Add Interpreter Denylist
 - [ ] Phase 4: Unify FSTooling Write Path Through Sandbox
 - [ ] Phase 5: Fix Git Staging to Use Explicit File Lists
 - [ ] Phase 6: Bound Message History in HuggingFace Engine
@@ -117,6 +117,7 @@ Various code quality, documentation, and minor security hardening issues across 
 | test_scaffolder*.py | ~30 | Claude.md scaffolding |
 | test_claude_engine.py | 4 | BuildResult.success correctness (spec-08 Phase 1) |
 | test_cache_engine.py | 14 | Atomic cache flush, state persistence (spec-08 Phase 2) |
+| test_command_runner.py | 195 | Denylist enforcement, metacharacters, interpreters (spec-08 Phase 3) |
 
 ---
 
