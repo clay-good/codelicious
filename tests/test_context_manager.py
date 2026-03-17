@@ -277,7 +277,7 @@ def test_extreme_truncation_logged(caplog: pytest.LogCaptureFixture) -> None:
     # Very tight budget so lots of content gets cut
     budget = ContextBudget(max_tokens=50, response_reservation=0)
 
-    with caplog.at_level(logging.WARNING, logger="proxilion_build"):
+    with caplog.at_level(logging.WARNING, logger="codelicious"):
         build_task_prompt(
             task=task,
             system_prompt="s",

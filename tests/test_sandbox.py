@@ -289,7 +289,7 @@ def test_write_file_cleanup_failure_logged(
     # Simulate os.replace failing with a non-EXDEV error, then unlink failing
     with unittest.mock.patch("os.replace", side_effect=OSError("disk full")):
         with unittest.mock.patch("os.unlink", side_effect=OSError("no perm")):
-            with caplog.at_level(logging.WARNING, logger="proxilion_build.sandbox"):
+            with caplog.at_level(logging.WARNING, logger="codelicious.sandbox"):
                 with pytest.raises(OSError, match="disk full"):
                     sandbox.write_file("test.py", "content")
     assert any("clean up temp file" in r.message for r in caplog.records)

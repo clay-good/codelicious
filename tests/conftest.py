@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for proxilion-build tests (spec-v6 Phase 3)."""
+"""Shared pytest fixtures for codelicious tests."""
 
 from __future__ import annotations
 
@@ -51,11 +51,11 @@ def canned_code_response() -> str:
 
 @pytest.fixture()
 def tmp_project_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """Create a minimal project directory with .proxilion-build/ and pyproject.toml."""
-    state_dir = tmp_path / ".proxilion-build"
+    """Create a minimal project directory with .codelicious/ and pyproject.toml."""
+    state_dir = tmp_path / ".codelicious"
     state_dir.mkdir()
     (state_dir / "STATE.md").write_text(
-        "# proxilion-build State\n\n## Tech Stack\nPython 3.10\n\n## Test Command\npython3 -m pytest tests/\n",
+        "# codelicious Build State\n\n## Tech Stack\nPython 3.10\n\n## Test Command\npython3 -m pytest tests/\n",
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(

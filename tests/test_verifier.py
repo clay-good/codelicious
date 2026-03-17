@@ -287,7 +287,7 @@ def test_security_check_logs_unreadable_file(
     bad_file.write_text("x = 1\n", encoding="utf-8")
 
     with patch("pathlib.Path.read_text", side_effect=OSError("permission denied")):
-        with caplog.at_level(logging.WARNING, logger="proxilion_build.verifier"):
+        with caplog.at_level(logging.WARNING, logger="codelicious.verifier"):
             result = check_security(tmp_path)
 
     assert result.passed is True
