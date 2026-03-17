@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from proxilion_build.errors import ContextBudgetError
+from codelicious.errors import ContextBudgetError
 
 __all__ = [
     "ContextBudget",
@@ -17,7 +17,7 @@ __all__ = [
     "truncate_to_tokens",
 ]
 
-logger = logging.getLogger("proxilion_build.context_manager")
+logger = logging.getLogger("codelicious.context_manager")
 
 
 class TaskLike(Protocol):
@@ -67,9 +67,7 @@ class ContextBudget:
         return max(0, raw)
 
 
-def _warn_if_extreme_truncation(
-    tokens_included: int, total_content_tokens: int, context: str
-) -> None:
+def _warn_if_extreme_truncation(tokens_included: int, total_content_tokens: int, context: str) -> None:
     """Log a warning if more than 50% of available content was truncated."""
     logger.debug(
         "Truncation check (%s): included=%d tokens, total_content=%d tokens, truncated=%.0f%%",
@@ -80,8 +78,7 @@ def _warn_if_extreme_truncation(
     )
     if total_content_tokens > 0 and tokens_included < total_content_tokens * 0.5:
         logger.warning(
-            "%s: more than 50%% of content was truncated "
-            "(used %d tokens, total content %d tokens)",
+            "%s: more than 50%% of content was truncated (used %d tokens, total content %d tokens)",
             context,
             tokens_included,
             total_content_tokens,
@@ -237,11 +234,7 @@ def build_fix_prompt(
     total_content_before_build = 0
 
     # 1. Task description (always full)
-    task_section = (
-        f"## Fix Task: {task.title}\n\n"
-        f"{task.description}\n\n"
-        f"Files to modify: {', '.join(task.file_paths)}\n"
-    )
+    task_section = f"## Fix Task: {task.title}\n\n{task.description}\n\nFiles to modify: {', '.join(task.file_paths)}\n"
     parts.append(task_section)
     task_tokens = estimate_tokens(task_section)
     tokens_used += task_tokens

@@ -11,13 +11,13 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     IntentRejectedError,
     InvalidPlanError,
     PlanningError,
     PromptInjectionWarning,
 )
-from proxilion_build.parser import Section
+from codelicious.parser import Section
 
 __all__ = [
     "DENIED_PATH_SEGMENTS",
@@ -30,7 +30,7 @@ __all__ = [
     "save_plan",
 ]
 
-logger = logging.getLogger("proxilion_build")
+logger = logging.getLogger("codelicious")
 
 _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
     {
@@ -44,9 +44,7 @@ _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
     }
 )
 
-DENIED_PATH_SEGMENTS: frozenset[str] = frozenset(
-    {".git", ".env", "__pycache__", ".proxilion-build"}
-)
+DENIED_PATH_SEGMENTS: frozenset[str] = frozenset({".git", ".env", "__pycache__", ".codelicious"})
 
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"SYSTEM:", re.IGNORECASE),
@@ -209,7 +207,7 @@ def classify_intent(spec_text: str, llm_call: Callable[[str, str], str]) -> bool
     middle, and end sections. Fails CLOSED on network/auth errors (rejects),
     but fails OPEN on parsing/other errors.
     """
-    from proxilion_build.errors import (
+    from codelicious.errors import (
         LLMAuthenticationError,
         LLMClientError,
         LLMProviderError,
@@ -270,9 +268,7 @@ _MAX_TASK_COUNT: int = 100
 def _validate_task_count(tasks: list[Task]) -> None:
     """Reject plans with more than 100 tasks."""
     if len(tasks) > _MAX_TASK_COUNT:
-        raise InvalidPlanError(
-            f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}"
-        )
+        raise InvalidPlanError(f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}")
 
 
 def _validate_unique_task_ids(tasks: list[Task]) -> None:
@@ -293,9 +289,7 @@ def _validate_dependency_references(tasks: list[Task]) -> None:
     for task in tasks:
         for dep_id in task.depends_on:
             if dep_id not in task_ids:
-                raise InvalidPlanError(
-                    f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan"
-                )
+                raise InvalidPlanError(f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan")
 
 
 def _validate_no_circular_dependencies(tasks: list[Task]) -> None:
@@ -329,9 +323,7 @@ def _validate_replan_ids(new_tasks: list[Task], completed_ids: set[str]) -> None
     """Reject replan if new task IDs collide with completed task IDs."""
     conflicts = [task.id for task in new_tasks if task.id in completed_ids]
     if conflicts:
-        raise InvalidPlanError(
-            f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}"
-        )
+        raise InvalidPlanError(f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}")
 
 
 def _validate_topological_order(tasks: list[Task]) -> None:
@@ -408,8 +400,7 @@ def _validate_file_paths(tasks: list[Task]) -> None:
                 for part in pathlib.PurePosixPath(path_variant).parts:
                     if part in DENIED_PATH_SEGMENTS:
                         raise InvalidPlanError(
-                            f"Task '{task.id}' references denied path segment '{part}' "
-                            f"in file path: {fp}"
+                            f"Task '{task.id}' references denied path segment '{part}' in file path: {fp}"
                         )
 
 
@@ -434,8 +425,8 @@ def _parse_json_response(response: str) -> list[dict[str, Any]]:
 
 
 def _ensure_build_state_dir(project_dir: pathlib.Path) -> pathlib.Path:
-    """Create the .proxilion-build directory with restricted permissions."""
-    build_state_dir = project_dir / ".proxilion-build"
+    """Create the .codelicious directory with restricted permissions."""
+    build_state_dir = project_dir / ".codelicious"
     build_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     return build_state_dir
 
@@ -590,14 +581,14 @@ def replan(
 
 
 def save_plan(tasks: list[Task], project_dir: pathlib.Path) -> None:
-    """Save a task list to .proxilion-build/plan.json."""
+    """Save a task list to .codelicious/plan.json."""
     build_state_dir = _ensure_build_state_dir(project_dir)
     _write_plan_file(tasks, build_state_dir / "plan.json")
 
 
 def load_plan(project_dir: pathlib.Path) -> list[Task]:
-    """Load a task list from .proxilion-build/plan.json."""
-    plan_file = project_dir / ".proxilion-build" / "plan.json"
+    """Load a task list from .codelicious/plan.json."""
+    plan_file = project_dir / ".codelicious" / "plan.json"
     if not plan_file.is_file():
         raise PlanningError(f"Plan file not found: {plan_file}", path=str(plan_file))
 

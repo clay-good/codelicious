@@ -8,8 +8,12 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from proxilion_build.context_manager import ContextBudget, build_fix_prompt, build_task_prompt
-from proxilion_build.errors import (
+from codelicious.context_manager import (
+    ContextBudget,
+    build_fix_prompt,
+    build_task_prompt,
+)
+from codelicious.errors import (
     ExecutionError,
     LLMAuthenticationError,
     LLMClientError,
@@ -19,12 +23,12 @@ from proxilion_build.errors import (
     LLMTimeoutError,
     SandboxViolationError,
 )
-from proxilion_build.planner import Task
-from proxilion_build.sandbox import Sandbox
+from codelicious.planner import Task
+from codelicious.sandbox import Sandbox
 
 __all__ = ["ExecutionResult", "execute_fix", "execute_task", "parse_llm_response"]
 
-logger = logging.getLogger("proxilion_build.executor")
+logger = logging.getLogger("codelicious.executor")
 
 _CODE_SYSTEM_PROMPT: str = """\
 You are an expert software developer. Generate code for the given task.
@@ -67,7 +71,7 @@ def _normalize_file_path(raw: str) -> str:
 
     Returns a clean relative path string.
     """
-    from proxilion_build.errors import SandboxViolationError
+    from codelicious.errors import SandboxViolationError
 
     path = raw.strip().replace("\\", "/")
     # Collapse multiple slashes
@@ -145,7 +149,9 @@ def parse_llm_response(
         best_result = results
         best_strategy = "markdown_with_filename"
         logger.debug(
-            "Strategy %s matched %d files (new best)", "markdown_with_filename", len(results)
+            "Strategy %s matched %d files (new best)",
+            "markdown_with_filename",
+            len(results),
         )
         if expected_count > 0 and len(best_result) >= expected_count:
             logger.debug(
@@ -182,7 +188,9 @@ def parse_llm_response(
             best_result = results
             best_strategy = "single_file_fallback"
             logger.debug(
-                "Strategy %s matched %d files (new best)", "single_file_fallback", len(results)
+                "Strategy %s matched %d files (new best)",
+                "single_file_fallback",
+                len(results),
             )
 
     # If we have any results, return the best one
@@ -368,7 +376,11 @@ def execute_fix(
     context_budget: ContextBudget | None = None,
 ) -> ExecutionResult:
     """Re-execute a task with error context for fix/retry attempts."""
-    logger.info("Executing fix for task %s (error context: %d chars)", task.id, len(error_output))
+    logger.info(
+        "Executing fix for task %s (error context: %d chars)",
+        task.id,
+        len(error_output),
+    )
     logger.debug("Previous code available for %d files", len(previous_code))
     if context_budget is None:
         context_budget = ContextBudget()

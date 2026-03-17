@@ -21,11 +21,11 @@ import time
 from dataclasses import dataclass
 from typing import IO
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     AgentTimeout,
     ClaudeAuthError,
     ClaudeRateLimitError,
-    ProxilionBuildError,
+    CodeliciousError,
 )
 
 __all__ = ["AgentResult", "run_agent"]
@@ -36,7 +36,7 @@ _THREAD_JOIN_TIMEOUT_S: int = 10  # Seconds to wait for background threads to ex
 _STDERR_SUMMARY_INTERVAL_S: float = 60.0  # Seconds between stderr summary log lines
 _FINAL_WAIT_TIMEOUT_S: int = 30  # Seconds for final proc.wait() after loop
 
-logger = logging.getLogger("proxilion_build.agent_runner")
+logger = logging.getLogger("codelicious.agent_runner")
 
 
 @dataclass
@@ -129,7 +129,7 @@ def _check_agent_errors(
         If authentication failed.
     ClaudeRateLimitError
         If rate limit was hit.
-    ProxilionBuildError
+    CodeliciousError
         If process exited with non-zero code for other reasons.
     """
     if returncode == 0:
@@ -142,8 +142,7 @@ def _check_agent_errors(
 
     if "auth" in stderr_lower:
         raise ClaudeAuthError(
-            f"Claude CLI authentication failed. Run 'claude' interactively "
-            f"to log in. (exit code {returncode})"
+            f"Claude CLI authentication failed. Run 'claude' interactively to log in. (exit code {returncode})"
         )
 
     if any(
@@ -164,8 +163,7 @@ def _check_agent_errors(
             stderr_text[:500],
         )
         raise ClaudeRateLimitError(
-            f"Claude CLI rate limited (exit code {returncode}): "
-            f"{(stderr_text + stdout_text)[-500:]}",
+            f"Claude CLI rate limited (exit code {returncode}): {(stderr_text + stdout_text)[-500:]}",
             retry_after_s=60.0,
         )
 
@@ -174,7 +172,7 @@ def _check_agent_errors(
         returncode,
         stderr_text[:500],
     )
-    raise ProxilionBuildError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
+    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
 
 
 def _parse_agent_output(
@@ -204,7 +202,7 @@ def _parse_agent_output(
         If authentication failed.
     ClaudeRateLimitError
         If rate limit was hit.
-    ProxilionBuildError
+    CodeliciousError
         If process exited with non-zero code for other reasons.
     """
     # Check for errors first
@@ -299,9 +297,7 @@ def run_agent(
     # Validate project root
     project_root = pathlib.Path(project_root).resolve()
     if not project_root.is_dir():
-        raise ProxilionBuildError(
-            f"Project root does not exist or is not a directory: {project_root}"
-        )
+        raise CodeliciousError(f"Project root does not exist or is not a directory: {project_root}")
 
     # Dry-run mode
     if getattr(config, "dry_run", False):
@@ -317,8 +313,7 @@ def run_agent(
     claude_bin = shutil.which("claude")
     if claude_bin is None:
         raise ClaudeAuthError(
-            "claude CLI not found on PATH. Install Claude Code "
-            "(VS Code extension or standalone CLI) to use agent mode."
+            "claude CLI not found on PATH. Install Claude Code (VS Code extension or standalone CLI) to use agent mode."
         )
 
     # Build command using helper
@@ -492,14 +487,10 @@ def run_agent(
         # Wait for threads to finish with timeout
         stderr_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
         if stderr_thread.is_alive():
-            logger.warning(
-                "stderr drainer thread did not exit within 10s (daemon, will be cleaned up)"
-            )
+            logger.warning("stderr drainer thread did not exit within 10s (daemon, will be cleaned up)")
         stdout_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
         if stdout_thread.is_alive():
-            logger.warning(
-                "stdout drainer thread did not exit within 10s (daemon, will be cleaned up)"
-            )
+            logger.warning("stdout drainer thread did not exit within 10s (daemon, will be cleaned up)")
 
     try:
         proc.wait(timeout=_FINAL_WAIT_TIMEOUT_S)

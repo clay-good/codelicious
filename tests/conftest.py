@@ -12,11 +12,7 @@ def sample_spec_path(tmp_path: pathlib.Path) -> pathlib.Path:
     """Yield a temporary markdown spec file with a minimal valid structure."""
     spec = tmp_path / "spec.md"
     spec.write_text(
-        "# Test Spec\n\n"
-        "## Phase 1\n\n"
-        "Implement feature A.\n\n"
-        "## Phase 2\n\n"
-        "Add tests for feature A.\n",
+        "# Test Spec\n\n## Phase 1\n\nImplement feature A.\n\n## Phase 2\n\nAdd tests for feature A.\n",
         encoding="utf-8",
     )
     return spec
@@ -50,12 +46,7 @@ def canned_plan() -> list[dict]:
 @pytest.fixture()
 def canned_code_response() -> str:
     """Return a FILE/END FILE formatted LLM response for executor tests."""
-    return (
-        "FILE: src/main.py\n"
-        "def greet(name: str) -> str:\n"
-        '    return f"Hello, {name}!"\n'
-        "END FILE: src/main.py\n"
-    )
+    return 'FILE: src/main.py\ndef greet(name: str) -> str:\n    return f"Hello, {name}!"\nEND FILE: src/main.py\n'
 
 
 @pytest.fixture()
@@ -64,8 +55,7 @@ def tmp_project_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     state_dir = tmp_path / ".proxilion-build"
     state_dir.mkdir()
     (state_dir / "STATE.md").write_text(
-        "# proxilion-build State\n\n## Tech Stack\nPython 3.10\n\n"
-        "## Test Command\npython3 -m pytest tests/\n",
+        "# proxilion-build State\n\n## Tech Stack\nPython 3.10\n\n## Test Command\npython3 -m pytest tests/\n",
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(

@@ -1,4 +1,4 @@
-"""Defines all custom exception classes for the proxilion-build project."""
+"""Defines all custom exception classes for the codelicious project."""
 
 import warnings  # noqa: F401 — re-exported for convenience
 
@@ -39,7 +39,7 @@ __all__ = [
     "PlanningError",
     "PolicyViolationError",
     "PromptInjectionWarning",
-    "ProxilionBuildError",
+    "CodeliciousError",
     "ReplanningError",
     "SandboxViolationError",
     "SpecFileNotFoundError",
@@ -52,8 +52,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class ProxilionBuildError(Exception):
-    """Base exception for all proxilion-build errors."""
+class CodeliciousError(Exception):
+    """Base exception for all codelicious errors."""
 
     def __init__(self, message: str, *, path: str | None = None) -> None:
         super().__init__(message)
@@ -66,27 +66,27 @@ class ProxilionBuildError(Exception):
 # ---------------------------------------------------------------------------
 
 
-class SpecFileNotFoundError(ProxilionBuildError):
+class SpecFileNotFoundError(CodeliciousError):
     """Raised when the spec file does not exist."""
 
 
-class FileReadError(ProxilionBuildError):
+class FileReadError(CodeliciousError):
     """Raised when a file cannot be read."""
 
 
-class FileTooLargeError(ProxilionBuildError):
+class FileTooLargeError(CodeliciousError):
     """Raised when a file exceeds the maximum allowed size."""
 
 
-class FileEncodingError(ProxilionBuildError):
+class FileEncodingError(CodeliciousError):
     """Raised when a file cannot be decoded as UTF-8."""
 
 
-class EmptySpecError(ProxilionBuildError):
+class EmptySpecError(CodeliciousError):
     """Raised when the spec file is empty or contains only whitespace."""
 
 
-class ParseError(ProxilionBuildError):
+class ParseError(CodeliciousError):
     """Raised when the spec file cannot be parsed."""
 
 
@@ -95,11 +95,11 @@ class ParseError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class PlanningError(ProxilionBuildError):
+class PlanningError(CodeliciousError):
     """Raised when the planner fails to generate a plan."""
 
 
-class InvalidPlanError(ProxilionBuildError):
+class InvalidPlanError(CodeliciousError):
     """Raised when a generated plan is structurally invalid."""
 
 
@@ -108,7 +108,7 @@ class InvalidPlanError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class LLMClientError(ProxilionBuildError):
+class LLMClientError(CodeliciousError):
     """Base exception for LLM client errors."""
 
 
@@ -141,7 +141,7 @@ class APIKeyMissingError(LLMClientError):
 # ---------------------------------------------------------------------------
 
 
-class ContextBudgetError(ProxilionBuildError):
+class ContextBudgetError(CodeliciousError):
     """Raised when the prompt exceeds the context window budget."""
 
 
@@ -150,15 +150,15 @@ class ContextBudgetError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class ExecutionError(ProxilionBuildError):
+class ExecutionError(CodeliciousError):
     """Raised when code execution fails."""
 
 
-class FileWriteError(ProxilionBuildError):
+class FileWriteError(CodeliciousError):
     """Raised when a file cannot be written."""
 
 
-class UnsafePathError(ProxilionBuildError):
+class UnsafePathError(CodeliciousError):
     """Raised when a file path is deemed unsafe."""
 
 
@@ -167,7 +167,7 @@ class UnsafePathError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class VerificationError(ProxilionBuildError):
+class VerificationError(CodeliciousError):
     """Raised when verification checks fail."""
 
 
@@ -176,20 +176,20 @@ class VerificationError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class LoopError(ProxilionBuildError):
+class LoopError(CodeliciousError):
     """Raised for general loop controller failures."""
 
 
-class PatienceExhaustedError(ProxilionBuildError):
+class PatienceExhaustedError(CodeliciousError):
     """Raised when the maximum number of retries is exceeded."""
 
 
-class ReplanningError(ProxilionBuildError):
+class ReplanningError(CodeliciousError):
     """Raised when mid-loop re-planning fails."""
 
 
-class ConcurrentBuildError(ProxilionBuildError):
-    """Raised when another proxilion-build instance is already running in the same project."""
+class ConcurrentBuildError(CodeliciousError):
+    """Raised when another codelicious instance is already running in the same project."""
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ class ConcurrentBuildError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class SandboxViolationError(ProxilionBuildError):
+class SandboxViolationError(CodeliciousError):
     """Base exception for sandbox access violations."""
 
 
@@ -226,7 +226,7 @@ class FileCountLimitError(SandboxViolationError):
 # ---------------------------------------------------------------------------
 
 
-class BudgetExhaustedError(ProxilionBuildError):
+class BudgetExhaustedError(CodeliciousError):
     """Raised when the LLM call budget or cost ceiling is exceeded."""
 
     def __init__(self, message: str, calls_made: int = 0) -> None:
@@ -234,11 +234,11 @@ class BudgetExhaustedError(ProxilionBuildError):
         self.calls_made = calls_made
 
 
-class BuildTimeoutError(ProxilionBuildError):
+class BuildTimeoutError(CodeliciousError):
     """Raised when a build exceeds the maximum allowed wall-clock time."""
 
 
-class AgentTimeout(ProxilionBuildError):
+class AgentTimeout(CodeliciousError):
     """Raised when a Claude Code agent subprocess exceeds its time limit."""
 
     def __init__(self, message: str, elapsed_s: float = 0.0) -> None:
@@ -246,11 +246,11 @@ class AgentTimeout(ProxilionBuildError):
         self.elapsed_s = elapsed_s
 
 
-class ClaudeAuthError(ProxilionBuildError):
+class ClaudeAuthError(CodeliciousError):
     """Raised when the claude CLI binary is missing or authentication fails."""
 
 
-class ClaudeRateLimitError(ProxilionBuildError):
+class ClaudeRateLimitError(CodeliciousError):
     """Raised when the Claude CLI hits an API rate limit."""
 
     def __init__(self, message: str, retry_after_s: float = 60.0) -> None:
@@ -258,11 +258,11 @@ class ClaudeRateLimitError(ProxilionBuildError):
         self.retry_after_s = retry_after_s
 
 
-class IntentRejectedError(ProxilionBuildError):
+class IntentRejectedError(CodeliciousError):
     """Raised when the intent classifier determines the spec is not legitimate."""
 
 
-class PolicyViolationError(ProxilionBuildError):
+class PolicyViolationError(CodeliciousError):
     """Raised when a policybind policy check blocks an LLM call."""
 
 
@@ -271,15 +271,15 @@ class PolicyViolationError(ProxilionBuildError):
 # ---------------------------------------------------------------------------
 
 
-class GitOperationError(ProxilionBuildError):
+class GitOperationError(CodeliciousError):
     """Raised when a git subprocess operation (commit, push, branch) fails."""
 
 
-class PRCreationError(ProxilionBuildError):
+class PRCreationError(CodeliciousError):
     """Raised when PR/MR creation via gh or glab fails."""
 
 
-class CICheckError(ProxilionBuildError):
+class CICheckError(CodeliciousError):
     """Raised when CI/CD check polling fails or times out."""
 
 

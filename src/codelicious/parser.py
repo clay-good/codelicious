@@ -6,7 +6,7 @@ import logging
 import pathlib
 from dataclasses import dataclass
 
-from proxilion_build.errors import (
+from codelicious.errors import (
     EmptySpecError,
     FileEncodingError,
     FileTooLargeError,
@@ -16,7 +16,7 @@ from proxilion_build.errors import (
 
 __all__ = ["MAX_FILE_SIZE", "Section", "parse_spec"]
 
-logger = logging.getLogger("proxilion_build.parser")
+logger = logging.getLogger("codelicious.parser")
 
 MAX_FILE_SIZE: int = 1_048_576  # 1 MB
 
@@ -43,9 +43,7 @@ def parse_spec(
 
     if base_dir is not None:
         if not isinstance(base_dir, (pathlib.Path, str)):
-            raise TypeError(
-                f"base_dir must be a pathlib.Path or str, got {type(base_dir).__name__}"
-            )
+            raise TypeError(f"base_dir must be a pathlib.Path or str, got {type(base_dir).__name__}")
         base_dir = pathlib.Path(base_dir)
         if not base_dir.is_dir():
             raise ValueError(f"base_dir is not a directory: {base_dir}")

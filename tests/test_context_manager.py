@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from proxilion_build.context_manager import (
+from codelicious.context_manager import (
     ContextBudget,
     build_fix_prompt,
     build_task_prompt,
     estimate_tokens,
     truncate_to_tokens,
 )
-from proxilion_build.errors import ContextBudgetError
+from codelicious.errors import ContextBudgetError
 
 
 @dataclass

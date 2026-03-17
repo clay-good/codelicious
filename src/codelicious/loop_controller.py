@@ -1,41 +1,42 @@
 import logging
 import json
-from typing import Any
 from codelicious.tools.registry import ToolRegistry
 from codelicious.llm_client import LLMClient
 
 logger = logging.getLogger("codelicious.loop")
 
+
 class BuildLoop:
     """
-    The probabilistic 90% engine loop driving LLM generated JSON requests safely 
+    The probabilistic 90% engine loop driving LLM generated JSON requests safely
     into the 10% deterministic sandbox, managing Git PR commits upon verifiable success.
     """
+
     def __init__(self, repo_path, git_manager, cache_manager, spec_filter=None):
         self.repo_path = repo_path
         self.git_manager = git_manager
         self.cache_manager = cache_manager
-        
+
         # Load configs
         config_path = self.repo_path / ".codelicious" / "config.json"
-        
+
         self.config = {"allowlisted_commands": ["pytest", "npm", "ruff", "black"]}
         if config_path.exists():
             try:
                 self.config = json.loads(config_path.read_text())
             except json.JSONDecodeError:
                 pass
-                
+
         # Initialize Sandboxed Tooling Hub
         self.tool_registry = ToolRegistry(
             repo_path=self.repo_path,
             config=self.config,
-            cache_manager=self.cache_manager
+            cache_manager=self.cache_manager,
         )
-        
+
         # Initialize HuggingFace HTTP Driver
         self.llm = LLMClient()
-        
+
         # Initialize Context Window Memory
         system_prompt = (
             "You are Codelicious, an autonomous Outcome-as-a-Service CLI. You operate under a 90% probabilistic model, meaning "
@@ -47,24 +48,23 @@ class BuildLoop:
             "When every single requirement is met and tests pass, reply with the explicit text: 'ALL_SPECS_COMPLETE' so the core "
             "can trigger the GitHub PR transition."
         )
-        self.messages = [
-            {"role": "system", "content": system_prompt}
-        ]
+        self.messages = [{"role": "system", "content": system_prompt}]
 
     def _execute_agentic_iteration(self) -> bool:
         """
-        Executes a singular probabilistic dialogue cycle with the LLM, passing tool definitions 
+        Executes a singular probabilistic dialogue cycle with the LLM, passing tool definitions
         and capturing JSON payloads for the deterministic ToolRegistry execution.
         """
         logger.info("Pinging HuggingFace LLM inference endpoint...")
-        response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema())
-        
+        # Use coder model — it handles both planning and code writing via tool calls
+        response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema(), role="coder")
+
         message_obj = response["choices"][0]["message"]
         self.messages.append(message_obj)
-        
+
         # Handle explicitly requested Tool Calls (e.g. read_file, run_command)
         tool_calls = self.llm.parse_tool_calls(response)
-        
+
         if not tool_calls:
             # Reached a conversational breakpoint (or done). We check if it explicitly declared "DONE".
             content = self.llm.parse_content(response)
@@ -73,62 +73,73 @@ class BuildLoop:
                 return True
             else:
                 # Prompt the LLM to continue its work stream
-                self.messages.append({
-                    "role": "user",
-                    "content": "Please continue exploring or implementing using your toolset until you can declare ALL_SPECS_COMPLETE."
-                })
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": "Please continue exploring or implementing using your toolset until you can declare ALL_SPECS_COMPLETE.",
+                    }
+                )
                 return False
-                
+
         # Deterministic Interception: Execute the requested tools
         for tool_call in tool_calls:
             try:
                 args = json.loads(tool_call["function"]["arguments"])
                 name = tool_call["function"]["name"]
-                
+
                 # Execute mapped function in python
                 tool_result = self.tool_registry.dispatch(name, args)
-                
+
                 # Append the raw return payload to context
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": name,
-                    "content": json.dumps(tool_result)
-                })
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "name": name,
+                        "content": json.dumps(tool_result),
+                    }
+                )
             except Exception as e:
                 logger.error(f"Failed to process tool call {tool_call}: {e}")
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": tool_call["function"]["name"],
-                    "content": json.dumps({"success": False, "stderr": f"Tool Execution Pipeline Error: {e}"})
-                })
-                
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "name": tool_call["function"]["name"],
+                        "content": json.dumps(
+                            {
+                                "success": False,
+                                "stderr": f"Tool Execution Pipeline Error: {e}",
+                            }
+                        ),
+                    }
+                )
+
         return False
 
     def run_continuous_cycle(self) -> bool:
         """
-        The main control flow. Repeatedly loops Agent Inference -> Sandboxed Tool Result 
+        The main control flow. Repeatedly loops Agent Inference -> Sandboxed Tool Result
         until the model signals completion.
         """
         logger.info("Initializing Continuous Agentic Loop.")
-        
+
         # In a generic loop, we run until completion or a max failure threshold limit
         max_iterations = 50
         completed = False
-        
+
         for iteration in range(max_iterations):
             logger.info(f"--- Iteration {iteration + 1}/{max_iterations} ---")
-            
+
             completed = self._execute_agentic_iteration()
-            
+
             if completed:
                 # Ensure final changes are committed deterministically
                 self.git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
                 break
-                
+
         if not completed:
             logger.error("Build cycle exhausted maximum iteration patience threshold.")
             return False
-            
+
         return True

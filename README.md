@@ -129,7 +129,7 @@ Codelicious auto-detects the best available engine at startup:
 
 Auto-detection priority: Claude Code CLI > HuggingFace > error with setup instructions.
 
-> **Note:** If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path — not a degraded mode.
+> **Note:** Engine selection happens at startup, not mid-build. If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path — not a degraded mode.
 
 ---
 
@@ -150,6 +150,17 @@ Options:
   --dry-run                           Log phases without executing
   --spec PATH                         Target a specific spec file
 ```
+
+## Claude Code Engine Phases
+
+When using the Claude Code engine, codelicious runs a 6-phase lifecycle:
+
+1. **SCAFFOLD** — writes `CLAUDE.md` and `.claude/` directory (agents, skills, rules, settings) into the target project
+2. **BUILD** — spawns Claude Code CLI with an autonomous build prompt. Claude reads specs, implements code, runs tests, commits.
+3. **VERIFY** — runs deterministic verification: Python syntax check, test suite, security pattern scan
+4. **REFLECT** — optional read-only quality review by Claude (can skip with `--no-reflect`)
+5. **GIT** — commits all changes to the feature branch
+6. **PR** — pushes and creates/updates a draft PR (requires `--push-pr`)
 
 ---
 
@@ -178,7 +189,7 @@ Place markdown specs in `docs/specs/` in your target repo. Codelicious will find
 
 Codelicious enforces defense-in-depth security, all hardcoded in Python (not configurable by the LLM):
 
-- **Command denylist** — 39 dangerous commands blocked (`rm`, `sudo`, `dd`, `kill`, etc.)
+- **Command denylist** — 39 dangerous commands blocked (`rm`, `sudo`, `dd`, `kill`, `curl`, etc.)
 - **Shell injection prevention** — `shell=False` + metacharacter blocking (`|`, `&`, `;`, `$`, etc.)
 - **File write protection** — LLM cannot modify its own tool source code or security config
 - **File extension allowlist** — only safe file types can be written

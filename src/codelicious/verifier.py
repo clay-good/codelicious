@@ -13,7 +13,9 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("proxilion_build.verifier")
+from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
+
+logger = logging.getLogger("codelicious.verifier")
 
 __all__ = [
     "CheckResult",
@@ -353,9 +355,7 @@ def check_pip_audit(
     output = _truncate(result.stdout + "\n" + result.stderr)
 
     if result.returncode == 0:
-        return CheckResult(
-            name="pip_audit", passed=True, message="No known CVEs found", details=output
-        )
+        return CheckResult(name="pip_audit", passed=True, message="No known CVEs found", details=output)
 
     return CheckResult(
         name="pip_audit",
@@ -428,7 +428,10 @@ def check_playwright(
 
     if result.returncode == 0:
         return CheckResult(
-            name="playwright", passed=True, message="Playwright tests passed", details=output
+            name="playwright",
+            passed=True,
+            message="Playwright tests passed",
+            details=output,
         )
 
     return CheckResult(
@@ -476,10 +479,7 @@ def check_syntax(
     for root, _dirs, files in os.walk(str(project_dir)):
         root_path = pathlib.Path(root)
         # Skip hidden dirs and __pycache__
-        if any(
-            part.startswith(".") or part == "__pycache__"
-            for part in root_path.relative_to(project_dir).parts
-        ):
+        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
             continue
         for f in files:
             if f.endswith(".py"):
@@ -500,10 +500,7 @@ def check_syntax(
         # Check aggregate timeout
         elapsed_agg = time.monotonic() - aggregate_start
         if elapsed_agg > aggregate_timeout:
-            msg = (
-                f"Aggregate timeout: syntax check exceeded "
-                f"{aggregate_timeout}s after checking {i} files"
-            )
+            msg = f"Aggregate timeout: syntax check exceeded {aggregate_timeout}s after checking {i} files"
             errors.append(msg)
             break
         # Clamp per-file timeout to remaining aggregate time
@@ -656,10 +653,7 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
     py_files: list[pathlib.Path] = []
     for root, _dirs, files in os.walk(str(project_dir)):
         root_path = pathlib.Path(root)
-        if any(
-            part.startswith(".") or part == "__pycache__"
-            for part in root_path.relative_to(project_dir).parts
-        ):
+        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
             continue
         for f in files:
             if f.endswith(".py"):
@@ -774,29 +768,6 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
     )
 
 
-_DANGEROUS_COMMANDS = frozenset(
-    {
-        "rm",
-        "sudo",
-        "chmod",
-        "chown",
-        "mkfs",
-        "dd",
-        "kill",
-        "reboot",
-        "shutdown",
-        "halt",
-        "poweroff",
-        "fdisk",
-        "mount",
-        "umount",
-        "format",
-    }
-)
-
-_SHELL_METACHARACTERS = frozenset({"|", "&", ";", "$", "`", "(", ")", "{", "}"})
-
-
 def check_custom_command(
     project_dir: pathlib.Path,
     command: str | None,
@@ -829,7 +800,7 @@ def check_custom_command(
         logger.info("Custom command validation: cmd=%s, basename=%s", command, cmd_basename)
         logger.debug("Custom command args: %s", args)
 
-        if cmd_basename in _DANGEROUS_COMMANDS:
+        if cmd_basename in DENIED_COMMANDS:
             return CheckResult(
                 name="custom",
                 passed=False,
@@ -838,7 +809,7 @@ def check_custom_command(
 
         # Check for shell metacharacters in all arguments
         for arg in args:
-            if any(ch in arg for ch in _SHELL_METACHARACTERS):
+            if any(ch in arg for ch in BLOCKED_METACHARACTERS):
                 return CheckResult(
                     name="custom",
                     passed=False,
@@ -1025,16 +996,16 @@ def write_build_summary(
     state_skipped: list[str],
     last_verification: VerificationResult | None,
 ) -> pathlib.Path:
-    """Write a build summary to .proxilion-build/build-summary.md.
+    """Write a build summary to .codelicious/build-summary.md.
 
     Returns the path to the written file.
     The TypeScript queue worker reads this file and appends it to the PR description.
     """
-    build_state_dir = project_dir / ".proxilion-build"
+    build_state_dir = project_dir / ".codelicious"
     build_state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     summary_path = build_state_dir / "build-summary.md"
 
-    lines: list[str] = ["## proxilion build summary", ""]
+    lines: list[str] = ["## codelicious build summary", ""]
 
     total = len(state_completed) + len(state_failed) + len(state_skipped)
     lines.append(

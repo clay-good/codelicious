@@ -6,7 +6,7 @@ import json
 import pathlib
 from unittest.mock import MagicMock, patch
 
-from proxilion_build.build_logger import BuildSession
+from codelicious.build_logger import BuildSession
 
 
 def _make_config(**overrides):

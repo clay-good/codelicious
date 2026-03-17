@@ -11,27 +11,27 @@ import logging
 import pathlib
 import re
 
-from proxilion_build._io import atomic_write_text
+from codelicious._io import atomic_write_text
 
 __all__ = ["scaffold", "scaffold_claude_dir"]
 
-logger = logging.getLogger("proxilion_build.scaffolder")
+logger = logging.getLogger("codelicious.scaffolder")
 
-_SENTINEL_START: str = "<!-- proxilion-build:start -->"
-_SENTINEL_END: str = "<!-- proxilion-build:end -->"
+_SENTINEL_START: str = "<!-- codelicious:start -->"
+_SENTINEL_END: str = "<!-- codelicious:end -->"
 
 _MANAGED_BLOCK: str = f"""{_SENTINEL_START}
 
-# proxilion-build
+# codelicious
 
-This project is managed by proxilion-build. Read `.proxilion-build/STATE.md` for
+This project is managed by codelicious. Read `.codelicious/STATE.md` for
 the current task list and progress.
 
 ## Rules
 - Read existing files before modifying them.
 - Run `/verify-all` after changes to catch issues early.
-- Update `.proxilion-build/STATE.md` as you complete tasks.
-- When done, write "DONE" to `.proxilion-build/BUILD_COMPLETE`.
+- Update `.codelicious/STATE.md` as you complete tasks.
+- When done, write "DONE" to `.codelicious/BUILD_COMPLETE`.
 
 ## How to Work
 - Use the **builder** agent for parallel code implementation.
@@ -133,11 +133,11 @@ model: sonnet
 maxTurns: 50
 ---
 
-You are a code implementation specialist working inside a proxilion-build
+You are a code implementation specialist working inside a codelicious
 managed project.
 
 CONTEXT:
-- Read CLAUDE.md and .proxilion-build/STATE.md for project conventions.
+- Read CLAUDE.md and .codelicious/STATE.md for project conventions.
 - Read ALL files you will modify before making changes.
 - Match existing patterns: naming, imports, error handling, code style.
 
@@ -161,10 +161,10 @@ model: sonnet
 maxTurns: 30
 ---
 
-You are a test specialist working inside a proxilion-build managed project.
+You are a test specialist working inside a codelicious managed project.
 
 YOUR JOB:
-1. Run the full test suite (check .proxilion-build/STATE.md for the test command).
+1. Run the full test suite (check .codelicious/STATE.md for the test command).
 2. If all tests pass, report success.
 3. If tests fail:
    - Read the failing test AND the code it tests.
@@ -241,7 +241,7 @@ user-invocable: true
 Run the full test suite for this project.
 
 Steps:
-1. Read .proxilion-build/STATE.md to find the test command.
+1. Read .codelicious/STATE.md to find the test command.
 2. Run the test command.
 3. If all tests pass, report the count and exit.
 4. If tests fail:
@@ -293,7 +293,7 @@ Run the complete verification pipeline for this project.
    - eval(, exec(, shell=True, subprocess.call.*shell
    - Hardcoded secrets: password\\s*=\\s*["'], api_key\\s*=\\s*["']
    - SQL injection: f"SELECT, f"INSERT, f"UPDATE, f"DELETE
-5. **State**: Update .proxilion-build/STATE.md with current test count and status.
+5. **State**: Update .codelicious/STATE.md with current test count and status.
 
 Report a summary of each check: pass/fail, issues found, fixes applied.
 """
@@ -301,12 +301,12 @@ Report a summary of each check: pass/fail, issues found, fixes applied.
 _SKILL_UPDATE_STATE = """\
 ---
 name: update-state
-description: Update .proxilion-build/STATE.md with accurate current status.
+description: Update .codelicious/STATE.md with accurate current status.
 allowed-tools: Read, Write, Bash, Glob, Grep
 user-invocable: true
 ---
 
-Update .proxilion-build/STATE.md to accurately reflect the current state of
+Update .codelicious/STATE.md to accurately reflect the current state of
 the project.
 
 Steps:
