@@ -107,26 +107,20 @@ class Sandbox:
         stripped = relative_path.strip()
 
         if "\x00" in stripped:
-            raise PathTraversalError(
-                "Null bytes are not allowed in paths", path=relative_path
-            )
+            raise PathTraversalError("Null bytes are not allowed in paths", path=relative_path)
 
         # Check for path traversal using both POSIX and native path parsing
         # to handle cross-platform attacks (e.g., "..\" on Windows)
         posix_parts = pathlib.PurePosixPath(stripped).parts
         native_parts = pathlib.PurePath(stripped).parts
         if ".." in posix_parts or ".." in native_parts:
-            raise PathTraversalError(
-                "Path traversal via '..' is not allowed", path=relative_path
-            )
+            raise PathTraversalError("Path traversal via '..' is not allowed", path=relative_path)
 
         # Check for absolute paths using both formats
         is_posix_abs = pathlib.PurePosixPath(stripped).is_absolute()
         is_native_abs = pathlib.PurePath(stripped).is_absolute()
         if is_posix_abs or is_native_abs:
-            raise PathTraversalError(
-                "Absolute paths are not allowed", path=relative_path
-            )
+            raise PathTraversalError("Absolute paths are not allowed", path=relative_path)
 
         raw_candidate = self.project_dir / stripped
         resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
@@ -220,14 +214,9 @@ class Sandbox:
 
         # Check file count limit with thread safety
         with self._lock:
-            logger.debug(
-                "File count: %d/%d", self._files_created_count, self.max_file_count
-            )
+            logger.debug("File count: %d/%d", self._files_created_count, self.max_file_count)
             # Check if file already exists - don't count overwrites
-            if (
-                not resolved.exists()
-                and self._files_created_count >= self.max_file_count
-            ):
+            if not resolved.exists() and self._files_created_count >= self.max_file_count:
                 raise FileCountLimitError(
                     f"File count limit {self.max_file_count} reached",
                     path=relative_path,
@@ -252,9 +241,7 @@ class Sandbox:
         # Use raw path (before realpath resolution) to detect symlinks
         raw_path = self.project_dir / relative_path.strip()
         real_target = pathlib.Path(os.path.realpath(str(raw_path)))
-        if os.path.islink(str(raw_path)) or (
-            os.path.exists(str(raw_path)) and real_target != raw_path
-        ):
+        if os.path.islink(str(raw_path)) or (os.path.exists(str(raw_path)) and real_target != raw_path):
             raise PathTraversalError(
                 "Target path resolves to a different location (possible symlink)",
                 path=relative_path,
@@ -291,10 +278,7 @@ class Sandbox:
         # Post-mkdir verification: ensure parent directory is still within project_dir
         resolved_parent = pathlib.Path(os.path.realpath(str(parent)))
         resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
-        if (
-            not str(resolved_parent).startswith(str(resolved_project) + os.sep)
-            and resolved_parent != resolved_project
-        ):
+        if not str(resolved_parent).startswith(str(resolved_project) + os.sep) and resolved_parent != resolved_project:
             raise PathTraversalError(
                 "Parent directory escapes project directory after creation",
                 path=relative_path,
@@ -337,18 +321,13 @@ class Sandbox:
                 try:
                     os.unlink(tmp_name)
                 except OSError as cleanup_exc:
-                    logger.warning(
-                        "Failed to clean up temp file %s: %s", tmp_name, cleanup_exc
-                    )
+                    logger.warning("Failed to clean up temp file %s: %s", tmp_name, cleanup_exc)
             raise
 
         # Post-write verification: ensure file still within sandbox (TOCTOU mitigation)
         resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
         final_resolved = pathlib.Path(os.path.realpath(resolved))
-        if (
-            not str(final_resolved).startswith(str(resolved_project) + os.sep)
-            and final_resolved != resolved_project
-        ):
+        if not str(final_resolved).startswith(str(resolved_project) + os.sep) and final_resolved != resolved_project:
             # Attempt to remove the escaped file
             try:
                 os.unlink(str(resolved))
@@ -365,9 +344,7 @@ class Sandbox:
         try:
             os.chmod(str(resolved), 0o644)
         except OSError as chmod_exc:
-            logger.warning(
-                "Failed to set permissions on %s: %s", relative_path, chmod_exc
-            )
+            logger.warning("Failed to set permissions on %s: %s", relative_path, chmod_exc)
 
         with self._lock:
             self._files_created_count += 1

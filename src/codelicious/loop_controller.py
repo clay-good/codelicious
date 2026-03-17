@@ -57,9 +57,7 @@ class BuildLoop:
         """
         logger.info("Pinging HuggingFace LLM inference endpoint...")
         # Use coder model — it handles both planning and code writing via tool calls
-        response = self.llm.chat_completion(
-            self.messages, tools=self.tool_registry.generate_schema(), role="coder"
-        )
+        response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema(), role="coder")
 
         message_obj = response["choices"][0]["message"]
         self.messages.append(message_obj)
@@ -137,9 +135,7 @@ class BuildLoop:
 
             if completed:
                 # Ensure final changes are committed deterministically
-                self.git_manager.commit_verified_changes(
-                    commit_message="Auto-Implementation: All specs complete."
-                )
+                self.git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
                 break
 
         if not completed:

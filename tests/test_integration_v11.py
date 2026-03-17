@@ -51,9 +51,7 @@ class TestPlanJsonSchema:
         }
         for task in data:
             assert isinstance(task, dict)
-            assert required_keys.issubset(set(task.keys())), (
-                f"Missing keys: {required_keys - set(task.keys())}"
-            )
+            assert required_keys.issubset(set(task.keys())), f"Missing keys: {required_keys - set(task.keys())}"
             assert isinstance(task["file_paths"], list)
             assert isinstance(task["depends_on"], list)
             assert task["status"] == "pending"
@@ -140,9 +138,7 @@ class TestVerifierOnFixtures:
         from codelicious.verifier import check_security
 
         clean = tmp_path / "clean.py"
-        clean.write_text(
-            "import pathlib\n\ndef read(p):\n    return pathlib.Path(p).read_text()\n"
-        )
+        clean.write_text("import pathlib\n\ndef read(p):\n    return pathlib.Path(p).read_text()\n")
 
         result = check_security(tmp_path)
         assert result.passed

@@ -68,9 +68,7 @@ class TestBuildResultSuccess:
             mock.patch("codelicious.scaffolder.scaffold_claude_dir"),
         ):
             # Mock run_agent to NOT write BUILD_COMPLETE (incomplete build)
-            mock_run.return_value = mock.MagicMock(
-                success=True, session_id="test-session", elapsed_s=1.0
-            )
+            mock_run.return_value = mock.MagicMock(success=True, session_id="test-session", elapsed_s=1.0)
             mock_scaffold.return_value = None
 
             # Also mock the verifier to avoid ImportError
@@ -87,9 +85,7 @@ class TestBuildResultSuccess:
                 )
 
         assert isinstance(result, BuildResult)
-        assert result.success is False, (
-            "BuildResult.success should be False when BUILD_COMPLETE is missing"
-        )
+        assert result.success is False, "BuildResult.success should be False when BUILD_COMPLETE is missing"
 
     def test_success_true_when_build_complete_contains_done(
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
@@ -109,9 +105,7 @@ class TestBuildResultSuccess:
             """Side effect that simulates agent writing BUILD_COMPLETE."""
             build_file = codelicious_dir / "BUILD_COMPLETE"
             build_file.write_text("DONE", encoding="utf-8")
-            return mock.MagicMock(
-                success=True, session_id="test-session", elapsed_s=1.0
-            )
+            return mock.MagicMock(success=True, session_id="test-session", elapsed_s=1.0)
 
         # Mock all the heavy operations at their source modules
         with (
@@ -132,13 +126,9 @@ class TestBuildResultSuccess:
             )
 
         assert isinstance(result, BuildResult)
-        assert result.success is True, (
-            "BuildResult.success should be True when BUILD_COMPLETE = 'DONE'"
-        )
+        assert result.success is True, "BuildResult.success should be True when BUILD_COMPLETE = 'DONE'"
 
-    def test_success_true_with_case_variations(
-        self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
-    ):
+    def test_success_true_with_case_variations(self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager):
         """BuildResult.success is True with case variations of 'done'."""
         codelicious_dir = tmp_path / ".codelicious"
         codelicious_dir.mkdir()
@@ -149,9 +139,7 @@ class TestBuildResultSuccess:
             """Side effect that simulates agent writing lowercase 'done'."""
             build_file = codelicious_dir / "BUILD_COMPLETE"
             build_file.write_text("done", encoding="utf-8")
-            return mock.MagicMock(
-                success=True, session_id="test-session", elapsed_s=1.0
-            )
+            return mock.MagicMock(success=True, session_id="test-session", elapsed_s=1.0)
 
         with (
             mock.patch(
@@ -170,13 +158,9 @@ class TestBuildResultSuccess:
                 push_pr=False,
             )
 
-        assert result.success is True, (
-            "BuildResult.success should be True with lowercase 'done'"
-        )
+        assert result.success is True, "BuildResult.success should be True with lowercase 'done'"
 
-    def test_success_false_with_invalid_content(
-        self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
-    ):
+    def test_success_false_with_invalid_content(self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager):
         """BuildResult.success is False when BUILD_COMPLETE has bad content."""
         codelicious_dir = tmp_path / ".codelicious"
         codelicious_dir.mkdir()
@@ -187,9 +171,7 @@ class TestBuildResultSuccess:
             """Side effect that simulates agent writing invalid content."""
             build_file = codelicious_dir / "BUILD_COMPLETE"
             build_file.write_text("IN_PROGRESS", encoding="utf-8")
-            return mock.MagicMock(
-                success=True, session_id="test-session", elapsed_s=1.0
-            )
+            return mock.MagicMock(success=True, session_id="test-session", elapsed_s=1.0)
 
         with (
             mock.patch(
@@ -208,6 +190,4 @@ class TestBuildResultSuccess:
                 push_pr=False,
             )
 
-        assert result.success is False, (
-            "BuildResult.success should be False when BUILD_COMPLETE != 'DONE'"
-        )
+        assert result.success is False, "BuildResult.success should be False when BUILD_COMPLETE != 'DONE'"

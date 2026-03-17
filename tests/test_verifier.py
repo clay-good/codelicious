@@ -67,9 +67,7 @@ def test_check_security_finds_exec(tmp_path: pathlib.Path) -> None:
 def test_check_security_finds_hardcoded_secret(
     tmp_path: pathlib.Path,
 ) -> None:
-    (tmp_path / "secrets.py").write_text(
-        "api_key = 'sk-abcdefghij0123456789'\n", encoding="utf-8"
-    )
+    (tmp_path / "secrets.py").write_text("api_key = 'sk-abcdefghij0123456789'\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is False
     assert "secret" in result.details.lower() or "sk-" in result.details
@@ -79,9 +77,7 @@ def test_check_security_finds_hardcoded_secret(
 
 
 def test_check_security_passes_clean(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "clean.py").write_text(
-        "def add(a, b):\n    return a + b\n", encoding="utf-8"
-    )
+    (tmp_path / "clean.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is True
 
@@ -90,9 +86,7 @@ def test_check_security_passes_clean(tmp_path: pathlib.Path) -> None:
 
 
 def test_check_security_skips_comments(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "commented.py").write_text(
-        "# eval(user_input) is dangerous\nx = 1\n", encoding="utf-8"
-    )
+    (tmp_path / "commented.py").write_text("# eval(user_input) is dangerous\nx = 1\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is True
 
@@ -206,9 +200,7 @@ def test_verification_result_all_passed_true() -> None:
 def test_check_tests_passing(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_ok.py").write_text(
-        "def test_simple():\n    assert 1 + 1 == 2\n", encoding="utf-8"
-    )
+    (tests_dir / "test_ok.py").write_text("def test_simple():\n    assert 1 + 1 == 2\n", encoding="utf-8")
     result = check_tests(tmp_path)
     assert result.passed is True
     assert "passed" in result.message.lower()
@@ -220,9 +212,7 @@ def test_check_tests_passing(tmp_path: pathlib.Path) -> None:
 def test_check_tests_failing(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_fail.py").write_text(
-        "def test_bad():\n    assert False\n", encoding="utf-8"
-    )
+    (tests_dir / "test_fail.py").write_text("def test_bad():\n    assert False\n", encoding="utf-8")
     result = check_tests(tmp_path)
     assert result.passed is False
     assert "failed" in result.message.lower()
@@ -234,9 +224,7 @@ def test_check_tests_failing(tmp_path: pathlib.Path) -> None:
 def test_check_tests_timeout(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    (tests_dir / "test_slow.py").write_text(
-        "import time\ndef test_slow():\n    time.sleep(30)\n", encoding="utf-8"
-    )
+    (tests_dir / "test_slow.py").write_text("import time\ndef test_slow():\n    time.sleep(30)\n", encoding="utf-8")
     result = check_tests(tmp_path, timeout=1)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -265,18 +253,14 @@ def test_check_security_finds_os_system(tmp_path: pathlib.Path) -> None:
 
 
 def test_check_security_finds_dunder_import(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "danger.py").write_text(
-        "__import__('os').system('ls')\n", encoding="utf-8"
-    )
+    (tmp_path / "danger.py").write_text("__import__('os').system('ls')\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is False
     assert "__import__(" in result.details
 
 
 def test_check_security_finds_shell_true(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "danger.py").write_text(
-        "subprocess.run('cmd', shell=True)\n", encoding="utf-8"
-    )
+    (tmp_path / "danger.py").write_text("subprocess.run('cmd', shell=True)\n", encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is False
     assert "shell=True" in result.details
@@ -307,10 +291,7 @@ def test_security_check_logs_unreadable_file(
             result = check_security(tmp_path)
 
     assert result.passed is True
-    assert any(
-        "unreadable" in r.message.lower() or "permission" in r.message.lower()
-        for r in caplog.records
-    )
+    assert any("unreadable" in r.message.lower() or "permission" in r.message.lower() for r in caplog.records)
 
 
 # -- check_custom_command: command not found --------------------------------
@@ -371,8 +352,7 @@ def test_check_security_skips_indented_comments(tmp_path: pathlib.Path) -> None:
 def test_check_security_skips_multiline_strings(tmp_path: pathlib.Path) -> None:
     """Dangerous patterns inside triple-quoted strings must not be flagged."""
     docstring_content = (
-        '"""\nDo not use eval(user_input) in production code.\n'
-        'os.system("cmd") is dangerous.\n"""\nx = 1\n'
+        '"""\nDo not use eval(user_input) in production code.\nos.system("cmd") is dangerous.\n"""\nx = 1\n'
     )
     (tmp_path / "docs.py").write_text(docstring_content, encoding="utf-8")
     result = check_security(tmp_path)
@@ -489,9 +469,7 @@ def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     with patch("subprocess.run", side_effect=FileNotFoundError("pytest")):
-        result = check_coverage(
-            tmp_path, language="python", threshold=80, tool_available=True
-        )
+        result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
     assert result.passed is True
     assert "skipped" in result.message.lower()
 
@@ -503,9 +481,7 @@ def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pytest", 180)):
-        result = check_coverage(
-            tmp_path, language="python", threshold=80, tool_available=True
-        )
+        result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
 
@@ -524,9 +500,7 @@ def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns passed=False when it times out."""
     from codelicious.verifier import check_pip_audit
 
-    with patch(
-        "subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)
-    ):
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
         result = check_pip_audit(tmp_path, tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -615,13 +589,7 @@ def test_security_scan_mixed_triple_quotes(tmp_path: pathlib.Path) -> None:
     """Code with triple-single inside triple-double is handled correctly."""
     # Triple-single quotes inside a triple-double string should not close the string
     # We use concatenation to avoid escaping issues in the test itself
-    code = (
-        '"""\n'
-        "This is a docstring with triple-single ''' inside it.\n"
-        "More docstring content.\n"
-        '"""\n'
-        "x = 1\n"
-    )
+    code = '"""\nThis is a docstring with triple-single \'\'\' inside it.\nMore docstring content.\n"""\nx = 1\n'
     (tmp_path / "mixed_quotes.py").write_text(code, encoding="utf-8")
     result = check_security(tmp_path)
     assert result.passed is True

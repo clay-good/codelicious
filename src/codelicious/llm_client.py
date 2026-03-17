@@ -34,25 +34,15 @@ class LLMClient:
         planner_model: str = None,
         coder_model: str = None,
     ):
-        self.api_key = (
-            api_key
-            or os.environ.get("LLM_API_KEY", "")
-            or os.environ.get("HF_TOKEN", "")
-        )
-        self.planner_model = planner_model or os.environ.get(
-            "MODEL_PLANNER", _DEFAULT_PLANNER_MODEL
-        )
-        self.coder_model = coder_model or os.environ.get(
-            "MODEL_CODER", _DEFAULT_CODER_MODEL
-        )
+        self.api_key = api_key or os.environ.get("LLM_API_KEY", "") or os.environ.get("HF_TOKEN", "")
+        self.planner_model = planner_model or os.environ.get("MODEL_PLANNER", _DEFAULT_PLANNER_MODEL)
+        self.coder_model = coder_model or os.environ.get("MODEL_CODER", _DEFAULT_CODER_MODEL)
 
         # HuggingFace Router — SambaNova provider (fast, free tier)
         # Override with LLM_ENDPOINT env var for other providers:
         #   Together:  https://router.huggingface.co/together/v1/chat/completions
         #   SambaNova: https://router.huggingface.co/sambanova/v1/chat/completions
-        self.endpoint_url = endpoint_url or os.environ.get(
-            "LLM_ENDPOINT", _DEFAULT_ENDPOINT
-        )
+        self.endpoint_url = endpoint_url or os.environ.get("LLM_ENDPOINT", _DEFAULT_ENDPOINT)
 
         if not self.api_key:
             raise RuntimeError(
@@ -121,9 +111,7 @@ class LLMClient:
             logger.error(f"Failed to connect to LLM API: {e}")
             raise RuntimeError(f"LLM Connection Error: {e}")
 
-    def parse_tool_calls(
-        self, completion_response: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    def parse_tool_calls(self, completion_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extracts tool execution requests from the OpenAI-compatible response."""
         try:
             message = completion_response["choices"][0]["message"]

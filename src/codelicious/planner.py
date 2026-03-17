@@ -44,9 +44,7 @@ _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
     }
 )
 
-DENIED_PATH_SEGMENTS: frozenset[str] = frozenset(
-    {".git", ".env", "__pycache__", ".codelicious"}
-)
+DENIED_PATH_SEGMENTS: frozenset[str] = frozenset({".git", ".env", "__pycache__", ".codelicious"})
 
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"SYSTEM:", re.IGNORECASE),
@@ -159,16 +157,12 @@ class Task:
 
         missing = _REQUIRED_TASK_KEYS - set(data.keys())
         if missing:
-            raise InvalidPlanError(
-                f"Task missing required keys: {', '.join(sorted(missing))}"
-            )
+            raise InvalidPlanError(f"Task missing required keys: {', '.join(sorted(missing))}")
 
         if not isinstance(data["id"], str):
             raise InvalidPlanError("Task 'id' must be a string")
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", data["id"]):
-            raise InvalidPlanError(
-                f"Task 'id' must match [a-zA-Z0-9_-]+, got {data['id']!r}"
-            )
+            raise InvalidPlanError(f"Task 'id' must match [a-zA-Z0-9_-]+, got {data['id']!r}")
         if not isinstance(data["title"], str):
             raise InvalidPlanError("Task 'title' must be a string")
         if not isinstance(data["description"], str):
@@ -195,9 +189,7 @@ class Task:
 
 def _check_injection(spec_text: str) -> None:
     """Scan for prompt injection patterns and emit warnings."""
-    logger.debug(
-        "Scanning for injection patterns (%d patterns)", len(_INJECTION_PATTERNS)
-    )
+    logger.debug("Scanning for injection patterns (%d patterns)", len(_INJECTION_PATTERNS))
     for pattern in _INJECTION_PATTERNS:
         match = pattern.search(spec_text)
         if match:
@@ -256,18 +248,14 @@ def classify_intent(spec_text: str, llm_call: Callable[[str, str], str]) -> bool
         LLMClientError,
     ) as exc:
         # Fail CLOSED on network/auth errors - reject the build
-        logger.warning(
-            "Intent classifier failed with LLM error, rejecting build: %s", exc
-        )
+        logger.warning("Intent classifier failed with LLM error, rejecting build: %s", exc)
         logger.debug("LLM error details: %r", exc)
         return False
     except Exception as exc:
         logger.warning("Intent classifier error: %s", exc)
         # Fail closed for connection/auth errors
         if isinstance(exc, (OSError, ConnectionError, TimeoutError)):
-            logger.error(
-                "Intent classifier network failure -- rejecting spec as precaution"
-            )
+            logger.error("Intent classifier network failure -- rejecting spec as precaution")
             return False
         # Fail open for LLM response parsing errors
         logger.warning("Intent classifier non-network failure, allowing build: %s", exc)
@@ -280,9 +268,7 @@ _MAX_TASK_COUNT: int = 100
 def _validate_task_count(tasks: list[Task]) -> None:
     """Reject plans with more than 100 tasks."""
     if len(tasks) > _MAX_TASK_COUNT:
-        raise InvalidPlanError(
-            f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}"
-        )
+        raise InvalidPlanError(f"Plan has {len(tasks)} tasks, which exceeds the limit of {_MAX_TASK_COUNT}")
 
 
 def _validate_unique_task_ids(tasks: list[Task]) -> None:
@@ -294,9 +280,7 @@ def _validate_unique_task_ids(tasks: list[Task]) -> None:
             duplicates.append(task.id)
         seen.add(task.id)
     if duplicates:
-        raise InvalidPlanError(
-            f"Duplicate task IDs found: {', '.join(sorted(set(duplicates)))}"
-        )
+        raise InvalidPlanError(f"Duplicate task IDs found: {', '.join(sorted(set(duplicates)))}")
 
 
 def _validate_dependency_references(tasks: list[Task]) -> None:
@@ -305,9 +289,7 @@ def _validate_dependency_references(tasks: list[Task]) -> None:
     for task in tasks:
         for dep_id in task.depends_on:
             if dep_id not in task_ids:
-                raise InvalidPlanError(
-                    f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan"
-                )
+                raise InvalidPlanError(f"Task '{task.id}' depends on '{dep_id}' which does not exist in the plan")
 
 
 def _validate_no_circular_dependencies(tasks: list[Task]) -> None:
@@ -326,9 +308,7 @@ def _validate_no_circular_dependencies(tasks: list[Task]) -> None:
                 # Found a cycle — extract the cycle portion from the stack
                 cycle_start = stack.index(neighbor)
                 cycle = stack[cycle_start:] + [neighbor]
-                raise InvalidPlanError(
-                    f"Circular dependency detected: {' -> '.join(cycle)}"
-                )
+                raise InvalidPlanError(f"Circular dependency detected: {' -> '.join(cycle)}")
             if state.get(neighbor, 2) == 0:
                 dfs(neighbor)
         stack.pop()
@@ -343,9 +323,7 @@ def _validate_replan_ids(new_tasks: list[Task], completed_ids: set[str]) -> None
     """Reject replan if new task IDs collide with completed task IDs."""
     conflicts = [task.id for task in new_tasks if task.id in completed_ids]
     if conflicts:
-        raise InvalidPlanError(
-            f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}"
-        )
+        raise InvalidPlanError(f"Replan task IDs conflict with completed task IDs: {', '.join(sorted(conflicts))}")
 
 
 def _validate_topological_order(tasks: list[Task]) -> None:
@@ -414,20 +392,15 @@ def _validate_file_paths(tasks: list[Task]) -> None:
 
             for path_variant in paths_to_check:
                 if ".." in path_variant:
-                    raise InvalidPlanError(
-                        f"File path contains traversal sequence: {fp}", path=fp
-                    )
+                    raise InvalidPlanError(f"File path contains traversal sequence: {fp}", path=fp)
                 if path_variant.startswith("/"):
                     raise InvalidPlanError(f"File path is absolute: {fp}", path=fp)
                 if "\x00" in path_variant:
-                    raise InvalidPlanError(
-                        f"File path contains null byte: {fp!r}", path=fp
-                    )
+                    raise InvalidPlanError(f"File path contains null byte: {fp!r}", path=fp)
                 for part in pathlib.PurePosixPath(path_variant).parts:
                     if part in DENIED_PATH_SEGMENTS:
                         raise InvalidPlanError(
-                            f"Task '{task.id}' references denied path segment '{part}' "
-                            f"in file path: {fp}"
+                            f"Task '{task.id}' references denied path segment '{part}' in file path: {fp}"
                         )
 
 
@@ -474,9 +447,7 @@ def create_plan(
             spec_parts.append(section.body)
     spec_text = "\n\n".join(spec_parts)
 
-    logger.info(
-        "Creating plan from %d sections (%d total chars)", len(sections), len(spec_text)
-    )
+    logger.info("Creating plan from %d sections (%d total chars)", len(sections), len(spec_text))
 
     # Intent classification — must pass before any LLM planning calls
     if not classify_intent(spec_text, llm_call):
@@ -520,9 +491,7 @@ def create_plan(
 
         # Success - log validation results and save
         total_deps = sum(len(t.depends_on) for t in tasks)
-        logger.info(
-            "Plan validated: %d tasks, %d total dependencies", len(tasks), total_deps
-        )
+        logger.info("Plan validated: %d tasks, %d total dependencies", len(tasks), total_deps)
         for t in tasks:
             logger.debug(
                 "  Task %s: %s (files: %s, deps: %s)",
@@ -535,9 +504,7 @@ def create_plan(
         _write_plan_file(tasks, build_state_dir / "plan.json")
         return tasks
 
-    raise PlanningError(
-        f"Failed to parse LLM response after 3 attempts: {'; '.join(errors)}"
-    )
+    raise PlanningError(f"Failed to parse LLM response after 3 attempts: {'; '.join(errors)}")
 
 
 def replan(
@@ -610,9 +577,7 @@ def replan(
         _write_plan_file(all_tasks, build_state_dir / "plan.json")
         return new_tasks
 
-    raise PlanningError(
-        f"Failed to parse replan response after 3 attempts: {'; '.join(errors)}"
-    )
+    raise PlanningError(f"Failed to parse replan response after 3 attempts: {'; '.join(errors)}")
 
 
 def save_plan(tasks: list[Task], project_dir: pathlib.Path) -> None:
@@ -697,9 +662,7 @@ def analyze_spec_drift(
         return original_spec
 
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(failure_summaries))
-    user_prompt = (
-        f"## Original spec\n\n{original_spec}\n\n## Failure summaries\n\n{numbered}"
-    )
+    user_prompt = f"## Original spec\n\n{original_spec}\n\n## Failure summaries\n\n{numbered}"
 
     try:
         revised = llm_call(_DRIFT_ANALYSIS_PROMPT, user_prompt)

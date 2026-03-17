@@ -104,9 +104,7 @@ def test_double_close_is_safe(tmp_path: pathlib.Path) -> None:
     session.close(success=True)
     session.close(success=False)  # should not raise or overwrite
 
-    summary = json.loads(
-        (session.session_dir / "summary.json").read_text(encoding="utf-8")
-    )
+    summary = json.loads((session.session_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["success"] is True  # first close wins
 
 

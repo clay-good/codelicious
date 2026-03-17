@@ -27,9 +27,7 @@ class TestDeniedCommands:
         assert "denied commands list" in result["stderr"]
 
     @pytest.mark.parametrize("cmd", list(DENIED_COMMANDS))
-    def test_denied_commands_with_args_blocked(
-        self, runner: CommandRunner, cmd: str
-    ) -> None:
+    def test_denied_commands_with_args_blocked(self, runner: CommandRunner, cmd: str) -> None:
         """Denied commands with arguments should also be blocked."""
         result = runner.safe_run(f"{cmd} --help")
         assert result["success"] is False
@@ -50,9 +48,7 @@ class TestPathPrefixedBinaries:
             "/home/user/bin/curl http://example.com",
         ],
     )
-    def test_path_prefixed_binaries_blocked(
-        self, runner: CommandRunner, cmd: str
-    ) -> None:
+    def test_path_prefixed_binaries_blocked(self, runner: CommandRunner, cmd: str) -> None:
         """Commands with path prefixes should still be blocked."""
         result = runner.safe_run(cmd)
         assert result["success"] is False
@@ -184,9 +180,7 @@ class TestInterpreterDenylist:
             "powershell --version",
         ],
     )
-    def test_interpreters_blocked(
-        self, runner: CommandRunner, interpreter: str
-    ) -> None:
+    def test_interpreters_blocked(self, runner: CommandRunner, interpreter: str) -> None:
         """All interpreter binaries should be blocked."""
         result = runner.safe_run(interpreter)
         assert result["success"] is False
@@ -201,9 +195,7 @@ class TestInterpreterDenylist:
             "bash -c 'echo hello'",
         ],
     )
-    def test_interpreters_with_metacharacters_blocked(
-        self, runner: CommandRunner, interpreter_cmd: str
-    ) -> None:
+    def test_interpreters_with_metacharacters_blocked(self, runner: CommandRunner, interpreter_cmd: str) -> None:
         """Interpreters with metacharacters should be blocked (by either check)."""
         result = runner.safe_run(interpreter_cmd)
         assert result["success"] is False

@@ -22,9 +22,7 @@ class RagEngine:
         self.db_path = self.repo_path / ".codelicious" / "db.sqlite3"
         self.api_key = os.environ.get("LLM_API_KEY", "")
         # Very fast, lightweight embedding model API endpoint on Huggingface
-        self.embed_endpoint = (
-            "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
-        )
+        self.embed_endpoint = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -92,9 +90,7 @@ class RagEngine:
         """
         # Very crude chunking (roughly 500 characters)
         chunk_size = 500
-        chunks = [
-            content[i : i + chunk_size] for i in range(0, len(content), chunk_size)
-        ]
+        chunks = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -132,9 +128,7 @@ class RagEngine:
                 try:
                     chunk_vector = json.loads(vector_json)
                     score = self._cosine_similarity(query_vector, chunk_vector)
-                    results.append(
-                        {"file_path": file_path, "text": chunk_text, "score": score}
-                    )
+                    results.append({"file_path": file_path, "text": chunk_text, "score": score})
                 except json.JSONDecodeError:
                     continue
 

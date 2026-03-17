@@ -154,17 +154,13 @@ class HuggingFaceEngine(BuildEngine):
 
         if completed:
             try:
-                git_manager.commit_verified_changes(
-                    commit_message="Auto-Implementation: All specs complete."
-                )
+                git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
             except Exception as e:
                 logger.error("Git commit failed: %s", e)
 
         elapsed = time.monotonic() - start
         return BuildResult(
             success=completed,
-            message="All specs complete."
-            if completed
-            else "Exhausted iteration limit.",
+            message="All specs complete." if completed else "Exhausted iteration limit.",
             elapsed_s=elapsed,
         )

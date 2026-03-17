@@ -120,9 +120,7 @@ def detect_languages(project_dir: pathlib.Path) -> set[str]:
     """
     langs: set[str] = set()
 
-    if (project_dir / "pyproject.toml").is_file() or (
-        project_dir / "setup.py"
-    ).is_file():
+    if (project_dir / "pyproject.toml").is_file() or (project_dir / "setup.py").is_file():
         langs.add("python")
 
     pkg_json = project_dir / "package.json"
@@ -212,9 +210,7 @@ def check_lint(
     output = _truncate(result.stdout + "\n" + result.stderr)
 
     if result.returncode == 0:
-        return CheckResult(
-            name="lint", passed=True, message="Lint passed", details=output
-        )
+        return CheckResult(name="lint", passed=True, message="Lint passed", details=output)
 
     return CheckResult(
         name="lint",
@@ -359,9 +355,7 @@ def check_pip_audit(
     output = _truncate(result.stdout + "\n" + result.stderr)
 
     if result.returncode == 0:
-        return CheckResult(
-            name="pip_audit", passed=True, message="No known CVEs found", details=output
-        )
+        return CheckResult(name="pip_audit", passed=True, message="No known CVEs found", details=output)
 
     return CheckResult(
         name="pip_audit",
@@ -485,10 +479,7 @@ def check_syntax(
     for root, _dirs, files in os.walk(str(project_dir)):
         root_path = pathlib.Path(root)
         # Skip hidden dirs and __pycache__
-        if any(
-            part.startswith(".") or part == "__pycache__"
-            for part in root_path.relative_to(project_dir).parts
-        ):
+        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
             continue
         for f in files:
             if f.endswith(".py"):
@@ -509,17 +500,12 @@ def check_syntax(
         # Check aggregate timeout
         elapsed_agg = time.monotonic() - aggregate_start
         if elapsed_agg > aggregate_timeout:
-            msg = (
-                f"Aggregate timeout: syntax check exceeded "
-                f"{aggregate_timeout}s after checking {i} files"
-            )
+            msg = f"Aggregate timeout: syntax check exceeded {aggregate_timeout}s after checking {i} files"
             errors.append(msg)
             break
         # Clamp per-file timeout to remaining aggregate time
         remaining_agg = aggregate_timeout - elapsed_agg
-        file_timeout = (
-            min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
-        )
+        file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "py_compile", str(py_file)],
@@ -556,9 +542,7 @@ def check_syntax(
     )
 
 
-def check_tests(
-    project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S
-) -> CheckResult:
+def check_tests(project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S) -> CheckResult:
     """Run pytest if a tests directory exists."""
     tests_dir = project_dir / "tests"
     if not tests_dir.is_dir():
@@ -595,9 +579,7 @@ def check_tests(
 
     output = _truncate(result.stdout + "\n" + result.stderr)
     passed = result.returncode == 0
-    logger.info(
-        "Tests %s (exit code %d)", "passed" if passed else "failed", result.returncode
-    )
+    logger.info("Tests %s (exit code %d)", "passed" if passed else "failed", result.returncode)
 
     if passed:
         return CheckResult(
@@ -671,10 +653,7 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
     py_files: list[pathlib.Path] = []
     for root, _dirs, files in os.walk(str(project_dir)):
         root_path = pathlib.Path(root)
-        if any(
-            part.startswith(".") or part == "__pycache__"
-            for part in root_path.relative_to(project_dir).parts
-        ):
+        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
             continue
         for f in files:
             if f.endswith(".py"):
@@ -722,9 +701,7 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
                 count = line.count(multiline_delim)
                 if count % 2 == 1:
                     in_multiline_string = False
-                    logger.debug(
-                        "Security scan: exiting multiline string at line %d", line_no
-                    )
+                    logger.debug("Security scan: exiting multiline string at line %d", line_no)
                 continue
 
             # Skip comment lines (including indented comments)
@@ -820,9 +797,7 @@ def check_custom_command(
         if cmd_basename.endswith((".sh", ".bash", ".zsh")):
             cmd_basename = cmd_basename.rsplit(".", 1)[0]
 
-        logger.info(
-            "Custom command validation: cmd=%s, basename=%s", command, cmd_basename
-        )
+        logger.info("Custom command validation: cmd=%s, basename=%s", command, cmd_basename)
         logger.debug("Custom command args: %s", args)
 
         if cmd_basename in DENIED_COMMANDS:
@@ -946,9 +921,7 @@ def verify(
                         project_dir,
                         lang,
                         tool_available=lint_available,
-                        timeout=lint_timeout
-                        if lint_timeout is not None
-                        else _LINT_TIMEOUT_S,
+                        timeout=lint_timeout if lint_timeout is not None else _LINT_TIMEOUT_S,
                     )
                 )
                 break
@@ -969,9 +942,7 @@ def verify(
         # pip-audit — Python projects only
         if "python" in languages:
             pip_audit_available = tools.get("pip-audit", False)
-            checks.append(
-                check_pip_audit(project_dir, tool_available=pip_audit_available)
-            )
+            checks.append(check_pip_audit(project_dir, tool_available=pip_audit_available))
 
         # Playwright — web projects only, final attempt only
         if "web" in languages:
@@ -984,9 +955,7 @@ def verify(
             )
 
     if verify_command:
-        checks.append(
-            check_custom_command(project_dir, verify_command, timeout=timeout)
-        )
+        checks.append(check_custom_command(project_dir, verify_command, timeout=timeout))
 
     # Log individual check results
     for check in checks:
@@ -1000,9 +969,7 @@ def verify(
     # Log summary
     passed_count = sum(1 for c in checks if c.passed)
     failed_count = len(checks) - passed_count
-    logger.info(
-        "Verification complete: %d passed, %d failed", passed_count, failed_count
-    )
+    logger.info("Verification complete: %d passed, %d failed", passed_count, failed_count)
 
     return VerificationResult(checks=checks)
 

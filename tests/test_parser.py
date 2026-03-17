@@ -274,9 +274,7 @@ def test_parse_spec_null_bytes_in_content(tmp_path: pathlib.Path) -> None:
         # Any exception raised must be a CodeliciousError subclass (no bare exceptions)
         from codelicious.errors import CodeliciousError
 
-        assert isinstance(exc, CodeliciousError), (
-            f"Unexpected exception type: {type(exc)}"
-        )
+        assert isinstance(exc, CodeliciousError), f"Unexpected exception type: {type(exc)}"
 
 
 def test_parse_spec_extremely_long_line(tmp_path: pathlib.Path) -> None:

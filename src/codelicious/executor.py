@@ -132,9 +132,7 @@ def parse_llm_response(
     if len(results) > len(best_result):
         best_result = results
         best_strategy = "strict_format"
-        logger.debug(
-            "Strategy %s matched %d files (new best)", "strict_format", len(results)
-        )
+        logger.debug("Strategy %s matched %d files (new best)", "strict_format", len(results))
         # If we got all expected files, return immediately
         if expected_count > 0 and len(best_result) >= expected_count:
             logger.debug(
@@ -282,15 +280,10 @@ def _parse_markdown_preceded_by_path(response: str) -> list[tuple[str, str]]:
     matches = pattern.findall(response)
     if not matches:
         return []
-    return [
-        (_strip_and_unify_slashes(path), content.strip("\n"))
-        for path, content in matches
-    ]
+    return [(_strip_and_unify_slashes(path), content.strip("\n")) for path, content in matches]
 
 
-def _parse_single_file_fallback(
-    response: str, expected_file: str
-) -> list[tuple[str, str]]:
+def _parse_single_file_fallback(response: str, expected_file: str) -> list[tuple[str, str]]:
     """Extract a single code block when exactly one file is expected."""
     pattern = re.compile(
         r"^```\w*\s*$\n(.*?)^```\s*$",
@@ -323,9 +316,7 @@ def execute_task(
             existing_contents[fp] = sandbox.read_file(fp)
         except FileNotFoundError:
             pass
-    logger.debug(
-        "Existing file contents available for %d files", len(existing_contents)
-    )
+    logger.debug("Existing file contents available for %d files", len(existing_contents))
 
     # Build prompt within budget
     file_tree = sandbox.list_files()
@@ -458,9 +449,7 @@ def _write_files(
                 normalized_task_paths,
             )
             if normalized not in normalized_task_paths:
-                logger.warning(
-                    "Skipping unexpected file '%s' not in task.file_paths", path
-                )
+                logger.warning("Skipping unexpected file '%s' not in task.file_paths", path)
                 skipped_count += 1
                 continue
             sandbox.write_file(normalized, content)
@@ -474,9 +463,7 @@ def _write_files(
             error=f"Sandbox violation: {exc}",
             skipped_count=skipped_count,
         )
-    logger.info(
-        "Write complete: %d written, %d skipped", len(files_written), skipped_count
-    )
+    logger.info("Write complete: %d written, %d skipped", len(files_written), skipped_count)
 
     return ExecutionResult(
         task_id=task.id,

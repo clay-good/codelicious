@@ -78,9 +78,7 @@ _SENSITIVE_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
 _REDACTED: str = "***REDACTED***"
 
 LOG_FORMAT: str = "{asctime} [{levelname}] {name}.{funcName}: {message}"
-VERBOSE_LOG_FORMAT: str = (
-    "{asctime} [{levelname}] {name}.{funcName}:{lineno}: {message}"
-)
+VERBOSE_LOG_FORMAT: str = "{asctime} [{levelname}] {name}.{funcName}:{lineno}: {message}"
 
 
 def sanitize_message(message: str) -> str:
@@ -114,10 +112,7 @@ class SanitizingFilter(logging.Filter):
                     for k, v in record.args.items()
                 }
             elif isinstance(record.args, tuple):
-                record.args = tuple(
-                    sanitize_message(str(a)) if isinstance(a, str) else a
-                    for a in record.args
-                )
+                record.args = tuple(sanitize_message(str(a)) if isinstance(a, str) else a for a in record.args)
         return True
 
 
@@ -200,9 +195,7 @@ class TimingContext:
     ) -> None:
         elapsed = time.perf_counter() - self.start_time
         if exc_val is not None:
-            self.logger.warning(
-                "%s: failed after %.3fs: %s", self.operation_name, elapsed, exc_val
-            )
+            self.logger.warning("%s: failed after %.3fs: %s", self.operation_name, elapsed, exc_val)
         else:
             self.logger.debug("%s: completed in %.3fs", self.operation_name, elapsed)
 

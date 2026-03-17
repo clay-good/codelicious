@@ -61,9 +61,7 @@ class ToolRegistry:
             self.audit.log_tool_outcome(tool_name, resp)
             return resp
         except Exception as e:
-            self.audit.log_sandbox_violation(
-                f"Fatal error within tool '{tool_name}' execution: {e}"
-            )
+            self.audit.log_sandbox_violation(f"Fatal error within tool '{tool_name}' execution: {e}")
             return {
                 "success": False,
                 "stdout": "",

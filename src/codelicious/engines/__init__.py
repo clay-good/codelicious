@@ -50,9 +50,7 @@ def select_engine(engine_preference: str = "auto") -> BuildEngine:
 
     if engine_preference == "huggingface":
         if not hf_available:
-            raise RuntimeError(
-                "HuggingFace token not found. Set HF_TOKEN or LLM_API_KEY, or use --engine claude."
-            )
+            raise RuntimeError("HuggingFace token not found. Set HF_TOKEN or LLM_API_KEY, or use --engine claude.")
         return HuggingFaceEngine()
 
     # Auto-detect: prefer Claude, fall back to HuggingFace

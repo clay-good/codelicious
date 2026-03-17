@@ -142,8 +142,7 @@ def _check_agent_errors(
 
     if "auth" in stderr_lower:
         raise ClaudeAuthError(
-            f"Claude CLI authentication failed. Run 'claude' interactively "
-            f"to log in. (exit code {returncode})"
+            f"Claude CLI authentication failed. Run 'claude' interactively to log in. (exit code {returncode})"
         )
 
     if any(
@@ -164,8 +163,7 @@ def _check_agent_errors(
             stderr_text[:500],
         )
         raise ClaudeRateLimitError(
-            f"Claude CLI rate limited (exit code {returncode}): "
-            f"{(stderr_text + stdout_text)[-500:]}",
+            f"Claude CLI rate limited (exit code {returncode}): {(stderr_text + stdout_text)[-500:]}",
             retry_after_s=60.0,
         )
 
@@ -174,9 +172,7 @@ def _check_agent_errors(
         returncode,
         stderr_text[:500],
     )
-    raise CodeliciousError(
-        f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}"
-    )
+    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
 
 
 def _parse_agent_output(
@@ -301,9 +297,7 @@ def run_agent(
     # Validate project root
     project_root = pathlib.Path(project_root).resolve()
     if not project_root.is_dir():
-        raise CodeliciousError(
-            f"Project root does not exist or is not a directory: {project_root}"
-        )
+        raise CodeliciousError(f"Project root does not exist or is not a directory: {project_root}")
 
     # Dry-run mode
     if getattr(config, "dry_run", False):
@@ -319,19 +313,14 @@ def run_agent(
     claude_bin = shutil.which("claude")
     if claude_bin is None:
         raise ClaudeAuthError(
-            "claude CLI not found on PATH. Install Claude Code "
-            "(VS Code extension or standalone CLI) to use agent mode."
+            "claude CLI not found on PATH. Install Claude Code (VS Code extension or standalone CLI) to use agent mode."
         )
 
     # Build command using helper
-    cmd = _build_agent_command(
-        prompt, project_root, config, claude_bin, resume_session_id
-    )
+    cmd = _build_agent_command(prompt, project_root, config, claude_bin, resume_session_id)
 
     timeout_s_raw = getattr(config, "agent_timeout_s", 1800)
-    timeout_s: float = (
-        float(timeout_s_raw) if isinstance(timeout_s_raw, (int, float)) else 1800
-    )
+    timeout_s: float = float(timeout_s_raw) if isinstance(timeout_s_raw, (int, float)) else 1800
 
     model = getattr(config, "model", "")
     effort = getattr(config, "effort", "")
@@ -388,12 +377,8 @@ def run_agent(
         finally:
             stdout_queue.put(None)  # Signal EOF
 
-    stderr_thread = threading.Thread(
-        target=_drain_stderr, daemon=True, name="stderr-drainer"
-    )
-    stdout_thread = threading.Thread(
-        target=_drain_stdout, daemon=True, name="stdout-drainer"
-    )
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True, name="stderr-drainer")
+    stdout_thread = threading.Thread(target=_drain_stdout, daemon=True, name="stdout-drainer")
     stderr_thread.start()
     stdout_thread.start()
 
@@ -502,14 +487,10 @@ def run_agent(
         # Wait for threads to finish with timeout
         stderr_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
         if stderr_thread.is_alive():
-            logger.warning(
-                "stderr drainer thread did not exit within 10s (daemon, will be cleaned up)"
-            )
+            logger.warning("stderr drainer thread did not exit within 10s (daemon, will be cleaned up)")
         stdout_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
         if stdout_thread.is_alive():
-            logger.warning(
-                "stdout drainer thread did not exit within 10s (daemon, will be cleaned up)"
-            )
+            logger.warning("stdout drainer thread did not exit within 10s (daemon, will be cleaned up)")
 
     try:
         proc.wait(timeout=_FINAL_WAIT_TIMEOUT_S)

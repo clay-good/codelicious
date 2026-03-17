@@ -83,9 +83,7 @@ class AuditLogger:
         Security log format:
         2026-03-15T15:06:23Z [SECURITY] EVENT_NAME: message (iteration N, tool: tool_name)
         """
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         context = f"iteration {self._current_iteration}, tool: {self._current_tool or 'unknown'}"
         full_message = f"{message} ({context})"
         log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
@@ -159,9 +157,7 @@ class AuditLogger:
             console_logger.error(msg)
             self._write_to_file("ERROR", "TOOL_FAILED", msg)
 
-    def log_sandbox_violation(
-        self, detail: str, event_type: SecurityEvent | None = None
-    ):
+    def log_sandbox_violation(self, detail: str, event_type: SecurityEvent | None = None):
         """Log a sandbox violation as a security event.
 
         Args:

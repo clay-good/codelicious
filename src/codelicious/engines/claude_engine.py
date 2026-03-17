@@ -208,9 +208,7 @@ class ClaudeCodeEngine(BuildEngine):
         # ── Phase 5: GIT COMMIT ────────────────────────────────────────
         logger.info("Phase 5/6: GIT — committing changes")
         try:
-            git_manager.commit_verified_changes(
-                commit_message=f"codelicious: build {project_name} from specs"
-            )
+            git_manager.commit_verified_changes(commit_message=f"codelicious: build {project_name} from specs")
             logger.info("Changes committed successfully.")
         except Exception as e:
             logger.warning("Git commit failed: %s", e)

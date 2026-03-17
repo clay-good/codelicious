@@ -120,22 +120,16 @@ class GitManager:
         # Check if gh CLI is installed
         gh_check = subprocess.run(["gh", "--version"], capture_output=True)
         if gh_check.returncode != 0:
-            logger.warning(
-                "GitHub CLI (`gh`) not found! Cannot automatically orchestrate PR API. Continuing locally."
-            )
+            logger.warning("GitHub CLI (`gh`) not found! Cannot automatically orchestrate PR API. Continuing locally.")
             return
 
         # Check if a PR already exists for this branch
-        pr_status = subprocess.run(
-            ["gh", "pr", "view"], cwd=self.repo_path, capture_output=True
-        )
+        pr_status = subprocess.run(["gh", "pr", "view"], cwd=self.repo_path, capture_output=True)
 
         if pr_status.returncode != 0:
             logger.info("No PR found for this branch. Creating a new Draft PR.")
             title = f"Autonomous Implementation: {spec_summary}"
-            body = (
-                "This PR was generated entirely by Codelicious using DeepSeek and Qwen."
-            )
+            body = "This PR was generated entirely by Codelicious using DeepSeek and Qwen."
 
             subprocess.run(
                 ["gh", "pr", "create", "--draft", "--title", title, "--body", body],
@@ -174,6 +168,4 @@ class GitManager:
                 capture_output=True,
             )
 
-        logger.info(
-            "Successfully transitioned outcome to 'Outcome as a Service' completion queue."
-        )
+        logger.info("Successfully transitioned outcome to 'Outcome as a Service' completion queue.")

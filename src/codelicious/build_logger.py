@@ -66,9 +66,7 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
             # Parse the timestamp from the session_id format
             # Expected format: "20260314T123045Z" (YYYYMMDDTHHMMSSZ)
             if not session_id.endswith("z"):
-                logger.debug(
-                    "Skipping directory with non-timestamp name: %s", session_id
-                )
+                logger.debug("Skipping directory with non-timestamp name: %s", session_id)
                 continue
 
             # Parse the timestamp
@@ -86,14 +84,10 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
                     removed_count += 1
                     logger.debug("Removed old build directory: %s", session_dir)
                 except Exception as exc:
-                    logger.warning(
-                        "Failed to remove build directory %s: %s", session_dir, exc
-                    )
+                    logger.warning("Failed to remove build directory %s: %s", session_dir, exc)
         except (ValueError, OSError) as exc:
             # Parsing failed - skip this directory (do not delete unknown directories)
-            logger.debug(
-                "Skipping directory with unparseable name %s: %s", session_id, exc
-            )
+            logger.debug("Skipping directory with unparseable name %s: %s", session_id, exc)
             continue
 
     if removed_count > 0:
@@ -161,9 +155,7 @@ class BuildSession:
         os.chmod(str(meta_path), 0o600)
 
         # Open output.log and session.jsonl (line-buffered)
-        self._output_log = open(
-            self._session_dir / "output.log", "w", encoding="utf-8", buffering=1
-        )
+        self._output_log = open(self._session_dir / "output.log", "w", encoding="utf-8", buffering=1)
         try:
             os.chmod(str(self._session_dir / "output.log"), 0o600)
         except OSError as exc:
@@ -171,9 +163,7 @@ class BuildSession:
             # Don't re-raise -- permissions are a hardening measure, not critical
 
         try:
-            self._event_log = open(
-                self._session_dir / "session.jsonl", "w", encoding="utf-8", buffering=1
-            )
+            self._event_log = open(self._session_dir / "session.jsonl", "w", encoding="utf-8", buffering=1)
         except BaseException:
             self._output_log.close()
             raise
@@ -237,9 +227,7 @@ class BuildSession:
                 summary["claude_session_id"] = claude_session_id
 
             summary_path = self._session_dir / "summary.json"
-            summary_path.write_text(
-                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
-            )
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
             os.chmod(str(summary_path), 0o600)
 
             self._output_log.close()

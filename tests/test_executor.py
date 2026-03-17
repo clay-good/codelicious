@@ -238,14 +238,7 @@ def test_execution_result_skipped_count(tmp_path: pathlib.Path) -> None:
     task = _make_task(file_paths=["main.py"])
 
     # LLM returns two files but task only expects main.py; extra.py should be skipped
-    llm_response = (
-        "--- FILE: main.py ---\n"
-        "x = 1\n"
-        "--- END FILE ---\n"
-        "--- FILE: extra.py ---\n"
-        "y = 2\n"
-        "--- END FILE ---\n"
-    )
+    llm_response = "--- FILE: main.py ---\nx = 1\n--- END FILE ---\n--- FILE: extra.py ---\ny = 2\n--- END FILE ---\n"
 
     result = execute_task(
         task=task,
@@ -263,12 +256,7 @@ def test_execution_result_skipped_count(tmp_path: pathlib.Path) -> None:
 
 def test_file_marker_in_content_does_not_split() -> None:
     """The string '--- FILE: foo ---' inside file content must not trigger a split."""
-    response = (
-        "--- FILE: main.py ---\n"
-        "# This file references --- FILE: other.py ---\n"
-        "x = 1\n"
-        "--- END FILE ---\n"
-    )
+    response = "--- FILE: main.py ---\n# This file references --- FILE: other.py ---\nx = 1\n--- END FILE ---\n"
     result = parse_llm_response(response)
     # Should produce exactly one file, not two
     assert len(result) == 1
@@ -550,9 +538,7 @@ def test_write_files_normalizes_path_comparison(tmp_path: pathlib.Path) -> None:
     assert "src/main.py" in result.files_written
     assert result.skipped_count == 0
     # Verify file was actually written
-    assert (tmp_path / "src" / "main.py").read_text(
-        encoding="utf-8"
-    ) == "print('hello')"
+    assert (tmp_path / "src" / "main.py").read_text(encoding="utf-8") == "print('hello')"
 
 
 # -- spec-v14 Phase 4: Executor response parsing backtracking -----------------

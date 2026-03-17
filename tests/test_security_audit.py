@@ -26,9 +26,7 @@ class TestSecurityEvent:
             "DENIED_PATH_WRITE",
         ]
         for event_name in expected_events:
-            assert hasattr(SecurityEvent, event_name), (
-                f"Missing SecurityEvent.{event_name}"
-            )
+            assert hasattr(SecurityEvent, event_name), f"Missing SecurityEvent.{event_name}"
             assert SecurityEvent[event_name].value == event_name
 
     def test_security_event_is_string_enum(self):
@@ -210,9 +208,7 @@ class TestAuditLoggerSecurityLogging:
     def test_security_log_only_contains_security_events(self, temp_repo, audit_logger):
         """Verify security.log only contains security events, not tool intents/outcomes."""
         audit_logger.log_tool_intent("read_file", {"path": "test.txt"})
-        audit_logger.log_tool_outcome(
-            "read_file", {"success": True, "stdout": "content"}
-        )
+        audit_logger.log_tool_outcome("read_file", {"success": True, "stdout": "content"})
         audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Blocked command")
 
         security_log = temp_repo / ".codelicious" / "security.log"
@@ -223,9 +219,7 @@ class TestAuditLoggerSecurityLogging:
 
         # Security log should only have security event
         assert "COMMAND_DENIED" in security_content
-        assert (
-            "read_file" not in security_content
-        )  # Tool intent/outcome not in security log
+        assert "read_file" not in security_content  # Tool intent/outcome not in security log
 
         # Audit log should have everything
         assert "COMMAND_DENIED" in audit_content

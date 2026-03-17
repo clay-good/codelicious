@@ -38,16 +38,12 @@ def parse_spec(
     """Parse a markdown spec file into a list of Section objects."""
     logger.info("Parsing spec: path=%s", path)
     if not isinstance(path, (pathlib.Path, str)):
-        raise TypeError(
-            f"path must be a pathlib.Path or str, got {type(path).__name__}"
-        )
+        raise TypeError(f"path must be a pathlib.Path or str, got {type(path).__name__}")
     path = pathlib.Path(path)
 
     if base_dir is not None:
         if not isinstance(base_dir, (pathlib.Path, str)):
-            raise TypeError(
-                f"base_dir must be a pathlib.Path or str, got {type(base_dir).__name__}"
-            )
+            raise TypeError(f"base_dir must be a pathlib.Path or str, got {type(base_dir).__name__}")
         base_dir = pathlib.Path(base_dir)
         if not base_dir.is_dir():
             raise ValueError(f"base_dir is not a directory: {base_dir}")
