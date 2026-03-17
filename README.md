@@ -403,6 +403,208 @@ flowchart LR
     style Logger fill:#DAA520,color:#000
 ```
 
+### Test Infrastructure
+
+```mermaid
+flowchart TB
+    subgraph Fixtures["tests/fixtures/"]
+        Specs["specs/\nvalid_simple.md\nvalid_multi_section.md\ninvalid_*.md\nmalicious_*.md"]
+        LLMResp["llm_responses/\nvalid_*.json\ninvalid_*.json\nmalicious_*.json"]
+        Repos["repos/factory.py\ncreate_minimal_repo()\ncreate_repo_with_specs()"]
+        Mocks["mocks/\nllm_mock.py\ngit_mock.py\nsubprocess_mock.py"]
+    end
+
+    subgraph TestModules["Test Modules"]
+        Unit["Unit Tests\ntest_sandbox.py\ntest_executor.py\ntest_parser.py\ntest_verifier.py"]
+        Integration["Integration Tests\ntest_cli.py\ntest_engine_selection.py\ntest_git_orchestrator.py"]
+        Security["Security Tests\ntest_security_audit.py\ntest_thread_safety.py"]
+        Schema["Validation Tests\ntest_schema.py\ntest_config.py"]
+    end
+
+    subgraph Coverage["Coverage Enforcement"]
+        PytestCov["pytest --cov\nfail_under = 80%"]
+        Report["Coverage Report\nterm-missing output"]
+    end
+
+    Fixtures --> TestModules
+    TestModules --> PytestCov
+    PytestCov --> Report
+```
+
+### Error Recovery and Retry Flow
+
+```mermaid
+flowchart TB
+    Operation["Operation\n(LLM call, git cmd, agent run)"]
+    Classify{"Error\nType?"}
+    Transient["Transient Error\n(rate limit, timeout, provider error)"]
+    Permanent["Permanent Error\n(sandbox violation, parse error, config error)"]
+    Retry{"Retry\nAttempt <= 3?"}
+    Backoff["Exponential Backoff\ndelay = min(base * 2^n + jitter, 30s)"]
+    Success["Operation Succeeded"]
+    FailTransient["All Retries Exhausted\nExit Code 2"]
+    FailPermanent["Permanent Failure\nExit Code 1"]
+
+    Operation --> Classify
+    Classify -->|"is_transient = True"| Transient
+    Classify -->|"is_transient = False"| Permanent
+    Transient --> Retry
+    Retry -->|"Yes"| Backoff
+    Backoff --> Operation
+    Retry -->|"No"| FailTransient
+    Permanent --> FailPermanent
+    Operation -->|"No error"| Success
+```
+
+### Spec-11 Hardening Phase Dependencies
+
+```mermaid
+flowchart TB
+    subgraph P1_Security["P1 Critical Security Fixes"]
+        Ph1["Phase 1\nCLI Exception\nSwallowing"]
+        Ph2["Phase 2\nCommand Split\nMismatch"]
+        Ph3["Phase 3\nTOCTOU Race\nfs_tools"]
+        Ph4["Phase 4\nSandbox Race\nConditions"]
+        Ph5["Phase 5\nAPI Error\nSanitization"]
+        Ph7["Phase 7\nPath Traversal\nTriple-Encode"]
+        Ph8["Phase 8\nHTTPS Endpoint\nValidation"]
+        Ph9["Phase 9\nGit Staging\nExplicit Files"]
+    end
+
+    subgraph P2_Reliability["P2 Reliability Fixes"]
+        Ph6["Phase 6\nJSON Config\nValidation"]
+        Ph11["Phase 11\nMetacharacter\nUnification"]
+        Ph12["Phase 12\nLogging Format\nPercent-Style"]
+        Ph13["Phase 13\nCase-Insensitive\nPath Bypass"]
+        Ph14["Phase 14\nProcess Group\nTimeout"]
+        Ph15["Phase 15\nDirectory Listing\nLimits"]
+        Ph16["Phase 16\nRegex Backtrack\nFix"]
+    end
+
+    subgraph Test_Coverage["Test Coverage"]
+        Ph10["Phase 10\nCache Flush\nImplementation"]
+        Ph17["Phase 17\nHuggingFace Engine\nTests"]
+        Ph18["Phase 18\nConfig Module\nTests"]
+    end
+
+    subgraph Final["Final Validation"]
+        Ph19["Phase 19\nIntegration Tests\nand Sample Data"]
+        Ph20["Phase 20\nDocs Alignment\nand Lint Gates"]
+    end
+
+    Ph2 --> Ph11
+    Ph2 --> Ph14
+    Ph11 --> Ph14
+    Ph5 --> Ph8
+    Ph3 --> Ph13
+    Ph3 --> Ph15
+    Ph5 --> Ph17
+    Ph6 --> Ph17
+    Ph8 --> Ph18
+
+    Ph1 --> Ph19
+    Ph2 --> Ph19
+    Ph3 --> Ph19
+    Ph4 --> Ph19
+    Ph5 --> Ph19
+    Ph6 --> Ph19
+    Ph7 --> Ph19
+    Ph8 --> Ph19
+    Ph9 --> Ph19
+    Ph10 --> Ph19
+    Ph11 --> Ph19
+    Ph12 --> Ph19
+    Ph13 --> Ph19
+    Ph14 --> Ph19
+    Ph15 --> Ph19
+    Ph16 --> Ph19
+    Ph17 --> Ph19
+    Ph18 --> Ph19
+    Ph19 --> Ph20
+
+    style P1_Security fill:#B22222,color:#fff
+    style P2_Reliability fill:#DAA520,color:#000
+    style Test_Coverage fill:#228B22,color:#fff
+    style Final fill:#4169E1,color:#fff
+```
+
+### Codebase Logic Composition
+
+```mermaid
+pie title Code Composition by Logic Type (8,383 lines)
+    "Deterministic Safety Harness (42%)" : 3521
+    "Probabilistic LLM-Driven (45%)" : 3772
+    "Shared Infrastructure (13%)" : 1090
+```
+
+### Spec-12 MVP Closure Phase Dependencies
+
+```mermaid
+flowchart TB
+    subgraph Tier1["Tier 1: Critical Security (Phases 1-8)"]
+        P1["Phase 1\nPrompt Injection\nBlocking Guard"]
+        P2["Phase 2\nInterpreter\nDenylist Closure"]
+        P3["Phase 3\nPermissions\nFlag Gating"]
+        P4["Phase 4\nExplicit Git\nFile Staging"]
+        P5["Phase 5\nAPI Key\nLog Masking"]
+        P6["Phase 6\nPR Title\nSanitization"]
+        P7["Phase 7\nReviewer String\nValidation"]
+        P8["Phase 8\nRead Protection\nSecurity Files"]
+    end
+
+    subgraph Tier2["Tier 2: Reliability (Phases 9-14)"]
+        P9["Phase 9\nflush_cache +\nAtomic Writes"]
+        P10["Phase 10\nmax_iterations\nConfig Fix"]
+        P11["Phase 11\nResponse Body\nSize Cap"]
+        P12["Phase 12\nRAG Query\nResult Cap"]
+        P13["Phase 13\nAudit Logger\nLevel Fix"]
+        P14["Phase 14\nPR Function\nArg Fix"]
+    end
+
+    subgraph Tier3["Tier 3: Code Quality (Phases 15-18)"]
+        P15["Phase 15\npyproject.toml\nDev Deps"]
+        P16["Phase 16\nPercent-Style\nLogging"]
+        P17["Phase 17\nDead Code\nRemoval"]
+        P18["Phase 18\nFile Permission\nFix"]
+    end
+
+    subgraph Tier4["Tier 4: Test Coverage (Phases 19-22)"]
+        P19["Phase 19\nregistry.py\nTests"]
+        P20["Phase 20\nconfig.py\nTests"]
+        P21["Phase 21\nbudget_guard.py\nTests"]
+        P22["Phase 22\ncli.py + errors.py\nTests"]
+    end
+
+    subgraph Tier5["Tier 5: Final (Phases 23-25)"]
+        P23["Phase 23\nLint + Format\nCleanup"]
+        P24["Phase 24\nDocumentation\nAlignment"]
+        P25["Phase 25\nFull Verification\n+ State Update"]
+    end
+
+    P1 & P2 & P3 & P8 --> Tier2
+    P4 --> P6
+    P4 --> P7
+    P5 --> P14
+    Tier2 --> Tier3
+    Tier3 --> Tier4
+    Tier4 --> Tier5
+
+    style Tier1 fill:#B22222,color:#fff
+    style Tier2 fill:#DAA520,color:#000
+    style Tier3 fill:#4169E1,color:#fff
+    style Tier4 fill:#228B22,color:#fff
+    style Tier5 fill:#6A0DAD,color:#fff
+```
+
+### Test Coverage Gap Analysis
+
+```mermaid
+pie title Module Test Coverage (35 modules)
+    "Tested (11 modules, 31%)" : 11
+    "Untested (19 modules, 54%)" : 19
+    "Partial (5 modules, 14%)" : 5
+```
+
 ## License
 
 MIT

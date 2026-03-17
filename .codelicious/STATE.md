@@ -11,9 +11,9 @@
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 274 tests passed in 3.45s |
-| Lint | PASS | All checks passed (ruff check --select=F,W) |
-| Format | PASS | 46 files formatted |
+| Tests | PASS | 274 tests passed in 3.31s |
+| Lint | PASS | All checks passed (ruff check) |
+| Format | PASS | 47 files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection |
 
 ---
