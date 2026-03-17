@@ -37,24 +37,34 @@ git clone https://github.com/clay-good/codelicious.git
 cd codelicious
 pip install -e .
 
-# Run with Claude Code (default if claude CLI is installed)
+# Option 1: Claude Code CLI (requires claude CLI + API credits)
 codelicious /path/to/your/repo
 
-# Or force HuggingFace engine
-export HF_TOKEN=hf_your_token_here
+# Option 2: HuggingFace engine (free, no API costs)
+export HF_TOKEN=hf_your_token_here  # Get one at https://huggingface.co/settings/tokens
 codelicious /path/to/your/repo --engine huggingface
+```
+
+### Development Setup
+
+```bash
+pip install -e ".[dev]"    # Install with dev dependencies (pytest, ruff)
+pytest                      # Run tests
+ruff check src/ tests/      # Lint
 ```
 
 ## Dual Engine Architecture
 
-Codelicious auto-detects the best available engine:
+Codelicious auto-detects the best available engine at startup:
 
 | Engine | Backend | How It Works |
 |--------|---------|--------------|
 | **Claude Code CLI** | `claude` binary | Spawns Claude Code as subprocess. Claude handles its own tools (Read, Write, Bash, etc). 6-phase lifecycle with scaffolding, verification, and reflection. |
-| **HuggingFace** | DeepSeek-V3 + Qwen3-235B | HTTP API with custom tool dispatch. DeepSeek plans, Qwen codes. 50-iteration agentic loop. |
+| **HuggingFace** | DeepSeek-V3 + Qwen3-235B | Free HTTP API via SambaNova. DeepSeek plans, Qwen codes. 50-iteration agentic loop. No API costs. |
 
 Auto-detection priority: Claude Code CLI > HuggingFace > error with setup instructions.
+
+> **Note:** Engine selection happens at startup, not mid-build. If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path — not a degraded mode.
 
 ## CLI Reference
 
@@ -603,6 +613,72 @@ pie title Module Test Coverage (35 modules)
     "Tested (11 modules, 31%)" : 11
     "Untested (19 modules, 54%)" : 19
     "Partial (5 modules, 14%)" : 5
+```
+
+### Spec-13 Bulletproof MVP Phase Dependencies
+
+```mermaid
+flowchart TB
+    subgraph Tier1["Tier 1: Critical Security Fixes (Phases 1-8)"]
+        P1["Phase 1\nPrompt Injection\nBlocking Guard"]
+        P2["Phase 2\nInterpreter\nDenylist Closure"]
+        P3["Phase 3\nTOCTOU Race\nfs_tools Fix"]
+        P4["Phase 4\nCommand Split\nShlex Unification"]
+        P5["Phase 5\nAPI Error Body\nSanitization"]
+        P6["Phase 6\nVerifier Multiline\nString Bypass"]
+        P7["Phase 7\nCLI Exception\nSwallowing Fix"]
+        P8["Phase 8\nJSON Deser\nValidation"]
+    end
+
+    subgraph Tier2["Tier 2: Reliability Fixes (Phases 9-15)"]
+        P9["Phase 9\nMetacharacter\nUnification"]
+        P10["Phase 10\nDeprecated rmtree\nAPI Fix"]
+        P11["Phase 11\nRead-Path Denied\nFilter"]
+        P12["Phase 12\nExplicit Git\nFile Staging"]
+        P13["Phase 13\nProcess Group\nTimeout"]
+        P14["Phase 14\nSecret Redaction\nCompletion"]
+        P15["Phase 15\nHistory Bounding\nHF Engine"]
+    end
+
+    subgraph Tier3["Tier 3: Code Quality (Phases 16-19)"]
+        P16["Phase 16\nDead Code\nRemoval"]
+        P17["Phase 17\nPercent-Style\nLogging"]
+        P18["Phase 18\nAudit Logger\nLevel Fix"]
+        P19["Phase 19\nAtomic Plan\nFile Writes"]
+    end
+
+    subgraph Tier4["Tier 4: Test Coverage (Phases 20-23)"]
+        P20["Phase 20\nconfig.py\nTests"]
+        P21["Phase 21\nregistry.py\nTests"]
+        P22["Phase 22\nerrors.py Tests\n+ Dedup"]
+        P23["Phase 23\nRAG + Progress\nTests"]
+    end
+
+    subgraph Tier5["Tier 5: Final (Phases 24-25)"]
+        P24["Phase 24\npyproject.toml\n+ .gitignore"]
+        P25["Phase 25\nFull Verify\n+ Docs Align"]
+    end
+
+    Tier1 --> Tier2
+    Tier2 --> Tier3
+    P9 --> P13
+    P16 --> P17
+    Tier3 --> Tier4
+    Tier4 --> Tier5
+    P24 --> P25
+
+    style Tier1 fill:#B22222,color:#fff
+    style Tier2 fill:#DAA520,color:#000
+    style Tier3 fill:#4169E1,color:#fff
+    style Tier4 fill:#228B22,color:#fff
+    style Tier5 fill:#6A0DAD,color:#fff
+```
+
+### Spec-13 Target State
+
+```mermaid
+pie title Target Module Test Coverage After Spec-13
+    "Fully Tested (30 modules, 100%)" : 30
 ```
 
 ## License
