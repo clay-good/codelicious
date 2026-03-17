@@ -681,6 +681,79 @@ pie title Target Module Test Coverage After Spec-13
     "Fully Tested (30 modules, 100%)" : 30
 ```
 
+### Spec-14 Hardening v2 Phase Dependencies
+
+```mermaid
+flowchart TB
+    subgraph Tier1["Tier 1: Critical Security & Permission Fixes (Phases 1-5)"]
+        P1["Phase 1\nGate\n--skip-permissions"]
+        P2["Phase 2\nClose env/xargs\nDenylist Gap"]
+        P3["Phase 3\nFix Protected\nPath Bypass"]
+        P4["Phase 4\nUTF-8 Encoding\nfs_tools Fix"]
+        P5["Phase 5\nAudit Logger\nThread Safety"]
+    end
+
+    subgraph Tier2["Tier 2: Reliability & Correctness (Phases 6-10)"]
+        P6["Phase 6\nCleanup Case\nSensitivity Bug"]
+        P7["Phase 7\nRead Size\nLimit"]
+        P8["Phase 8\nGit Message\nSanitization"]
+        P9["Phase 9\nRAG Response\nSize Cap"]
+        P10["Phase 10\nAPI Key\nRepr Safety"]
+    end
+
+    subgraph Tier3["Tier 3: Code Quality & Stale Refs (Phases 11-14)"]
+        P11["Phase 11\nSanitizingFilter\nRoot Logger"]
+        P12["Phase 12\nMarkdown Pipe\nEscaping"]
+        P13["Phase 13\nFix proxilion\nReferences"]
+        P14["Phase 14\nf-string Logger\nVerification"]
+    end
+
+    subgraph Tier4["Tier 4: Test Coverage (Phases 15-18)"]
+        P15["Phase 15\nagent_runner\nTests"]
+        P16["Phase 16\nscaffolder +\nprompts Tests"]
+        P17["Phase 17\n_io + budget\nguard Tests"]
+        P18["Phase 18\nSample Dummy\nData Fixtures"]
+    end
+
+    subgraph Tier5["Tier 5: Final (Phases 19-20)"]
+        P19["Phase 19\nREADME Mermaid\n+ Metrics"]
+        P20["Phase 20\nFull Verify\n+ State Update"]
+    end
+
+    Tier1 --> Tier2
+    Tier2 --> Tier3
+    P11 --> P14
+    P12 --> P14
+    P13 --> P14
+    Tier3 --> Tier4
+    Tier4 --> Tier5
+    P19 --> P20
+
+    style Tier1 fill:#B22222,color:#fff
+    style Tier2 fill:#DAA520,color:#000
+    style Tier3 fill:#4169E1,color:#fff
+    style Tier4 fill:#228B22,color:#fff
+    style Tier5 fill:#6A0DAD,color:#fff
+```
+
+### Spec-14 Target State
+
+```mermaid
+pie title Target State After Spec-13 + Spec-14
+    "Fully Tested Modules (95%+)" : 28
+    "Partial Coverage (5%)" : 2
+```
+
+### Combined Hardening Coverage
+
+```mermaid
+pie title Security Findings Resolution (Spec-07 through Spec-14)
+    "Resolved by Spec-07 (sandbox)" : 16
+    "Resolved by Spec-08 (reliability)" : 2
+    "Resolved by Spec-13 (bulletproof)" : 42
+    "Resolved by Spec-14 (hardening v2)" : 20
+```
+
 ## License
 
 MIT
