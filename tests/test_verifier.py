@@ -597,9 +597,12 @@ def test_custom_command_rejects_shell_metacharacters(tmp_path: pathlib.Path) -> 
 
 
 def test_custom_command_allows_safe_commands(tmp_path: pathlib.Path) -> None:
-    """Safe commands like python3 -m pytest are allowed."""
-    result = check_custom_command(tmp_path, "python3 -m pytest")
-    # The command may fail due to pytest not finding tests, but it should not
+    """Safe commands like ruff check are allowed."""
+    # Note: python3 is blocked by the interpreter denylist (spec-08 Phase 3)
+    # to prevent arbitrary code execution via python3 -c.
+    # Use direct tool invocations like ruff instead.
+    result = check_custom_command(tmp_path, "ruff check .")
+    # The command may fail due to ruff not being installed, but it should not
     # be rejected by the safety checks
     assert "potentially destructive" not in result.message
     assert "shell metacharacters" not in result.message

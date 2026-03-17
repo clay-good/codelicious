@@ -4,6 +4,8 @@ from typing import TypedDict
 import logging
 from pathlib import Path
 
+from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
+
 logger = logging.getLogger("codelicious.tools.runner")
 
 
@@ -11,57 +13,6 @@ class ToolResponse(TypedDict):
     success: bool
     stdout: str
     stderr: str
-
-
-# Dangerous commands that are NEVER allowed regardless of context.
-# Modeled after codelicious's battle-tested denylist.
-DENIED_COMMANDS = frozenset(
-    {
-        "rm",
-        "rmdir",
-        "sudo",
-        "su",
-        "chmod",
-        "chown",
-        "chgrp",
-        "mkfs",
-        "dd",
-        "kill",
-        "killall",
-        "pkill",
-        "reboot",
-        "shutdown",
-        "halt",
-        "poweroff",
-        "init",
-        "fdisk",
-        "gdisk",
-        "parted",
-        "mount",
-        "umount",
-        "format",
-        "diskpart",
-        "iptables",
-        "nft",
-        "ufw",
-        "useradd",
-        "userdel",
-        "usermod",
-        "passwd",
-        "groupadd",
-        "crontab",
-        "at",
-        "nc",
-        "ncat",
-        "socat",  # network listeners
-        "curl",
-        "wget",  # prevent exfiltration; agent has its own HTTP via Python
-    }
-)
-
-# Shell metacharacters that enable injection/chaining.
-# Blocking these prevents: cmd1 ; cmd2, cmd1 | cmd2, $(cmd), etc.
-BLOCKED_METACHARACTERS = frozenset("|&;$`(){}><!")
 
 
 class CommandRunner:

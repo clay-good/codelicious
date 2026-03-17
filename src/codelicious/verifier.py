@@ -13,6 +13,8 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
+
 logger = logging.getLogger("codelicious.verifier")
 
 __all__ = [
@@ -789,29 +791,6 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
     )
 
 
-_DANGEROUS_COMMANDS = frozenset(
-    {
-        "rm",
-        "sudo",
-        "chmod",
-        "chown",
-        "mkfs",
-        "dd",
-        "kill",
-        "reboot",
-        "shutdown",
-        "halt",
-        "poweroff",
-        "fdisk",
-        "mount",
-        "umount",
-        "format",
-    }
-)
-
-_SHELL_METACHARACTERS = frozenset({"|", "&", ";", "$", "`", "(", ")", "{", "}"})
-
-
 def check_custom_command(
     project_dir: pathlib.Path,
     command: str | None,
@@ -846,7 +825,7 @@ def check_custom_command(
         )
         logger.debug("Custom command args: %s", args)
 
-        if cmd_basename in _DANGEROUS_COMMANDS:
+        if cmd_basename in DENIED_COMMANDS:
             return CheckResult(
                 name="custom",
                 passed=False,
@@ -855,7 +834,7 @@ def check_custom_command(
 
         # Check for shell metacharacters in all arguments
         for arg in args:
-            if any(ch in arg for ch in _SHELL_METACHARACTERS):
+            if any(ch in arg for ch in BLOCKED_METACHARACTERS):
                 return CheckResult(
                     name="custom",
                     passed=False,
