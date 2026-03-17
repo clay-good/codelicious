@@ -1,5 +1,6 @@
-"""Tests for security event audit logging (spec-07 Phase 6)."""
+"""Tests for security event audit logging (spec-07 Phase 6, spec-08 Phase 8)."""
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -237,3 +238,146 @@ class TestAuditLoggerSecurityLogging:
         # Should match format: 2026-03-15T15:06:23Z
         iso_pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
         assert re.search(iso_pattern, content), "Timestamp should be ISO 8601 format"
+
+
+class TestAuditFormatter:
+    """Tests for the AuditFormatter class (spec-08 Phase 8)."""
+
+    def test_importing_audit_logger_does_not_mutate_global_log_levels(self):
+        """Verify importing audit_logger does not mutate global logging state.
+
+        This is the key fix: previously, module-level calls to logging.addLevelName()
+        would inject ANSI escape codes into ALL loggers in the entire process.
+        """
+        # Get the standard level names (before any mutation)
+        # After our fix, these should remain as Python defaults
+        info_name = logging.getLevelName(logging.INFO)
+        warning_name = logging.getLevelName(logging.WARNING)
+        error_name = logging.getLevelName(logging.ERROR)
+
+        # These should be the standard Python names, not our custom colored names
+        assert info_name == "INFO", f"Expected 'INFO', got '{info_name}'"
+        assert warning_name == "WARNING", f"Expected 'WARNING', got '{warning_name}'"
+        assert error_name == "ERROR", f"Expected 'ERROR', got '{error_name}'"
+
+        # Verify no ANSI escape codes in global level names
+        assert "\033" not in info_name, "INFO level name should not contain ANSI codes"
+        assert "\033" not in warning_name, "WARNING level name should not contain ANSI codes"
+        assert "\033" not in error_name, "ERROR level name should not contain ANSI codes"
+
+    def test_formatter_with_color_enabled(self):
+        """Verify AuditFormatter includes ANSI codes when use_color=True."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=True)
+
+        # Create a test log record
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="Test message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should contain ANSI escape codes for color
+        assert "\033[1;36m" in formatted, "INFO with color should have cyan ANSI code"
+        assert "[AGENT INFO]" in formatted, "Should have custom level name"
+        assert "Test message" in formatted
+
+    def test_formatter_with_color_disabled(self):
+        """Verify AuditFormatter uses plain text when use_color=False."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=False)
+
+        # Create a test log record
+        record = logging.LogRecord(
+            name="test",
+            level=logging.WARNING,
+            pathname="test.py",
+            lineno=1,
+            msg="Warning message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should NOT contain ANSI escape codes
+        assert "\033" not in formatted, "Non-TTY output should not have ANSI codes"
+        assert "[AGENT WARN]" in formatted, "Should have custom level name"
+        assert "Warning message" in formatted
+
+    def test_formatter_error_level_with_color(self):
+        """Verify ERROR level formatting with color enabled."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=True)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="test.py",
+            lineno=1,
+            msg="Error message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should contain red ANSI code for errors
+        assert "\033[1;31m" in formatted, "ERROR with color should have red ANSI code"
+        assert "[AGENT ERROR]" in formatted
+        assert "Error message" in formatted
+
+    def test_formatter_error_level_without_color(self):
+        """Verify ERROR level formatting with color disabled."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=False)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="test.py",
+            lineno=1,
+            msg="Error message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should NOT contain ANSI escape codes
+        assert "\033" not in formatted
+        assert "[AGENT ERROR]" in formatted
+        assert "Error message" in formatted
+
+    def test_formatter_unknown_level_unchanged(self):
+        """Verify levels not in COLORS/PLAIN dict are left unchanged."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=True)
+
+        # DEBUG is not in our COLORS dict
+        record = logging.LogRecord(
+            name="test",
+            level=logging.DEBUG,
+            pathname="test.py",
+            lineno=1,
+            msg="Debug message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should use standard DEBUG level name
+        assert "DEBUG" in formatted or "debug" in formatted.lower()
+        assert "Debug message" in formatted
