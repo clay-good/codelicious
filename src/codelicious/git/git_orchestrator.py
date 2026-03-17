@@ -5,6 +5,22 @@ import logging
 
 logger = logging.getLogger("codelicious.git")
 
+# Patterns that indicate potentially sensitive files
+SENSITIVE_PATTERNS: frozenset[str] = frozenset(
+    {
+        ".env",
+        ".pem",
+        ".key",
+        "secret",
+        "credential",
+        "token",
+        "id_rsa",
+        "id_ed25519",
+        "password",
+        "private",
+    }
+)
+
 
 class GitManager:
     """
@@ -61,30 +77,77 @@ class GitManager:
                 # Enforce generation of a deterministic feature branch
                 feature_branch = "codelicious/auto-build"
                 logger.info(
-                    f"Current branch is {branch}. Codelicious requires an isolated feature branch. Checking out {feature_branch}."
+                    "Current branch is %s. Codelicious requires an isolated feature branch. Checking out %s.",
+                    branch,
+                    feature_branch,
                 )
                 self.checkout_or_create_feature_branch(feature_branch)
             else:
-                logger.info(f"Operating on safe feature branch: {branch}")
+                logger.info("Operating on safe feature branch: %s", branch)
         except Exception as e:
-            logger.error(f"Failed to verify safe git branch: {e}")
+            logger.error("Failed to verify safe git branch: %s", e)
 
     def checkout_or_create_feature_branch(self, branch_name: str):
         """Checkout feature branch, creating it if it doesn't exist."""
         try:
             self._run_cmd(["git", "checkout", branch_name])
-            logger.info(f"Checked out existing branch {branch_name}")
+            logger.info("Checked out existing branch %s", branch_name)
         except RuntimeError:
-            logger.info(f"Branch {branch_name} not found locally. Creating it.")
+            logger.info("Branch %s not found locally. Creating it.", branch_name)
             self._run_cmd(["git", "checkout", "-b", branch_name])
 
-    def commit_verified_changes(self, commit_message: str):
-        """Stages all changes and commits them deterministically."""
+    def _is_sensitive_file(self, filename: str) -> bool:
+        """Check if a filename matches any sensitive pattern."""
+        filename_lower = filename.lower()
+        for pattern in SENSITIVE_PATTERNS:
+            if pattern in filename_lower:
+                return True
+        return False
+
+    def _check_staged_files_for_sensitive_patterns(self) -> list[str]:
+        """
+        Check staged files for sensitive patterns and return list of warnings.
+        """
+        warnings = []
+        try:
+            staged_output = self._run_cmd(["git", "diff", "--cached", "--name-only"])
+            if staged_output:
+                for filepath in staged_output.splitlines():
+                    if self._is_sensitive_file(filepath):
+                        warnings.append(filepath)
+                        logger.warning("Potentially sensitive file staged: %s", filepath)
+        except RuntimeError:
+            pass
+        return warnings
+
+    def commit_verified_changes(self, commit_message: str, files_to_stage: list[str] | None = None):
+        """
+        Stages changes and commits them deterministically.
+
+        Args:
+            commit_message: The commit message to use.
+            files_to_stage: Optional list of specific file paths to stage.
+                           If None or empty, uses 'git add .' with sensitive file warnings.
+        """
         if not self._has_git():
             return
 
         try:
-            self._run_cmd(["git", "add", "."])
+            # Stage files
+            if files_to_stage:
+                # Stage only the specified files
+                for filepath in files_to_stage:
+                    try:
+                        self._run_cmd(["git", "add", filepath])
+                    except RuntimeError as e:
+                        logger.warning("Failed to stage file %s: %s", filepath, e)
+            else:
+                # Fall back to git add . with sensitive file warnings
+                self._run_cmd(["git", "add", "."])
+                self._check_staged_files_for_sensitive_patterns()
+
+            # Pre-commit safety check - warn about any sensitive files in staging
+            self._check_staged_files_for_sensitive_patterns()
 
             # Check if there's anything to commit
             status = self._run_cmd(["git", "status", "--porcelain"])
@@ -93,11 +156,11 @@ class GitManager:
                 return
 
             self._run_cmd(["git", "commit", "-m", commit_message])
-            logger.info(f"Committed changes seamlessly: {commit_message}")
+            logger.info("Committed changes seamlessly: %s", commit_message)
 
             # Push to origin
             current_branch = self._run_cmd(["git", "branch", "--show-current"])
-            logger.info(f"Pushing branch {current_branch} to origin.")
+            logger.info("Pushing branch %s to origin.", current_branch)
             subprocess.run(
                 ["git", "push", "--set-upstream", "origin", current_branch],
                 cwd=self.repo_path,
@@ -108,7 +171,7 @@ class GitManager:
             self.ensure_draft_pr_exists(commit_message)
 
         except Exception as e:
-            logger.error(f"Failed to commit or push: {e}")
+            logger.error("Failed to commit or push: %s", e)
 
     def ensure_draft_pr_exists(self, spec_summary: str):
         """Uses the local `gh` CLI to orchestrate Draft PRs if one doesn't exist."""
@@ -158,7 +221,7 @@ class GitManager:
 
         reviewers = self.config.get("default_reviewers", [])
         if reviewers:
-            logger.info(f"Requesting urgent human reviews from: {reviewers}")
+            logger.info("Requesting urgent human reviews from: %s", reviewers)
             reviewer_args = []
             for r in reviewers:
                 reviewer_args.extend(["--reviewer", r])
