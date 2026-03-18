@@ -2,8 +2,77 @@ import logging
 import json
 from codelicious.tools.registry import ToolRegistry
 from codelicious.llm_client import LLMClient
+from codelicious.context_manager import estimate_tokens
 
 logger = logging.getLogger("codelicious.loop")
+
+# Maximum token budget for message history to prevent OOM and API rejection
+MAX_HISTORY_TOKENS = 80_000
+
+
+def truncate_history(messages: list[dict], max_tokens: int = MAX_HISTORY_TOKENS) -> list[dict]:
+    """Truncate message history to stay within token budget.
+
+    Keeps the system message (index 0) always. Removes oldest non-system
+    messages until total is under max_tokens.
+
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys.
+        max_tokens: Maximum allowed token count for the history.
+
+    Returns:
+        Truncated message list (may be unchanged if already under budget).
+    """
+    if not messages:
+        return messages
+
+    def _estimate_message_tokens(msg: dict) -> int:
+        """Estimate tokens in a single message."""
+        content = msg.get("content", "")
+        if content is None:
+            content = ""
+        # For tool calls, also count the function arguments
+        tool_calls = msg.get("tool_calls", [])
+        for tc in tool_calls:
+            if isinstance(tc, dict) and "function" in tc:
+                content += tc["function"].get("arguments", "")
+        return estimate_tokens(str(content))
+
+    # Calculate total tokens
+    total_tokens = sum(_estimate_message_tokens(m) for m in messages)
+
+    if total_tokens <= max_tokens:
+        return messages
+
+    # Keep system message (index 0) always
+    result = [messages[0]] if messages else []
+    system_tokens = _estimate_message_tokens(messages[0]) if messages else 0
+    budget_remaining = max_tokens - system_tokens
+
+    # Collect non-system messages and count from the end (most recent)
+    non_system = messages[1:]
+    kept_messages = []
+
+    # Work backwards from most recent to preserve recent context
+    for msg in reversed(non_system):
+        msg_tokens = _estimate_message_tokens(msg)
+        if budget_remaining >= msg_tokens:
+            kept_messages.insert(0, msg)
+            budget_remaining -= msg_tokens
+
+    messages_removed = len(non_system) - len(kept_messages)
+    tokens_before = total_tokens
+    tokens_after = system_tokens + sum(_estimate_message_tokens(m) for m in kept_messages)
+
+    if messages_removed > 0:
+        logger.warning(
+            "Truncated %d messages from history (tokens: %d -> %d)",
+            messages_removed,
+            tokens_before,
+            tokens_after,
+        )
+
+    return result + kept_messages
 
 
 class BuildLoop:
@@ -55,6 +124,9 @@ class BuildLoop:
         Executes a singular probabilistic dialogue cycle with the LLM, passing tool definitions
         and capturing JSON payloads for the deterministic ToolRegistry execution.
         """
+        # Truncate message history to prevent OOM and API rejection from large payloads
+        self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
+
         logger.info("Pinging HuggingFace LLM inference endpoint...")
         # Use coder model — it handles both planning and code writing via tool calls
         response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema(), role="coder")
@@ -100,7 +172,7 @@ class BuildLoop:
                     }
                 )
             except Exception as e:
-                logger.error(f"Failed to process tool call {tool_call}: {e}")
+                logger.error("Failed to process tool call %s: %s", tool_call, e)
                 self.messages.append(
                     {
                         "role": "tool",
@@ -129,7 +201,7 @@ class BuildLoop:
         completed = False
 
         for iteration in range(max_iterations):
-            logger.info(f"--- Iteration {iteration + 1}/{max_iterations} ---")
+            logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
 
             completed = self._execute_agentic_iteration()
 

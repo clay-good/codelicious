@@ -9,7 +9,7 @@ Predecessor: spec-v3.1 (dead code cleanup and documentation alignment)
 
 ## 1. Purpose
 
-This specification improves proxilion-build from its current v1.1.0 state by
+This specification improves codelicious from its current v1.1.0 state by
 addressing gaps found during a deep codebase audit. Every change stays within the
 existing architecture and intent. Nothing here is a net-new feature. Every item
 traces back to a concrete finding in the current code, tests, documentation, or
@@ -159,7 +159,7 @@ Claude Code prompt to use for implementation.
 ### Phase 1: Fix Resource Leaks and Process Safety
 
 **Files:** build_logger.py, agent_runner.py, progress.py
-**Intent:** As a user, when I run proxilion-build and it crashes mid-execution, I
+**Intent:** As a user, when I run codelicious and it crashes mid-execution, I
 expect all file handles to be properly closed and no subprocess to hang
 indefinitely. Currently, partial initialization failures leak handles, and a hung
 subprocess blocks the CLI forever.
@@ -180,9 +180,9 @@ subprocess blocks the CLI forever.
 
 ```
 Read these files in full before making any changes:
-- proxilion_build/build_logger.py
-- proxilion_build/agent_runner.py
-- proxilion_build/progress.py
+- codelicious/build_logger.py
+- codelicious/agent_runner.py
+- codelicious/progress.py
 - tests/test_build_logger.py
 - tests/test_agent_runner.py
 - tests/test_progress.py
@@ -213,7 +213,7 @@ Fix any test failures before finishing.
 ### Phase 2: Fix TOCTOU Vulnerability in Sandbox
 
 **Files:** sandbox.py
-**Intent:** As a user, when proxilion-build writes files through the sandbox, I
+**Intent:** As a user, when codelicious writes files through the sandbox, I
 expect that no symlink attack can trick it into writing outside the project
 directory, even if symlinks are swapped between validation and write.
 
@@ -234,7 +234,7 @@ directory, even if symlinks are swapped between validation and write.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/sandbox.py and tests/test_sandbox.py in full.
+Read codelicious/sandbox.py and tests/test_sandbox.py in full.
 
 The current write_file method has a TOCTOU vulnerability: it resolves symlinks
 with os.path.realpath() before writing, but a symlink target could be swapped
@@ -280,7 +280,7 @@ task rather than crashing and losing all progress.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/loop_controller.py and tests/test_loop_controller.py in full.
+Read codelicious/loop_controller.py and tests/test_loop_controller.py in full.
 
 In run_loop(), the verify() call at approximately line 436 is not wrapped in a
 try/except. If verify raises an unexpected exception (not a
@@ -320,7 +320,7 @@ permission denied) to fail fast without wasting retry budget.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/llm_client.py and tests/test_llm_client.py in full.
+Read codelicious/llm_client.py and tests/test_llm_client.py in full.
 
 Fix two issues:
 
@@ -362,7 +362,7 @@ internally consistent.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/context_manager.py and proxilion_build/budget_guard.py in
+Read codelicious/context_manager.py and codelicious/budget_guard.py in
 full. Also read their test files.
 
 Currently two different token estimation functions exist:
@@ -401,9 +401,9 @@ reflect the current test count and all documented functions to actually be used.
 
 ```
 Read these files in full:
-- proxilion_build/verifier.py
-- proxilion_build/loop_controller.py
-- proxilion_build/prompts.py
+- codelicious/verifier.py
+- codelicious/loop_controller.py
+- codelicious/prompts.py
 - README.md
 
 Fix four issues:
@@ -456,8 +456,8 @@ confusing downstream failures.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/planner.py, proxilion_build/agent_runner.py, and
-proxilion_build/verifier.py in full. Also read their test files.
+Read codelicious/planner.py, codelicious/agent_runner.py, and
+codelicious/verifier.py in full. Also read their test files.
 
 Fix three validation gaps:
 
@@ -484,7 +484,7 @@ python3 -m pytest tests/ -v
 ### Phase 8: Improve Claude Code Prompt Templates
 
 **Files:** prompts.py
-**Intent:** As a user running proxilion-build in agent mode, I expect the agent to
+**Intent:** As a user running codelicious in agent mode, I expect the agent to
 use all available Claude Code tools effectively: TodoWrite for task tracking,
 Agent tool for parallel sub-agent spawning, Glob/Grep for codebase search, Read
 for file inspection, Write/Edit for file changes, Bash for running tests and
@@ -512,7 +512,7 @@ system commands.
 **Claude Code prompt:**
 
 ```
-Read proxilion_build/prompts.py and tests/test_prompts.py in full.
+Read codelicious/prompts.py and tests/test_prompts.py in full.
 
 Update the prompt templates to leverage all Claude Code capabilities. The
 prompts should instruct the agent to use specific tools by name. Make these
@@ -673,12 +673,12 @@ Run the full test suite: python3 -m pytest tests/ -v
 **Files:** All Python files
 **Intent:** As a developer, I expect the entire codebase to pass ruff lint and
 format checks with zero warnings, and the built-in security scanner to report
-no findings on the proxilion-build source itself.
+no findings on the codelicious source itself.
 
 **Expected behavior:**
 - Running ruff check . from the project root produces zero warnings.
 - Running ruff format --check . from the project root produces zero warnings.
-- Running proxilion-build verify from the project root shows all checks passing.
+- Running codelicious verify from the project root shows all checks passing.
 - If ruff is not installed, install it in the venv first: pip install ruff.
 
 **Claude Code prompt:**
@@ -706,9 +706,9 @@ Run the following commands and fix any issues found:
 
 4. Run the built-in security scanner:
    python3 -c "
-   from proxilion_build.verifier import check_security
+   from codelicious.verifier import check_security
    import pathlib
-   result = check_security(pathlib.Path('proxilion_build'))
+   result = check_security(pathlib.Path('codelicious'))
    print(f'Passed: {result.passed}')
    if result.details:
        print(result.details)
@@ -727,7 +727,7 @@ Fix any failures from the formatting or lint changes.
 
 ### Phase 12: Synchronize All Documentation
 
-**Files:** README.md, docs/architecture.md, .proxilion-build/STATE.md, CLAUDE.md
+**Files:** README.md, docs/architecture.md, .codelicious/STATE.md, CLAUDE.md
 **Intent:** As a user reading the documentation, I expect every claim to match the
 actual code. Test counts, module counts, component descriptions, and CLI flag
 documentation must be accurate.
@@ -746,14 +746,14 @@ documentation must be accurate.
 Read these files in full:
 - README.md
 - docs/architecture.md
-- .proxilion-build/STATE.md
+- .codelicious/STATE.md
 - CLAUDE.md
-- proxilion_build/cli.py (for actual CLI flags)
+- codelicious/cli.py (for actual CLI flags)
 
 Then run these commands to get ground truth:
 - python3 -m pytest tests/ --co -q 2>/dev/null | tail -1
   (actual test count)
-- find proxilion_build -name "*.py" -not -name "__pycache__" | wc -l
+- find codelicious -name "*.py" -not -name "__pycache__" | wc -l
   (actual source file count)
 - find tests -name "*.py" -not -name "__pycache__" | wc -l
   (actual test file count)
@@ -860,13 +860,13 @@ Run the full test suite: python3 -m pytest tests/ -v
 
 ### Agent Mode
 
-**As a user, I run:** `proxilion-build run /path/to/my-project`
+**As a user, I run:** `codelicious run /path/to/my-project`
 **Service:** Agent mode orchestration (loop_controller.run_agent_loop)
 **Expected behavior:**
-- proxilion-build scaffolds CLAUDE.md in the project directory.
+- codelicious scaffolds CLAUDE.md in the project directory.
 - It spawns Claude Code CLI as a subprocess with the AGENT_BUILD prompt.
 - Claude reads the project, creates STATE.md, implements tasks, runs tests.
-- On completion, Claude writes "DONE" to .proxilion-build/BUILD_COMPLETE.
+- On completion, Claude writes "DONE" to .codelicious/BUILD_COMPLETE.
 - If --reflect is enabled, a second AGENT_REFLECT pass reviews the work.
 - If reflect finds issues, another BUILD cycle runs.
 - The CLI prints a phase summary table and exits 0 on success, 1 on failure.
@@ -884,7 +884,7 @@ Run the full test suite: python3 -m pytest tests/ -v
 
 ### Spec-File Mode
 
-**As a user, I run:** `proxilion-build run spec.md --project-dir /tmp/output`
+**As a user, I run:** `codelicious run spec.md --project-dir /tmp/output`
 **Service:** Spec-file mode pipeline (loop_controller.run_loop)
 **Expected behavior:**
 - The spec is parsed into sections by heading level.
@@ -894,7 +894,7 @@ Run the full test suite: python3 -m pytest tests/ -v
 - Failed tasks are retried up to --patience times.
 - After 2+ consecutive failures, the system re-plans remaining tasks (once).
 - State is saved after every task for resumability.
-- On completion, a build summary is written to .proxilion-build/build-summary.md.
+- On completion, a build summary is written to .codelicious/build-summary.md.
 
 **When the LLM returns unparseable JSON:**
 - The planner retries JSON parsing up to 3 times.
@@ -909,7 +909,7 @@ Run the full test suite: python3 -m pytest tests/ -v
 
 ### Verification
 
-**As a user, I run:** `proxilion-build verify`
+**As a user, I run:** `codelicious verify`
 **Service:** Verification pipeline (verifier.verify)
 **Expected behavior:**
 - Syntax check runs py_compile on all .py files.
@@ -926,8 +926,8 @@ Run the full test suite: python3 -m pytest tests/ -v
 
 ```
 # Clone the repository
-git clone <repo-url> proxilion-build
-cd proxilion-build
+git clone <repo-url> codelicious
+cd codelicious
 
 # Create and activate a virtual environment
 python3 -m venv venv
@@ -937,7 +937,7 @@ source venv/bin/activate
 pip install -e ".[test]"
 
 # Verify installation
-proxilion-build check
+codelicious check
 
 # Run the test suite
 python3 -m pytest tests/ -v
@@ -966,7 +966,7 @@ After all phases are complete, the following must be true:
 - [ ] python3 -m pytest tests/ -v passes with zero failures.
 - [ ] ruff check . produces zero warnings (with the project's ignore list).
 - [ ] ruff format --check . produces zero warnings.
-- [ ] proxilion-build verify shows all checks passing.
+- [ ] codelicious verify shows all checks passing.
 - [ ] README.md test count matches actual pytest collection count.
 - [ ] README.md source file count matches actual source file count.
 - [ ] docs/architecture.md component list matches actual module list.
@@ -1003,4 +1003,4 @@ This spec is complete when:
 3. Ruff lint and format checks pass with zero warnings.
 4. All documentation matches the actual code.
 5. STATE.md lists spec-v4 as complete.
-6. .proxilion-build/BUILD_COMPLETE contains "DONE".
+6. .codelicious/BUILD_COMPLETE contains "DONE".

@@ -1,20 +1,50 @@
 import json
 import logging
 import datetime
+import sys
 from enum import Enum
 from pathlib import Path
 
-# Provide a specifically colored console logger for visibility
-logging.addLevelName(logging.INFO, "\033[1;36m[AGENT INFO]\033[1;0m")
-logging.addLevelName(logging.WARNING, "\033[1;33m[AGENT WARN]\033[1;0m")
-logging.addLevelName(logging.ERROR, "\033[1;31m[AGENT ERROR]\033[1;0m")
+
+class AuditFormatter(logging.Formatter):
+    """Custom formatter that adds ANSI color codes only when output is a TTY.
+
+    This avoids globally mutating logging level names, which would inject
+    ANSI escape codes into file handlers, CI collectors, and third-party libraries.
+    """
+
+    COLORS = {
+        logging.INFO: "\033[1;36m[AGENT INFO]\033[0m",
+        logging.WARNING: "\033[1;33m[AGENT WARN]\033[0m",
+        logging.ERROR: "\033[1;31m[AGENT ERROR]\033[0m",
+    }
+
+    PLAIN = {
+        logging.INFO: "[AGENT INFO]",
+        logging.WARNING: "[AGENT WARN]",
+        logging.ERROR: "[AGENT ERROR]",
+    }
+
+    def __init__(self, fmt: str | None = None, datefmt: str | None = None, use_color: bool = False):
+        super().__init__(fmt, datefmt)
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        # Override the levelname with our custom format
+        if self.use_color and record.levelno in self.COLORS:
+            record.levelname = self.COLORS[record.levelno]
+        elif record.levelno in self.PLAIN:
+            record.levelname = self.PLAIN[record.levelno]
+        return super().format(record)
+
 
 console_logger = logging.getLogger("codelicious.audit")
 console_logger.setLevel(logging.INFO)
 
 if not console_logger.handlers:
     ch = logging.StreamHandler()
-    formatter = logging.Formatter("%(levelname)s %(message)s")
+    # Use color only when stderr is a TTY
+    formatter = AuditFormatter("%(levelname)s %(message)s", use_color=sys.stderr.isatty())
     ch.setFormatter(formatter)
     console_logger.addHandler(ch)
 
@@ -103,7 +133,7 @@ class AuditLogger:
             print(f"FATAL: Security log write failed: {e}")
 
         # Also log to console with warning level for visibility
-        console_logger.warning(f"[SECURITY] {event.value}: {full_message}")
+        console_logger.warning("[SECURITY] %s: %s", event.value, full_message)
 
     def log_security_event(
         self,

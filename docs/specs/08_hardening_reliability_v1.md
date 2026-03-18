@@ -621,7 +621,7 @@ Run pytest tests/test_llm_client.py and fix any failures.
 
 ---
 
-### Phase 11: Cap RAG Engine top_k and Add SQLite Index
+### Phase 11: Cap RAG Engine top_k and Add SQLite Index ✓
 
 **Priority:** P3 -- Performance/Reliability
 **Files:** src/codelicious/context/rag_engine.py
@@ -718,7 +718,7 @@ Add a note below it: "# Or minimal install without dev tools: pip install -e ."
 
 ---
 
-### Phase 13: Fix BuildSession.__exit__ Success Reporting
+### Phase 13: Fix BuildSession.__exit__ Success Reporting ✓
 
 **Priority:** P3 -- Correctness
 **Files:** src/codelicious/build_logger.py
