@@ -13,8 +13,7 @@ Spec -> Code -> Test -> Commit -> PR
 ## Quick Start
 
 ```bash
-# Clone and install (includes dev tools: pytest, ruff, bandit, pip-audit)
-# 1. Clone and install
+# 1. Clone and install (includes dev tools: pytest, ruff, bandit, pip-audit)
 git clone https://github.com/clay-good/codelicious.git
 cd codelicious
 pip install -e ".[dev]"
@@ -315,7 +314,7 @@ flowchart TB
 
 ---
 
-## Zero Dependencies
+## Security Findings Resolution
 
 ```mermaid
 pie title Security Findings Resolution (Spec-07 through Spec-14)
@@ -324,6 +323,7 @@ pie title Security Findings Resolution (Spec-07 through Spec-14)
     "Resolved by Spec-13 (bulletproof)" : 42
     "Resolved by Spec-14 (hardening v2)" : 20
 ```
+
 ### Spec-15 Parallel Execution Architecture
 
 ```mermaid
@@ -423,6 +423,11 @@ xychart-beta
     y-axis "Tokens/Second (SambaNova via HF Router)" 0 --> 1800
     bar [125, 250, 500, 1000]
 ```
+
+---
+
+## Zero Dependencies
+
 The core engine uses only Python standard library (`urllib`, `json`, `sqlite3`, `subprocess`). No pip packages required at runtime.
 
 ## License
