@@ -27,6 +27,13 @@ def git_repo(tmp_path: Path) -> Path:
         capture_output=True,
         check=True,
     )
+    # Disable GPG signing so tests work without a tty
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    )
     # Create an initial commit so we have a valid git state
     readme = tmp_path / "README.md"
     readme.write_text("# Test Repo\n", encoding="utf-8")

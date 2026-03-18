@@ -756,6 +756,105 @@ pie title Security Findings Resolution (Spec-07 through Spec-14)
     "Resolved by Spec-13 (bulletproof)" : 42
     "Resolved by Spec-14 (hardening v2)" : 20
 ```
+### Spec-15 Parallel Execution Architecture
+
+```mermaid
+flowchart TB
+    CLI["codelicious /repo --parallel 4"]
+    Engine["HuggingFaceEngine.run_build_cycle()"]
+    PE["ParallelExecutor(max_workers=4)"]
+
+    subgraph Workers["ThreadPoolExecutor"]
+        W1["LoopWorker loop-001\nspec: 01_feature_cli.md"]
+        W2["LoopWorker loop-002\nspec: 02_feature_agent.md"]
+        W3["LoopWorker loop-003\nspec: 03_feature_git.md"]
+        W4["LoopWorker loop-004\nspec: 04_feature_ext.md"]
+    end
+
+    subgraph Shared["Shared Resources (Thread-Safe)"]
+        LLM["LLMClient\n(stateless)"]
+        SB["Sandbox\n(Lock)"]
+        AL["AuditLogger\n(Lock)"]
+        CM["CacheManager\n(Lock)"]
+        SL["StructuredLogger\n(Lock)"]
+    end
+
+    subgraph PerLoop["Per-Loop Resources (No Sharing)"]
+        TR["ToolRegistry\n(per instance)"]
+        MH["Message History\n(per list)"]
+    end
+
+    CLI --> Engine --> PE
+    PE --> Workers
+    W1 & W2 & W3 & W4 --> Shared
+    W1 & W2 & W3 & W4 --> PerLoop
+    Workers --> Result["BuildResult\n(aggregated)"]
+
+    style Shared fill:#228B22,color:#fff
+    style PerLoop fill:#4169E1,color:#fff
+```
+
+### Structured Logging Flow (Spec-15)
+
+```mermaid
+flowchart LR
+    subgraph Loops["Concurrent Agentic Loops"]
+        L1["loop-001"]
+        L2["loop-002"]
+        L3["loop-003"]
+        L4["loop-004"]
+    end
+
+    SL["StructuredLogger\n(thread-safe)"]
+
+    subgraph Output["Dual Output Streams"]
+        File["build.log\nJSON Lines\n(machine-readable)"]
+        Term["Terminal\n[loop-id] formatted\n(human-readable)"]
+    end
+
+    L1 & L2 & L3 & L4 --> SL
+    SL --> File
+    SL --> Term
+```
+
+### Thread Safety Model (Spec-15)
+
+```mermaid
+flowchart TB
+    subgraph Global["Global Resources (Lock-Protected)"]
+        direction LR
+        S1["Sandbox\nFile count: global 200 limit\nLock: full validate-write cycle"]
+        S2["AuditLogger\nLock: per file write\naudit.log + security.log"]
+        S3["CacheManager\nLock: load-modify-flush\ncache.json + state.json"]
+        S4["StructuredLogger\nLock: per JSON line write\nbuild.log"]
+    end
+
+    subgraph Stateless["Stateless (No Lock Needed)"]
+        direction LR
+        S5["LLMClient\nImmutable config after init\nurllib creates new conn per call"]
+    end
+
+    subgraph Isolated["Per-Loop Instances (No Sharing)"]
+        direction LR
+        S6["ToolRegistry\nOwn tool schema + dispatch"]
+        S7["Message History\nOwn list per loop"]
+        S8["Iteration Counter\nOwn int per loop"]
+    end
+
+    style Global fill:#DAA520,color:#000
+    style Stateless fill:#228B22,color:#fff
+    style Isolated fill:#4169E1,color:#fff
+```
+
+### Spec-15 Throughput Scaling Projection
+
+```mermaid
+xychart-beta
+    title "Estimated Tokens Per Second by Parallelism Level"
+    x-axis ["1 loop", "2 loops", "4 loops", "8 loops"]
+    y-axis "Tokens/Second (SambaNova via HF Router)" 0 --> 1800
+    bar [125, 250, 500, 1000]
+```
 
 ## License
 
