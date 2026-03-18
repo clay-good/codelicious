@@ -222,3 +222,65 @@ def test_init_second_open_fails_closes_first_handle(tmp_path: pathlib.Path) -> N
 
     # Verify that the first handle's close() was called
     first_handle.close.assert_called_once()
+
+
+# -- set_result explicit success override ------------------------------------
+
+
+def test_set_result_false_overrides_no_exception(tmp_path: pathlib.Path) -> None:
+    """When set_result(False) is called, __exit__ records success=False even without exception."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    log_dir = tmp_path / "logs"
+
+    with BuildSession(project, _make_config(), log_dir=log_dir) as session:
+        # Simulate a build that catches its own errors and returns BuildResult(success=False)
+        session.set_result(False)
+        # No exception raised, but build failed
+
+    summary_path = session.session_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["success"] is False
+
+
+def test_set_result_true_overrides_exception(tmp_path: pathlib.Path) -> None:
+    """When set_result(True) is called, __exit__ records success=True even with exception."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    log_dir = tmp_path / "logs"
+
+    try:
+        with BuildSession(project, _make_config(), log_dir=log_dir) as session:
+            # Set result before raising exception
+            session.set_result(True)
+            raise RuntimeError("Expected error")
+    except RuntimeError:
+        pass
+
+    summary_path = session.session_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["success"] is True
+
+
+def test_no_set_result_uses_exception_logic(tmp_path: pathlib.Path) -> None:
+    """When set_result is not called, __exit__ uses exc_type is None (backwards compatible)."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    log_dir = tmp_path / "logs"
+
+    # Case 1: No exception -> success=True
+    with BuildSession(project, _make_config(), log_dir=log_dir) as session1:
+        pass
+
+    summary1 = json.loads((session1.session_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary1["success"] is True
+
+    # Case 2: Exception raised -> success=False
+    try:
+        with BuildSession(project, _make_config(), log_dir=log_dir) as session2:
+            raise ValueError("Test error")
+    except ValueError:
+        pass
+
+    summary2 = json.loads((session2.session_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary2["success"] is False

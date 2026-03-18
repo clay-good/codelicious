@@ -130,6 +130,7 @@ class BuildSession:
         self._start_time = time.monotonic()
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._closed = False
+        self._explicit_success: bool | None = None
         self._lock = threading.Lock()
         self.session_id = session_id
         self.session_dir = self._session_dir
@@ -202,6 +203,19 @@ class BuildSession:
             separator = f"\n{'=' * 60}\n[{ts}] {phase_name}\n{'=' * 60}\n"
             self._output_log.write(separator)
 
+    def set_result(self, success: bool) -> None:
+        """Explicitly set the build result for __exit__ to use.
+
+        Call this method before exiting the context manager to override
+        the default exception-based success detection. This is useful when
+        a build catches its own errors and returns BuildResult(success=False)
+        without raising an exception.
+
+        Args:
+            success: Whether the build succeeded.
+        """
+        self._explicit_success = success
+
     def close(
         self,
         success: bool = False,
@@ -245,5 +259,8 @@ class BuildSession:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        self.close(success=(exc_type is None))
+        if self._explicit_success is not None:
+            self.close(success=self._explicit_success)
+        else:
+            self.close(success=(exc_type is None))
         return False
