@@ -32,10 +32,11 @@ codelicious /path/to/repo
 ## Quick Start
 
 ```bash
-# Clone and install
+# Clone and install (includes dev tools: pytest, ruff, bandit, pip-audit)
 git clone https://github.com/clay-good/codelicious.git
 cd codelicious
-pip install -e .
+pip install -e ".[dev]"
+# Or minimal install without dev tools: pip install -e .
 
 # Option 1: Claude Code CLI (requires claude CLI + API credits)
 codelicious /path/to/your/repo
@@ -48,9 +49,11 @@ codelicious /path/to/your/repo --engine huggingface
 ### Development Setup
 
 ```bash
-pip install -e ".[dev]"    # Install with dev dependencies (pytest, ruff)
+pip install -e ".[dev]"    # Install with dev dependencies (pytest, ruff, bandit, pip-audit)
 pytest                      # Run tests
 ruff check src/ tests/      # Lint
+bandit -r src/              # Security scan
+pip-audit                   # Dependency vulnerability check
 ```
 
 ## Dual Engine Architecture
