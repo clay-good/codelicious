@@ -5,10 +5,14 @@ import urllib.request
 import urllib.error
 import logging
 import math
+import heapq
 from pathlib import Path
 from typing import List, Dict, Any
 
 logger = logging.getLogger("codelicious.rag")
+
+# Maximum number of results to return from semantic_search to prevent memory exhaustion
+MAX_TOP_K = 20
 
 
 class RagEngine:
@@ -39,6 +43,8 @@ class RagEngine:
                     vector_json TEXT NOT NULL
                 )
             """)
+            # Index on file_path for efficient DELETE operations during re-ingestion
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_chunks_path ON file_chunks(file_path)")
             conn.commit()
 
     def _get_embedding(self, text: str) -> List[float]:
@@ -114,24 +120,42 @@ class RagEngine:
         running a brute-force native cosine similarity check.
         Returns the most relevant chunks text blocks.
         """
+        # Cap top_k to prevent memory exhaustion from unbounded requests
+        if top_k > MAX_TOP_K:
+            logger.warning("top_k=%d exceeds maximum, capping to %d", top_k, MAX_TOP_K)
+            top_k = MAX_TOP_K
+
+        # Handle edge case of zero or negative top_k
+        if top_k <= 0:
+            return []
+
         query_vector = self._get_embedding(query)
         if not query_vector:
             return [{"error": "Failed to embed query. Check API key."}]
 
-        results = []
+        # Use a min-heap of size top_k for O(n log k) performance
+        # Store tuples of (score, file_path, chunk_text) - score first for heap ordering
+        heap: List[tuple] = []
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT file_path, chunk_text, vector_json FROM file_chunks")
 
-            for row in cursor.fetchall():
+            # Iterate over cursor directly instead of fetchall() to avoid loading all rows
+            for row in cursor:
                 file_path, chunk_text, vector_json = row
                 try:
                     chunk_vector = json.loads(vector_json)
                     score = self._cosine_similarity(query_vector, chunk_vector)
-                    results.append({"file_path": file_path, "text": chunk_text, "score": score})
+
+                    if len(heap) < top_k:
+                        heapq.heappush(heap, (score, file_path, chunk_text))
+                    elif score > heap[0][0]:
+                        heapq.heapreplace(heap, (score, file_path, chunk_text))
                 except json.JSONDecodeError:
                     continue
 
-        # Sort by highest score first
+        # Extract results from heap and sort by score descending
+        results = [{"file_path": fp, "text": text, "score": score} for score, fp, text in heap]
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        return results

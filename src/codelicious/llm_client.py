@@ -106,9 +106,7 @@ class LLMClient:
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
             logger.debug("LLM API error body (status %s): %s", e.code, error_body)
-            raise RuntimeError(
-                "LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code)
-            )
+            raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code))
         except Exception as e:
             logger.error("Failed to connect to LLM API: %s", e)
             raise RuntimeError("LLM Connection Error: %s" % e)

@@ -25,19 +25,21 @@ class TestLLMClientErrorSanitization:
         The error body may contain account IDs, billing info, diagnostic tokens,
         or other sensitive data that should not propagate through exception chains.
         """
-        sensitive_body = json.dumps({
-            "error": "rate_limit_exceeded",
-            "account_id": "acct_12345",
-            "billing_tier": "free",
-            "diagnostic_token": "diag_abc123xyz"
-        })
+        sensitive_body = json.dumps(
+            {
+                "error": "rate_limit_exceeded",
+                "account_id": "acct_12345",
+                "billing_tier": "free",
+                "diagnostic_token": "diag_abc123xyz",
+            }
+        )
 
         http_error = urllib.error.HTTPError(
             url="https://api.example.com/v1/chat",
             code=429,
             msg="Too Many Requests",
             hdrs={},
-            fp=io.BytesIO(sensitive_body.encode("utf-8"))
+            fp=io.BytesIO(sensitive_body.encode("utf-8")),
         )
 
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -66,7 +68,7 @@ class TestLLMClientErrorSanitization:
             code=503,
             msg="Service Unavailable",
             hdrs={},
-            fp=io.BytesIO(b'{"error": "server_overloaded"}')
+            fp=io.BytesIO(b'{"error": "server_overloaded"}'),
         )
 
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -84,17 +86,14 @@ class TestLLMClientErrorSanitization:
             code=400,
             msg="Bad Request",
             hdrs={},
-            fp=io.BytesIO(b'{"error": "invalid_request"}')
+            fp=io.BytesIO(b'{"error": "invalid_request"}'),
         )
 
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
             with pytest.raises(RuntimeError) as exc_info:
-                client.chat_completion(
-                    [{"role": "user", "content": "test"}],
-                    role="planner"
-                )
+                client.chat_completion([{"role": "user", "content": "test"}], role="planner")
 
             # The planner model name should be in the error
             assert client.planner_model in str(exc_info.value)
@@ -109,7 +108,7 @@ class TestLLMClientErrorSanitization:
             code=500,
             msg="Internal Server Error",
             hdrs={},
-            fp=io.BytesIO(sensitive_body.encode("utf-8"))
+            fp=io.BytesIO(sensitive_body.encode("utf-8")),
         )
 
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -146,14 +145,14 @@ class TestLLMClientResponseParsing:
     def test_parse_tool_calls_with_tools(self, client):
         """parse_tool_calls should extract tool calls from response."""
         response = {
-            "choices": [{
-                "message": {
-                    "content": "",
-                    "tool_calls": [
-                        {"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}}
-                    ]
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}}],
+                    }
                 }
-            }]
+            ]
         }
 
         result = client.parse_tool_calls(response)
@@ -162,13 +161,7 @@ class TestLLMClientResponseParsing:
 
     def test_parse_tool_calls_without_tools(self, client):
         """parse_tool_calls should return empty list when no tools."""
-        response = {
-            "choices": [{
-                "message": {
-                    "content": "Hello!"
-                }
-            }]
-        }
+        response = {"choices": [{"message": {"content": "Hello!"}}]}
 
         result = client.parse_tool_calls(response)
         assert result == []
@@ -181,13 +174,7 @@ class TestLLMClientResponseParsing:
 
     def test_parse_content_extracts_text(self, client):
         """parse_content should extract message content."""
-        response = {
-            "choices": [{
-                "message": {
-                    "content": "Hello, world!"
-                }
-            }]
-        }
+        response = {"choices": [{"message": {"content": "Hello, world!"}}]}
 
         result = client.parse_content(response)
         assert result == "Hello, world!"
