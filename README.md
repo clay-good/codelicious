@@ -424,6 +424,100 @@ xychart-beta
     bar [125, 250, 500, 1000]
 ```
 
+### Spec-16 CI Quality Gate Pipeline
+
+```mermaid
+flowchart LR
+    A[Push / PR] --> B[Lint\nruff check]
+    B --> C[Format\nruff format]
+    C --> D[Tests\npytest]
+    D --> E[Coverage\n90% minimum]
+    E --> F[Security\nbandit]
+    F --> G[Audit\npip-audit]
+    G --> H{All Pass?}
+    H -->|Yes| I[Merge Ready]
+    H -->|No| J[Block Merge]
+
+    style I fill:#228B22,color:#fff
+    style J fill:#DC143C,color:#fff
+```
+
+### Spec-16 Security Defense Layers
+
+```mermaid
+flowchart TB
+    subgraph L1["Layer 1: Input Validation"]
+        A1["Command denylist\n39 blocked commands"]
+        A2["Shell metacharacter filter\n12 blocked chars"]
+        A3["Path traversal defense\niterative decode + sandbox"]
+    end
+
+    subgraph L2["Layer 2: Execution Safety"]
+        B1["shell=False enforcement"]
+        B2["Process group timeout"]
+        B3["Prompt sanitization"]
+    end
+
+    subgraph L3["Layer 3: Output Protection"]
+        C1["File extension allowlist"]
+        C2["File count/size limits"]
+        C3["Atomic writes + symlink check"]
+    end
+
+    subgraph L4["Layer 4: Audit and Detection"]
+        D1["Security event logging"]
+        D2["Credential sanitization"]
+        D3["Secret pattern scanning"]
+    end
+
+    L1 --> L2 --> L3 --> L4
+
+    style L1 fill:#DAA520,color:#000
+    style L2 fill:#4169E1,color:#fff
+    style L3 fill:#228B22,color:#fff
+    style L4 fill:#8B008B,color:#fff
+```
+
+### Spec-16 Module Test Coverage Map
+
+```mermaid
+block-beta
+    columns 5
+    sandbox["sandbox.py\n50+ tests"]:1
+    verifier["verifier.py\n60+ tests"]:1
+    executor["executor.py\n45+ tests"]:1
+    cmd_runner["command_runner\n30+ tests"]:1
+    parser["parser.py\n31 tests"]:1
+    context_mgr["context_mgr\n35+ tests"]:1
+    fs_tools["fs_tools.py\n20+ tests"]:1
+    security["security_audit\n35+ tests"]:1
+    llm_client["llm_client\n17 tests"]:1
+    cache["cache_engine\n16 tests"]:1
+    cli["cli.py\nNEW"]:1
+    agent_runner["agent_runner\nNEW"]:1
+    planner["planner.py\nNEW"]:1
+    config["config.py\nNEW"]:1
+    budget["budget_guard\nNEW"]:1
+
+    style sandbox fill:#228B22,color:#fff
+    style verifier fill:#228B22,color:#fff
+    style executor fill:#228B22,color:#fff
+    style cmd_runner fill:#228B22,color:#fff
+    style parser fill:#228B22,color:#fff
+    style context_mgr fill:#228B22,color:#fff
+    style fs_tools fill:#228B22,color:#fff
+    style security fill:#228B22,color:#fff
+    style llm_client fill:#228B22,color:#fff
+    style cache fill:#228B22,color:#fff
+    style cli fill:#4169E1,color:#fff
+    style agent_runner fill:#4169E1,color:#fff
+    style planner fill:#4169E1,color:#fff
+    style config fill:#4169E1,color:#fff
+    style budget fill:#4169E1,color:#fff
+```
+
+Green = existing coverage, Blue = new in spec-16
+
 ---
 
 ## Zero Dependencies

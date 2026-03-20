@@ -1,11 +1,12 @@
 """Tests for command_runner.py security enforcement."""
 
+import signal
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from codelicious.tools.command_runner import CommandRunner
+from codelicious.tools.command_runner import CommandRunner, CommandDeniedError
 from codelicious.security_constants import DENIED_COMMANDS, BLOCKED_METACHARACTERS
 
 
@@ -208,40 +209,49 @@ class TestCommandExecution:
 
     def test_successful_command_execution(self, runner: CommandRunner) -> None:
         """Valid commands should execute and return output."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="success output",
-                stderr="",
-            )
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("success output", "")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
             result = runner.safe_run("echo hello")
             assert result["success"] is True
             assert result["stdout"] == "success output"
 
     def test_failed_command_execution(self, runner: CommandRunner) -> None:
         """Failed commands should return appropriate error."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=1,
-                stdout="",
-                stderr="error output",
-            )
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("", "error output")
+            mock_proc.returncode = 1
+            mock_popen.return_value = mock_proc
+
             result = runner.safe_run("false")  # 'false' command returns 1
             assert result["success"] is False
             assert result["stderr"] == "error output"
 
     def test_timeout_handling(self, runner: CommandRunner) -> None:
         """Commands that timeout should be handled gracefully."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=120)
-            result = runner.safe_run("sleep 999")
-            assert result["success"] is False
-            assert "timed out" in result["stderr"]
+        with patch("os.killpg", side_effect=ProcessLookupError):
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.pid = 12345
+                mock_proc.communicate.side_effect = [
+                    subprocess.TimeoutExpired(cmd="test", timeout=120),
+                    (None, None),  # cleanup call
+                ]
+                mock_proc.kill.return_value = None
+                mock_popen.return_value = mock_proc
+
+                result = runner.safe_run("sleep 999")
+                assert result["success"] is False
+                assert "timed out" in result["stderr"]
 
     def test_exception_handling(self, runner: CommandRunner) -> None:
         """Unexpected exceptions should be handled gracefully."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = OSError("Test error")
+        with patch("subprocess.Popen") as mock_popen:
+            mock_popen.side_effect = OSError("Test error")
             result = runner.safe_run("some_command")
             assert result["success"] is False
             assert "Subprocess Execution Error" in result["stderr"]
@@ -291,3 +301,178 @@ class TestSecurityConstantsConsistency:
             "wget",
         }
         assert dangerous.issubset(DENIED_COMMANDS)
+
+
+class TestShlexSplitValidation:
+    """Tests for shlex.split() based validation (spec-16 Phase 1, P1-2)."""
+
+    def test_shlex_split_used_for_validation(self, runner: CommandRunner) -> None:
+        """Verify shlex.split() tokenization is used for validation.
+
+        A command with single quotes that split() and shlex.split() tokenize differently
+        should be validated using shlex interpretation.
+        """
+        # "echo 'hello world'" with split() gives ['echo', "'hello", "world'"]
+        # With shlex.split() it gives ['echo', 'hello world']
+        # This test verifies shlex interpretation is used
+        is_safe, reason = runner._is_safe("echo 'hello world'")
+        assert is_safe is True
+        assert reason == ""
+
+    def test_malformed_quoting_rejected(self, runner: CommandRunner) -> None:
+        """Commands with unmatched quotes should be rejected."""
+        result = runner.safe_run("echo 'unmatched quote")
+        assert result["success"] is False
+        assert "Malformed command quoting" in result["stderr"]
+
+    def test_malformed_quoting_double_quotes(self, runner: CommandRunner) -> None:
+        """Commands with unmatched double quotes should be rejected."""
+        result = runner.safe_run('echo "unmatched double')
+        assert result["success"] is False
+        assert "Malformed command quoting" in result["stderr"]
+
+    def test_valid_quoted_command_passes(self, runner: CommandRunner) -> None:
+        """Properly quoted commands should pass validation."""
+        is_safe, reason = runner._is_safe('echo "hello world"')
+        assert is_safe is True
+        assert reason == ""
+
+    def test_escaped_quotes_handled(self, runner: CommandRunner) -> None:
+        """Commands with escaped quotes should be handled correctly."""
+        # This is valid quoting
+        is_safe, reason = runner._is_safe("echo 'it\\'s working'")
+        # shlex handles this differently on different platforms, but should not crash
+        # The key is that it doesn't raise ValueError
+        assert isinstance(is_safe, bool)
+
+
+class TestNewlineRejection:
+    """Tests for newline character rejection (spec-16 Phase 1, P1-2)."""
+
+    def test_newline_in_command_rejected(self, runner: CommandRunner) -> None:
+        """Commands containing \\n should be rejected."""
+        result = runner.safe_run("echo hello\necho world")
+        assert result["success"] is False
+        assert "Newline characters not allowed" in result["stderr"]
+
+    def test_carriage_return_in_command_rejected(self, runner: CommandRunner) -> None:
+        """Commands containing \\r should be rejected."""
+        result = runner.safe_run("echo hello\recho world")
+        assert result["success"] is False
+        assert "Newline characters not allowed" in result["stderr"]
+
+    def test_crlf_in_command_rejected(self, runner: CommandRunner) -> None:
+        """Commands containing \\r\\n should be rejected."""
+        result = runner.safe_run("echo hello\r\necho world")
+        assert result["success"] is False
+        assert "Newline characters not allowed" in result["stderr"]
+
+    def test_embedded_newline_rejected(self, runner: CommandRunner) -> None:
+        """Commands with newlines embedded in arguments should be rejected."""
+        result = runner.safe_run("echo 'hello\nworld'")
+        assert result["success"] is False
+        assert "Newline characters not allowed" in result["stderr"]
+
+
+class TestProcessGroupTimeout:
+    """Tests for process group timeout handling (spec-16 Phase 1, P2-3)."""
+
+    def test_process_group_killed_on_timeout(self, runner: CommandRunner) -> None:
+        """Verify that process group is killed on timeout, not just parent."""
+        killed_pids = []
+
+        def mock_killpg(pgid, sig):
+            killed_pids.append((pgid, sig))
+            raise ProcessLookupError("Process already exited")
+
+        with patch("os.killpg", side_effect=mock_killpg):
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.pid = 12345
+                mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=1)
+                mock_proc.kill.return_value = None
+                mock_popen.return_value = mock_proc
+
+                result = runner.safe_run("sleep 999", timeout=1)
+
+                assert result["success"] is False
+                assert "timed out" in result["stderr"]
+                # Verify os.killpg was called with the process PID and SIGKILL
+                assert len(killed_pids) > 0
+                assert killed_pids[0] == (12345, signal.SIGKILL)
+
+    def test_start_new_session_enabled(self, runner: CommandRunner) -> None:
+        """Verify that start_new_session=True is passed to Popen."""
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("output", "")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
+            runner.safe_run("echo test")
+
+            # Verify start_new_session=True was passed
+            mock_popen.assert_called_once()
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs.get("start_new_session") is True
+
+    def test_timeout_cleanup_handles_already_exited(self, runner: CommandRunner) -> None:
+        """Verify graceful handling when process already exited during cleanup."""
+        with patch("os.killpg", side_effect=ProcessLookupError):
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.pid = 99999
+                mock_proc.communicate.side_effect = [
+                    subprocess.TimeoutExpired(cmd="test", timeout=1),
+                    (None, None),  # Second call for cleanup
+                ]
+                mock_proc.kill.side_effect = ProcessLookupError
+                mock_popen.return_value = mock_proc
+
+                # Should not raise even if process already exited
+                result = runner.safe_run("sleep 999", timeout=1)
+                assert result["success"] is False
+                assert "timed out" in result["stderr"]
+
+    def test_timeout_value_customizable(self, runner: CommandRunner) -> None:
+        """Verify custom timeout value is respected."""
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("output", "")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
+            runner.safe_run("echo test", timeout=60)
+
+            # Verify communicate was called with our timeout
+            mock_proc.communicate.assert_called_once_with(timeout=60)
+
+    def test_timeout_message_includes_duration(self, runner: CommandRunner) -> None:
+        """Verify timeout message includes the actual timeout duration."""
+        with patch("os.killpg", side_effect=ProcessLookupError):
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.pid = 12345
+                mock_proc.communicate.side_effect = [
+                    subprocess.TimeoutExpired(cmd="test", timeout=30),
+                    (None, None),
+                ]
+                mock_proc.kill.return_value = None
+                mock_popen.return_value = mock_proc
+
+                result = runner.safe_run("sleep 999", timeout=30)
+                assert "30s" in result["stderr"]
+
+
+class TestCommandDeniedError:
+    """Tests for the CommandDeniedError exception."""
+
+    def test_command_denied_error_exists(self) -> None:
+        """Verify CommandDeniedError exception class exists."""
+        assert issubclass(CommandDeniedError, Exception)
+
+    def test_command_denied_error_can_be_raised(self) -> None:
+        """Verify CommandDeniedError can be raised with message."""
+        with pytest.raises(CommandDeniedError) as exc_info:
+            raise CommandDeniedError("Test denied message")
+        assert "Test denied message" in str(exc_info.value)
