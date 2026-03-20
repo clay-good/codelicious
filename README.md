@@ -518,6 +518,169 @@ block-beta
 
 Green = existing coverage, Blue = new in spec-16
 
+### Spec-17 Security Finding Resolution Flow
+
+```mermaid
+flowchart TB
+    subgraph P1["P1 Critical (6 Findings)"]
+        P14["P1-4: File count race"]
+        P15["P1-5: Overwrite count bug"]
+        P16["P1-6: Symlink TOCTOU"]
+        P18["P1-8: Silent exception"]
+        P19["P1-9: JSON deser DoS"]
+        P111["P1-11: Prompt injection"]
+    end
+
+    subgraph P2["P2 Important (11 Findings)"]
+        P25["P2-5: Dir listing DoS"]
+        P26["P2-6: mkdir race"]
+        P27["P2-7: Silent chmod"]
+        P28["P2-8: Verifier injection"]
+        P29["P2-9: Secret detection gaps"]
+        P210["P2-10: Timeout overrun"]
+        P211["P2-11: Regex backtrack"]
+        P212["P2-12: Log file perms"]
+        P213["P2-13: Incomplete redaction"]
+        P2N1["P2-NEW-1: Git push timeout"]
+        P2N2["P2-NEW-2: Verifier proc group"]
+    end
+
+    subgraph Phases["Implementation Phases"]
+        Ph1["Phase 1: cli.py"]
+        Ph2["Phase 2: sandbox count"]
+        Ph3["Phase 3: sandbox symlink"]
+        Ph4["Phase 4: JSON limits"]
+        Ph5["Phase 5: prompt sanitize"]
+        Ph6["Phase 6: dir limits"]
+        Ph7["Phase 7: race fixes"]
+        Ph8["Phase 8: verifier + git"]
+        Ph9["Phase 9: credentials"]
+        Ph10["Phase 10: regex fix"]
+        Ph11["Phase 11: timeout fix"]
+    end
+
+    P18 --> Ph1
+    P14 --> Ph2
+    P15 --> Ph2
+    P16 --> Ph3
+    P19 --> Ph4
+    P111 --> Ph5
+    P25 --> Ph6
+    P26 --> Ph7
+    P27 --> Ph7
+    P212 --> Ph7
+    P28 --> Ph8
+    P2N1 --> Ph8
+    P2N2 --> Ph8
+    P29 --> Ph9
+    P213 --> Ph9
+    P211 --> Ph10
+    P210 --> Ph11
+
+    Ph1 & Ph2 & Ph3 & Ph4 & Ph5 & Ph6 & Ph7 & Ph8 & Ph9 & Ph10 & Ph11 --> ZeroFindings["Zero Open Findings"]
+
+    style P1 fill:#DC143C,color:#fff
+    style P2 fill:#DAA520,color:#000
+    style ZeroFindings fill:#228B22,color:#fff
+```
+
+### Spec-17 Atomic File Write Sequence (Post-Fix)
+
+```mermaid
+sequenceDiagram
+    participant Thread as Worker Thread
+    participant Lock as Sandbox Lock
+    participant Set as Written Paths Set
+    participant Counter as File Counter
+    participant FS as Filesystem
+    participant Check as Post-Write Check
+
+    Thread->>Lock: acquire()
+    Lock-->>Thread: granted
+
+    Thread->>Set: path in _written_paths?
+    alt New file
+        Set-->>Thread: No (new file)
+        Thread->>Counter: count < max_files?
+        alt Under limit
+            Counter-->>Thread: Yes
+            Counter->>Counter: increment
+            Set->>Set: add(path)
+            Thread->>FS: tempfile.write(content)
+            Thread->>FS: os.replace(temp, target)
+            alt Write fails
+                FS-->>Thread: OSError
+                Counter->>Counter: decrement
+                Set->>Set: remove(path)
+                Thread->>Lock: release()
+                Thread-->>Thread: raise FileWriteError
+            else Write succeeds
+                FS-->>Thread: OK
+                Thread->>Check: os.lstat(target)
+                alt Symlink detected
+                    Check-->>Thread: is_symlink=True
+                    Thread->>FS: os.unlink(target)
+                    Counter->>Counter: decrement
+                    Set->>Set: remove(path)
+                    Thread->>Lock: release()
+                    Thread-->>Thread: raise SandboxViolationError
+                else Normal file
+                    Check-->>Thread: is_symlink=False
+                    Thread->>Lock: release()
+                    Thread-->>Thread: return success
+                end
+            end
+        else Over limit
+            Counter-->>Thread: No (at max)
+            Thread->>Lock: release()
+            Thread-->>Thread: raise FileCountLimitError
+        end
+    else Existing file (overwrite)
+        Set-->>Thread: Yes (overwrite)
+        Thread->>FS: tempfile.write(content)
+        Thread->>FS: os.replace(temp, target)
+        Thread->>Check: os.lstat(target)
+        Check-->>Thread: is_symlink=False
+        Thread->>Lock: release()
+        Thread-->>Thread: return success
+    end
+```
+
+### Spec-17 Credential Redaction Coverage
+
+```mermaid
+flowchart LR
+    subgraph Existing["Existing Patterns (Pre-Spec-17)"]
+        E1["OpenAI (sk-)"]
+        E2["GitHub (ghp_, gho_, ghu_, ghs_, ghr_)"]
+        E3["AWS (AKIA, ABIA, ACCA, ASIA)"]
+        E4["Anthropic (sk-ant-)"]
+        E5["JWT (eyJ...)"]
+        E6["Database URLs"]
+        E7["Bearer tokens"]
+        E8["Azure credentials"]
+        E9["GCP service accounts"]
+        E10["HuggingFace (hf_)"]
+    end
+
+    subgraph New["New Patterns (Spec-17 Phase 9)"]
+        N1["SSH Private Keys"]
+        N2["NPM Tokens (npm_)"]
+        N3["Slack (xoxb-, xoxp-, xoxs-, xoxa-)"]
+        N4["Stripe (sk_live_, pk_live_, rk_live_)"]
+        N5["Twilio (AC, SK + 32 hex)"]
+        N6["Webhook URLs with tokens"]
+    end
+
+    Existing --> Redactor["sanitize_message()"]
+    New --> Redactor
+    Redactor --> Safe["Safe Log Output\n(all credentials replaced\nwith REDACTED)"]
+
+    style Existing fill:#228B22,color:#fff
+    style New fill:#4169E1,color:#fff
+    style Safe fill:#228B22,color:#fff
+```
+
 ---
 
 ## Zero Dependencies

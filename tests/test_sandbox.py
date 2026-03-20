@@ -483,3 +483,153 @@ def test_write_file_cleans_up_temp_on_error(tmp_path: pathlib.Path) -> None:
     # Verify temp file was cleaned up
     temp_files_after = list(tmp_path.glob("*.tmp"))
     assert len(temp_files_after) == len(temp_files_before)
+
+
+# -- Phase 2 spec-16: Sandbox Race Condition Tests --------------------------
+
+
+def test_overwrite_does_not_increment_count(tmp_path: pathlib.Path) -> None:
+    """Writing the same file twice should not increment the count twice (P1-5 fix)."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path, max_file_count=5)
+    sb.write_file("same.py", "version 1")
+    sb.write_file("same.py", "version 2")
+    # The internal count should be 1, not 2
+    assert sb._files_created_count == 1
+
+
+def test_file_limit_exact_boundary(tmp_path: pathlib.Path) -> None:
+    """Writing exactly max_file_count files succeeds, next one fails (P1-4 fix)."""
+    from codelicious.sandbox import Sandbox
+
+    limit = 3
+    sb = Sandbox(tmp_path, max_file_count=limit)
+    for i in range(limit):
+        sb.write_file(f"file_{i}.py", f"content {i}")
+
+    # Verify count is exactly at limit
+    assert sb._files_created_count == limit
+
+    # Next new file should fail
+    with pytest.raises(FileCountLimitError):
+        sb.write_file("one_too_many.py", "fail")
+
+
+def test_concurrent_writes_respect_limit(tmp_path: pathlib.Path) -> None:
+    """Concurrent writes should respect the file count limit (P1-4 fix)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from codelicious.sandbox import Sandbox
+
+    limit = 10
+    sb = Sandbox(tmp_path, max_file_count=limit)
+    num_writes = limit + 5  # Try to write more than the limit
+
+    def write_file(idx: int) -> bool:
+        """Return True if write succeeded, False if it raised FileCountLimitError."""
+        try:
+            sb.write_file(f"concurrent_{idx}.py", f"content {idx}")
+            return True
+        except FileCountLimitError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(write_file, i) for i in range(num_writes)]
+        results = [f.result() for f in as_completed(futures)]
+
+    # Exactly `limit` should succeed, the rest should fail
+    success_count = sum(results)
+    assert success_count == limit
+    assert sb._files_created_count == limit
+
+
+def test_symlink_attack_post_write_check(tmp_path: pathlib.Path) -> None:
+    """Post-write verification catches symlink attacks (P1-6 fix)."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    # The post-write check already exists and is tested by existing tests.
+    # This test verifies the symlink detection before write.
+    outside = tmp_path.parent / "escaped_target.py"
+    outside.write_text("escaped content", encoding="utf-8")
+
+    try:
+        # Create a symlink inside the sandbox pointing outside
+        link = tmp_path / "sneaky.py"
+        link.symlink_to(outside)
+
+        # Attempting to write through this symlink should be rejected
+        with pytest.raises(PathTraversalError):
+            sb.write_file("sneaky.py", "malicious content")
+    finally:
+        if outside.exists():
+            outside.unlink()
+
+
+def test_mkdir_inside_lock(tmp_path: pathlib.Path) -> None:
+    """Directory creation is atomic with count check (P2-6 fix)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path, max_file_count=10)
+
+    # Concurrent writes to the same new subdirectory should not race
+    def write_to_subdir(idx: int) -> None:
+        sb.write_file(f"newdir/file_{idx}.py", f"content {idx}")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(write_to_subdir, range(4)))
+
+    # Verify all files exist and directory was created correctly
+    subdir = tmp_path / "newdir"
+    assert subdir.is_dir()
+    for i in range(4):
+        assert (subdir / f"file_{i}.py").exists()
+
+
+def test_chmod_failure_logged(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """chmod failure is logged at WARNING level (P2-7 fix)."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+
+    with unittest.mock.patch("os.chmod", side_effect=OSError("permission denied")):
+        with caplog.at_level(logging.WARNING, logger="codelicious.sandbox"):
+            sb.write_file("test.py", "content")
+
+    # Verify warning was logged
+    assert any("Failed to set permissions" in r.message for r in caplog.records)
+
+
+def test_chmod_failure_does_not_raise(tmp_path: pathlib.Path) -> None:
+    """chmod failure should not cause write_file to raise (P2-7 fix)."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+
+    with unittest.mock.patch("os.chmod", side_effect=OSError("permission denied")):
+        # Should not raise, write is best-effort for permissions
+        resolved = sb.write_file("test.py", "content")
+
+    # Verify file was written successfully
+    assert resolved.exists()
+    assert resolved.read_text(encoding="utf-8") == "content"
+
+
+def test_new_file_increments_count(tmp_path: pathlib.Path) -> None:
+    """Writing a new file increments the count (basic sanity check)."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    assert sb._files_created_count == 0
+
+    sb.write_file("new_file.py", "content")
+    assert sb._files_created_count == 1
+
+    sb.write_file("another_file.py", "more content")
+    assert sb._files_created_count == 2
