@@ -225,3 +225,151 @@ class TestLLMClientInitialization:
         monkeypatch.setenv("HF_TOKEN", "hf_test")
         client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
         assert client.endpoint_url == "https://custom.api.com/v1/chat"
+
+
+class TestLLMClientErrorBodySanitization:
+    """Tests for P1-7: API error bodies are sanitized before logging."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        """Create an LLMClient with a mock API key."""
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token_12345")
+        return LLMClient()
+
+    def test_error_body_api_key_redacted_in_logs(self, client, caplog):
+        """API keys in error body should be redacted before logging."""
+        import logging
+
+        # Simulate an error response that echoes back the API key
+        error_body = json.dumps(
+            {
+                "error": "invalid_api_key",
+                "provided_key": "sk-proj-abc123def456xyz789",
+                "message": "The API key sk-proj-abc123def456xyz789 is invalid",
+            }
+        )
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.example.com/v1/chat",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(error_body.encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = http_error
+
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # The API key should be redacted in the log
+            assert "sk-proj-abc123def456xyz789" not in caplog.text
+            assert "***REDACTED***" in caplog.text
+
+    def test_error_body_hf_token_redacted_in_logs(self, client, caplog):
+        """HuggingFace tokens in error body should be redacted."""
+        import logging
+
+        error_body = json.dumps({"error": "rate_limit", "token": "hf_abcdefghijklmnopqrstuvwxyz1234567890"})
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.example.com/v1/chat",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={},
+            fp=io.BytesIO(error_body.encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = http_error
+
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # HF token should be redacted
+            assert "hf_abcdefghijklmnopqrstuvwxyz1234567890" not in caplog.text
+
+    def test_error_body_jwt_token_redacted_in_logs(self, client, caplog):
+        """JWT tokens in error body should be redacted."""
+        import logging
+
+        jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        error_body = json.dumps({"error": "invalid_token", "jwt": jwt})
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.example.com/v1/chat",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(error_body.encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = http_error
+
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # JWT should be redacted
+            assert jwt not in caplog.text
+
+    def test_error_body_combined_secrets_redacted(self, client, caplog):
+        """Multiple secret types in error body should all be redacted."""
+        import logging
+
+        error_body = (
+            "Error details: API key sk-ant-somekey12345678901234 was rejected. "
+            "Token hf_testtoken12345678901234 is invalid. "
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature123"
+        )
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.example.com/v1/chat",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=io.BytesIO(error_body.encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = http_error
+
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # All secrets should be redacted
+            assert "sk-ant-somekey12345678901234" not in caplog.text
+            assert "hf_testtoken12345678901234" not in caplog.text
+
+    def test_error_body_non_sensitive_data_preserved(self, client, caplog):
+        """Non-sensitive error details should still be visible in logs."""
+        import logging
+
+        error_body = json.dumps(
+            {"error": "model_not_found", "model": "gpt-4-unknown", "status": "error", "request_id": "req-12345"}
+        )
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.example.com/v1/chat",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=io.BytesIO(error_body.encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = http_error
+
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # Non-sensitive data should be preserved
+            assert "model_not_found" in caplog.text
+            assert "gpt-4-unknown" in caplog.text
+            assert "req-12345" in caplog.text

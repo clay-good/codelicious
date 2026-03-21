@@ -2,16 +2,16 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-20 (spec-16 Phase 2 Complete)
+**Last Updated:** 2026-03-21 (spec-16 Phase 3 Complete)
 **Current Spec:** spec-16 (Reliability, Test Coverage, and Production Readiness)
-**Phase:** Phase 2 Complete - Sandbox race conditions fixed
-**Status:** VERIFIED GREEN - 588 tests passing, lint clean, format clean
+**Phase:** Phase 3 Complete - API key exposure and secret redaction fixed
+**Status:** VERIFIED GREEN - 619 tests passing, lint clean, format clean
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 588 tests passed in 5.08s |
+| Tests | PASS | 619 tests passed in 4.41s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | All files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection in production code |
@@ -31,7 +31,7 @@
 | ~~P1-4~~ | ~~`sandbox.py:215-228,349-350`~~ | ~~File count increment race - counter after write, not during validation~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P1-5~~ | ~~`sandbox.py:349-350`~~ | ~~Overwrite count bug - counter increments even for existing files~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P1-6~~ | ~~`sandbox.py:240-248`~~ | ~~Symlink TOCTOU gap - window between check and write~~ | **FIXED:** spec-16 Phase 2 |
-| ~~P1-7~~ | ~~`llm_client.py:118-122`~~ | ~~API key logging risk~~ | **FIXED:** Phase 10 |
+| ~~P1-7~~ | ~~`llm_client.py:118-122`~~ | ~~API key logging risk~~ | **FIXED:** spec-16 Phase 3 |
 | P1-8 | `cli.py:111-114` | Silent exception swallowing - `except Exception: pass` | Open |
 | P1-9 | `loop_controller.py:95-96,159` | JSON deserialization without size/depth limits - DoS vector | Open |
 | ~~P1-10~~ | ~~`planner.py:356-404`~~ | ~~Path traversal bypass~~ | **FALSE POSITIVE:** Double-decode catches triple-encoding |
@@ -53,7 +53,7 @@
 | P2-10 | `agent_runner.py:410-434` | Timeout overrun - up to 1s beyond configured | Open |
 | P2-11 | `executor.py:254-256` | Regex catastrophic backtracking | Open |
 | P2-12 | `build_logger.py:163-178` | Race in file creation - permissions after open | Open |
-| P2-13 | `logger.py:26-67` | Incomplete redaction - SSH keys, NPM tokens, webhooks | Open |
+| ~~P2-13~~ | ~~`logger.py:26-67`~~ | ~~Incomplete redaction - SSH keys, NPM tokens, webhooks~~ | **FIXED:** spec-16 Phase 3 |
 | ~~P2-14~~ | ~~`audit_logger.py:8-10`~~ | ~~Global log level mutation~~ | **FIXED:** Phase 8 |
 | P2-NEW-1 | `git_orchestrator.py:164-168` | Missing timeout on git push | Open |
 | P2-NEW-2 | `verifier.py:190-196,262-278` | subprocess.run without process group | Open |
@@ -88,7 +88,7 @@
 
 - [x] Phase 1: Fix Command Injection in command_runner.py (P1-2, P2-3)
 - [x] Phase 2: Fix All Sandbox Race Conditions (P1-4, P1-5, P1-6, P2-6, P2-7)
-- [ ] Phase 3: Fix API Key Exposure and Secret Redaction (P1-7, P2-13)
+- [x] Phase 3: Fix API Key Exposure and Secret Redaction (P1-7, P2-13)
 - [ ] Phase 4: Fix Silent Exception Swallowing in cli.py (P1-8)
 - [ ] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
 - [ ] Phase 6: Fix Path Traversal Bypass via Triple-Encoding (P1-10)
@@ -137,13 +137,14 @@
 | test_parser.py | 31 |
 | test_scaffolder*.py | 30 |
 | test_fs_tools.py | 27 |
-| test_llm_client.py | 17 |
+| test_llm_client.py | 22 |
 | test_cache_engine.py | 16 |
 | test_git_orchestrator.py | 16 |
 | test_loop_controller.py | 13 |
 | test_claude_engine.py | 4 |
+| test_logger_sanitization.py | 24 |
 
-**Total: 588 tests**
+**Total: 619 tests**
 
 ---
 
@@ -151,7 +152,7 @@
 
 - **URL:** https://github.com/clay-good/codelicious/pull/5
 - **Branch:** `codelicious/auto-build`
-- **Status:** Draft - spec-16 Phase 2 complete
+- **Status:** Draft - spec-16 Phase 3 complete
 
 ---
 
@@ -160,8 +161,8 @@
 **Overall Risk:** MEDIUM
 
 The codebase has strong security fundamentals with multiple defense layers. Remaining open issues:
-- **2 P1 Critical**: Silent exception swallowing, JSON DoS, prompt injection (P1-4, P1-5, P1-6 fixed in Phase 2)
-- **8 P2 Important**: Resource management, timeout handling, detection gaps (P2-6, P2-7 fixed in Phase 2)
+- **2 P1 Critical**: Silent exception swallowing (P1-8), JSON DoS (P1-9), prompt injection (P1-11)
+- **6 P2 Important**: Resource management, timeout handling (P2-6, P2-7, P2-13 fixed in Phases 2-3)
 
 The implementation is production-ready for controlled environments. Remaining P1/P2 issues being addressed in spec-16.
 
