@@ -68,7 +68,9 @@ class TestWebhookURLRedaction:
         """Slack webhook URLs should be redacted."""
         # Using test pattern that matches regex but uses placeholder values
         # Note: "EXAMPLE" prefix signals this is not a real secret
-        message = "Notification sent to https://hooks.slack.com/services/EXAMPLE0000/EXAMPLE0000/EXAMPLEEXAMPLEEXAMPLE00"
+        message = (
+            "Notification sent to https://hooks.slack.com/services/EXAMPLE0000/EXAMPLE0000/EXAMPLEEXAMPLEEXAMPLE00"
+        )
 
         result = sanitize_message(message)
 
