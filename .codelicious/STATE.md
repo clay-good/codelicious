@@ -2,16 +2,16 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-21 (spec-16 Phase 3 Complete)
+**Last Updated:** 2026-03-22 (spec-16 Phase 4 Complete)
 **Current Spec:** spec-16 (Reliability, Test Coverage, and Production Readiness)
-**Phase:** Phase 3 Complete - API key exposure and secret redaction fixed
-**Status:** VERIFIED GREEN - 619 tests passing, lint clean, format clean
+**Phase:** Phase 4 Complete - Silent exception swallowing fixed in cli.py
+**Status:** VERIFIED GREEN - 631 tests passing, lint clean, format clean
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 619 tests passed in 5.45s |
+| Tests | PASS | 631 tests passed in 5.02s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | All files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection in production code |
@@ -32,7 +32,7 @@
 | ~~P1-5~~ | ~~`sandbox.py:349-350`~~ | ~~Overwrite count bug - counter increments even for existing files~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P1-6~~ | ~~`sandbox.py:240-248`~~ | ~~Symlink TOCTOU gap - window between check and write~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P1-7~~ | ~~`llm_client.py:118-122`~~ | ~~API key logging risk~~ | **FIXED:** spec-16 Phase 3 |
-| P1-8 | `cli.py:111-114` | Silent exception swallowing - `except Exception: pass` | Open |
+| ~~P1-8~~ | ~~`cli.py:111-114`~~ | ~~Silent exception swallowing - `except Exception: pass`~~ | **FIXED:** spec-16 Phase 4 |
 | P1-9 | `loop_controller.py:95-96,159` | JSON deserialization without size/depth limits - DoS vector | Open |
 | ~~P1-10~~ | ~~`planner.py:356-404`~~ | ~~Path traversal bypass~~ | **FALSE POSITIVE:** Double-decode catches triple-encoding |
 | P1-11 | `agent_runner.py:105` | Prompt injection - unsanitized prompt to subprocess | Open |
@@ -89,7 +89,7 @@
 - [x] Phase 1: Fix Command Injection in command_runner.py (P1-2, P2-3)
 - [x] Phase 2: Fix All Sandbox Race Conditions (P1-4, P1-5, P1-6, P2-6, P2-7)
 - [x] Phase 3: Fix API Key Exposure and Secret Redaction (P1-7, P2-13)
-- [ ] Phase 4: Fix Silent Exception Swallowing in cli.py (P1-8)
+- [x] Phase 4: Fix Silent Exception Swallowing in cli.py (P1-8)
 - [ ] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
 - [ ] Phase 6: Fix Path Traversal Bypass via Triple-Encoding (P1-10)
 - [ ] Phase 7: Fix Agent Runner Command Injection and Timeout (P1-11, P2-10)
@@ -143,8 +143,9 @@
 | test_loop_controller.py | 13 |
 | test_claude_engine.py | 4 |
 | test_logger_sanitization.py | 24 |
+| test_cli.py | 12 |
 
-**Total: 619 tests**
+**Total: 631 tests**
 
 ---
 
@@ -152,7 +153,7 @@
 
 - **URL:** https://github.com/clay-good/codelicious/pull/5
 - **Branch:** `codelicious/auto-build`
-- **Status:** Draft - spec-16 Phase 3 complete
+- **Status:** Draft - spec-16 Phase 4 complete
 
 ---
 
@@ -161,8 +162,8 @@
 **Overall Risk:** MEDIUM
 
 The codebase has strong security fundamentals with multiple defense layers. Remaining open issues:
-- **2 P1 Critical**: Silent exception swallowing (P1-8), JSON DoS (P1-9), prompt injection (P1-11)
-- **6 P2 Important**: Resource management, timeout handling (P2-6, P2-7, P2-13 fixed in Phases 2-3)
+- **2 P1 Critical**: JSON DoS (P1-9), prompt injection (P1-11)
+- **6 P2 Important**: Resource management, timeout handling
 
 The implementation is production-ready for controlled environments. Remaining P1/P2 issues being addressed in spec-16.
 

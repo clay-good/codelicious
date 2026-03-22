@@ -110,8 +110,8 @@ def main():
             if args.push_pr:
                 try:
                     git_manager.transition_pr_to_review()
-                except Exception:
-                    pass  # Already handled in engine
+                except Exception as e:
+                    logger.warning("PR transition to ready-for-review failed: %s", e)
         else:
             logger.error("Build cycle failed: %s", result.message)
             sys.exit(1)
