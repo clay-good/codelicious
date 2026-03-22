@@ -19,7 +19,28 @@
 
 ---
 
-## Security Review Findings (Deep Review - 2026-03-19)
+## Security Review Findings (Deep Review - 2026-03-22)
+
+### New Findings from Latest Review
+
+| Severity | ID | Location | Description |
+|----------|-----|----------|-------------|
+| P1 | NEW-P1-1 | `huggingface_engine.py:128` | Unprotected json.loads bypasses loop_controller validation |
+| P1 | NEW-P1-2 | `rag_engine.py:70` | Embedding API response parsed without size limit |
+| P1 | NEW-P1-3 | `command_runner.py:126` | os.killpg uses PID instead of PGID |
+| P2 | NEW-P2-1 | `command_runner.py:106` | Missing stdin=subprocess.DEVNULL |
+| P2 | NEW-P2-2 | `command_runner.py:106` | No environment variable sanitization |
+| P2 | NEW-P2-3 | `git_orchestrator.py:220` | gh pr ready return code unchecked |
+| P2 | NEW-P2-4 | `git_orchestrator.py:228` | Reviewer assignment return code unchecked |
+| P2 | NEW-P2-5 | `logger.py:146` | Non-string log args may bypass sanitization |
+| P3 | NEW-P3-1 | `errors.py:133` | Exception hierarchy inconsistency |
+| P3 | NEW-P3-2 | `command_runner.py:*` | Missing glob chars `*?` in metacharacter filter |
+
+**Note:** All findings are documented for future spec work. Current build passes all tests (649 passing) and automated security checks.
+
+---
+
+## Security Review Findings (Prior - 2026-03-19)
 
 ### Critical (P1) - 10 Issues (4 fixed in spec-08)
 
@@ -153,7 +174,7 @@
 
 - **URL:** https://github.com/clay-good/codelicious/pull/5
 - **Branch:** `codelicious/auto-build`
-- **Status:** Draft - spec-16 Phase 4 complete
+- **Status:** Draft - spec-16 Phase 5 complete
 
 ---
 
