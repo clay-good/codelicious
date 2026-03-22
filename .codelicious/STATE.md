@@ -2,16 +2,16 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-22 (spec-16 Phase 4 Complete)
+**Last Updated:** 2026-03-22 (spec-16 Phase 5 Complete)
 **Current Spec:** spec-16 (Reliability, Test Coverage, and Production Readiness)
-**Phase:** Phase 4 Complete - Silent exception swallowing fixed in cli.py
-**Status:** VERIFIED GREEN - 631 tests passing, lint clean, format clean
+**Phase:** Phase 5 Complete - JSON deserialization validation added to loop_controller.py
+**Status:** VERIFIED GREEN - 649 tests passing, lint clean, format clean
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 631 tests passed in 5.02s |
+| Tests | PASS | 649 tests passed in 5.87s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | All files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection in production code |
@@ -33,7 +33,7 @@
 | ~~P1-6~~ | ~~`sandbox.py:240-248`~~ | ~~Symlink TOCTOU gap - window between check and write~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P1-7~~ | ~~`llm_client.py:118-122`~~ | ~~API key logging risk~~ | **FIXED:** spec-16 Phase 3 |
 | ~~P1-8~~ | ~~`cli.py:111-114`~~ | ~~Silent exception swallowing - `except Exception: pass`~~ | **FIXED:** spec-16 Phase 4 |
-| P1-9 | `loop_controller.py:95-96,159` | JSON deserialization without size/depth limits - DoS vector | Open |
+| ~~P1-9~~ | ~~`loop_controller.py:95-96,159`~~ | ~~JSON deserialization without size/depth limits - DoS vector~~ | **FIXED:** spec-16 Phase 5 |
 | ~~P1-10~~ | ~~`planner.py:356-404`~~ | ~~Path traversal bypass~~ | **FALSE POSITIVE:** Double-decode catches triple-encoding |
 | P1-11 | `agent_runner.py:105` | Prompt injection - unsanitized prompt to subprocess | Open |
 
@@ -90,7 +90,7 @@
 - [x] Phase 2: Fix All Sandbox Race Conditions (P1-4, P1-5, P1-6, P2-6, P2-7)
 - [x] Phase 3: Fix API Key Exposure and Secret Redaction (P1-7, P2-13)
 - [x] Phase 4: Fix Silent Exception Swallowing in cli.py (P1-8)
-- [ ] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
+- [x] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
 - [ ] Phase 6: Fix Path Traversal Bypass via Triple-Encoding (P1-10)
 - [ ] Phase 7: Fix Agent Runner Command Injection and Timeout (P1-11, P2-10)
 - [ ] Phase 8: Fix Directory Listing DoS (P2-5)
@@ -140,12 +140,12 @@
 | test_llm_client.py | 22 |
 | test_cache_engine.py | 16 |
 | test_git_orchestrator.py | 16 |
-| test_loop_controller.py | 13 |
+| test_loop_controller.py | 31 |
 | test_claude_engine.py | 4 |
 | test_logger_sanitization.py | 24 |
 | test_cli.py | 12 |
 
-**Total: 631 tests**
+**Total: 649 tests**
 
 ---
 
@@ -162,7 +162,7 @@
 **Overall Risk:** MEDIUM
 
 The codebase has strong security fundamentals with multiple defense layers. Remaining open issues:
-- **2 P1 Critical**: JSON DoS (P1-9), prompt injection (P1-11)
+- **1 P1 Critical**: prompt injection (P1-11)
 - **6 P2 Important**: Resource management, timeout handling
 
 The implementation is production-ready for controlled environments. Remaining P1/P2 issues being addressed in spec-16.
