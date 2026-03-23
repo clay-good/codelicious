@@ -1,8 +1,8 @@
 """
 Tests for cli.py - CLI orchestration and error handling.
 
-These tests verify the CLI argument parsing, engine selection delegation,
-PR transition error handling, and the overall orchestration logic.
+codelicious has ONE command: `codelicious <repo_path>`
+No flags. Everything is on by default.
 """
 
 import logging
@@ -69,27 +69,47 @@ class TestSetupLogger:
         assert logger.name == "codelicious"
 
 
+class TestSingleCommand:
+    """Tests that codelicious works with just a repo path and nothing else."""
+
+    def test_bare_command_runs_full_pipeline(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
+        """Test that `codelicious <repo>` runs the full pipeline."""
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine) as mock_select:
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                        main()
+
+        # Engine auto-detected
+        mock_select.assert_called_once_with("auto")
+
+        # Build cycle called with everything ON
+        call_kwargs = mock_successful_engine.run_build_cycle.call_args
+        assert call_kwargs.kwargs["auto_mode"] is True
+        assert call_kwargs.kwargs["orchestrate"] is True
+        assert call_kwargs.kwargs["push_pr"] is True
+        assert call_kwargs.kwargs["reflect"] is True
+
+        # PR transition called on success
+        mock_git_manager.transition_pr_to_review.assert_called_once()
+
+
 class TestPRTransitionErrorHandling:
-    """Tests for PR transition error handling (P1-8 fix)."""
+    """Tests for PR transition error handling."""
 
     def test_pr_transition_failure_logs_warning(
         self, mock_repo: Path, mock_successful_engine, mock_git_manager, caplog
     ):
-        """Test that PR transition failure logs a warning but doesn't raise.
-
-        This verifies the fix for P1-8: silent exception swallowing.
-        """
+        """Test that PR transition failure logs a warning but doesn't raise."""
         mock_git_manager.transition_pr_to_review.side_effect = RuntimeError("GitHub API error: rate limit exceeded")
 
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--push-pr"]):
+                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
                         with caplog.at_level(logging.WARNING):
-                            # Should not raise despite the transition error
                             main()
 
-        # Verify warning was logged with the error message
         assert any(
             "PR transition to ready-for-review failed" in record.message and "rate limit exceeded" in record.message
             for record in caplog.records
@@ -102,24 +122,29 @@ class TestPRTransitionErrorHandling:
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--push-pr"]):
+                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
                         with caplog.at_level(logging.WARNING):
                             main()
 
-        # Verify no warning was logged about PR transition
         assert not any("PR transition to ready-for-review failed" in record.message for record in caplog.records)
 
 
-class TestArgumentParsing:
-    """Tests for CLI argument parsing."""
+class TestErrorHandling:
+    """Tests for argument validation and error handling."""
 
-    def test_missing_repo_path_exits(self, capsys):
-        """Test that missing repo path argument causes exit with error."""
+    def test_no_args_exits(self):
+        """Test that no arguments causes exit."""
         with mock.patch.object(sys, "argv", ["codelicious"]):
             with pytest.raises(SystemExit) as exc_info:
                 main()
-            # argparse exits with code 2 for missing required arguments
             assert exc_info.value.code == 2
+
+    def test_help_flag_exits_zero(self):
+        """Test that --help exits with code 0."""
+        with mock.patch.object(sys, "argv", ["codelicious", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
 
     def test_nonexistent_repo_path_exits(self, tmp_path: Path):
         """Test that a nonexistent repo path causes exit with error."""
@@ -129,21 +154,6 @@ class TestArgumentParsing:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
-
-
-class TestEngineSelection:
-    """Tests for engine selection delegation."""
-
-    def test_engine_selection_default_uses_auto(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
-        """Test that when no --engine flag is passed, auto-detection runs."""
-        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine) as mock_select:
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
-                with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        main()
-
-        # Verify select_engine was called with "auto" (the default)
-        mock_select.assert_called_once_with("auto")
 
     def test_engine_selection_runtime_error_exits(self, mock_repo: Path):
         """Test that RuntimeError from engine selection causes exit."""
@@ -155,32 +165,6 @@ class TestEngineSelection:
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 1
-
-
-class TestPushPRFlag:
-    """Tests for --push-pr flag behavior."""
-
-    def test_push_pr_flag_triggers_git_operations(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
-        """Test that --push-pr causes git transition to be called."""
-        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
-                with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--push-pr"]):
-                        main()
-
-        # Verify transition_pr_to_review was called
-        mock_git_manager.transition_pr_to_review.assert_called_once()
-
-    def test_without_push_pr_flag_no_transition(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
-        """Test that without --push-pr, PR transition is not called."""
-        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
-                with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        main()
-
-        # Verify transition_pr_to_review was NOT called
-        mock_git_manager.transition_pr_to_review.assert_not_called()
 
 
 class TestBuildFailure:
@@ -201,11 +185,10 @@ class TestBuildFailure:
         with mock.patch("codelicious.cli.select_engine", return_value=mock_failed_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--push-pr"]):
+                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
                         with pytest.raises(SystemExit):
                             main()
 
-        # Even with --push-pr, failed build should not attempt transition
         mock_git_manager.transition_pr_to_review.assert_not_called()
 
 

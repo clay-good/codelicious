@@ -28,6 +28,7 @@ __all__ = [
     "clear_build_complete",
     "extract_context",
     "render",
+    "scan_remaining_tasks",
 ]
 
 # ---------------------------------------------------------------------------
@@ -220,6 +221,42 @@ def clear_build_complete(project_root: pathlib.Path) -> None:
     sentinel = project_root / ".codelicious" / _BUILD_COMPLETE_FILENAME
     if sentinel.is_file():
         sentinel.unlink()
+
+
+_UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
+
+# Common locations where spec/task files live
+_SPEC_GLOBS: list[str] = [
+    "*.md",
+    "docs/**/*.md",
+    "docs/specs/**/*.md",
+    "specs/**/*.md",
+    ".codelicious/STATE.md",
+]
+
+
+def scan_remaining_tasks(project_root: pathlib.Path) -> int:
+    """Count unchecked ``- [ ]`` items across all spec/task markdown files.
+
+    Returns the total number of unchecked checkboxes found.  A return
+    value of 0 means all discoverable tasks appear complete.
+    """
+    total = 0
+    seen: set[pathlib.Path] = set()
+    for pattern in _SPEC_GLOBS:
+        for path in project_root.glob(pattern):
+            resolved = path.resolve()
+            if resolved in seen or not resolved.is_file():
+                continue
+            seen.add(resolved)
+            try:
+                content = resolved.read_text(encoding="utf-8", errors="replace")
+                count = len(_UNCHECKED_RE.findall(content))
+                if count > 0:
+                    total += count
+            except OSError:
+                pass
+    return total
 
 
 def render(template: str, **kwargs: str) -> str:
