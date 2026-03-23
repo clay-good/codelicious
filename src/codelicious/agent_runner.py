@@ -28,15 +28,61 @@ from codelicious.errors import (
     CodeliciousError,
 )
 
-__all__ = ["AgentResult", "run_agent"]
+__all__ = ["AgentResult", "run_agent", "_sanitize_prompt", "_MAX_PROMPT_LENGTH", "_POLL_INTERVAL_S"]
 
 # Timeout constants
 _SIGTERM_GRACE_S: int = 5  # Seconds to wait after SIGTERM before SIGKILL
 _THREAD_JOIN_TIMEOUT_S: int = 10  # Seconds to wait for background threads to exit
 _STDERR_SUMMARY_INTERVAL_S: float = 60.0  # Seconds between stderr summary log lines
 _FINAL_WAIT_TIMEOUT_S: int = 30  # Seconds for final proc.wait() after loop
+_POLL_INTERVAL_S: float = 0.1  # Polling interval for main loop (reduced from 1.0 for precise timeout)
+
+# Prompt sanitization constants
+_MAX_PROMPT_LENGTH: int = 100_000  # Maximum prompt length in characters
 
 logger = logging.getLogger("codelicious.agent_runner")
+
+
+def _sanitize_prompt(prompt: str) -> str:
+    """Sanitize the prompt before passing to subprocess.
+
+    This function protects against:
+    1. Null bytes that could truncate arguments or cause undefined behavior.
+    2. Excessively long prompts that could cause memory issues.
+    3. Prompts starting with dashes that could be interpreted as CLI flags.
+
+    Parameters
+    ----------
+    prompt:
+        The raw prompt text from the LLM or user.
+
+    Returns
+    -------
+    str
+        Sanitized prompt safe for subprocess invocation.
+    """
+    # Strip null bytes (could cause argument truncation)
+    sanitized = prompt.replace("\x00", "")
+    if sanitized != prompt:
+        logger.warning("Null bytes stripped from prompt (original had %d null bytes)", prompt.count("\x00"))
+
+    # Cap length to prevent memory issues and excessively long CLI arguments
+    if len(sanitized) > _MAX_PROMPT_LENGTH:
+        logger.warning(
+            "Prompt truncated: original length %d exceeds max %d",
+            len(sanitized),
+            _MAX_PROMPT_LENGTH,
+        )
+        sanitized = sanitized[:_MAX_PROMPT_LENGTH]
+
+    # Prefix prompts starting with dash to prevent flag interpretation
+    # POSIX convention: "--" signals end of flags
+    stripped = sanitized.lstrip()
+    if stripped.startswith("-"):
+        sanitized = "-- " + sanitized
+        logger.debug("Prompt prefixed with '-- ' to prevent flag interpretation")
+
+    return sanitized
 
 
 @dataclass
@@ -102,7 +148,9 @@ def _build_agent_command(
     if resume_session_id:
         cmd.extend(["--resume", resume_session_id])
 
-    cmd.extend(["-p", prompt])
+    # Sanitize prompt before passing to subprocess
+    sanitized_prompt = _sanitize_prompt(prompt)
+    cmd.extend(["-p", sanitized_prompt])
 
     return cmd
 
@@ -426,8 +474,9 @@ def run_agent(
                 _last_stderr_check = time.monotonic()
 
             # Wait for line with short timeout to allow periodic timeout checks
+            # Use _POLL_INTERVAL_S (0.1s) for precise timeout enforcement within 100ms
             try:
-                line = stdout_queue.get(timeout=1.0)
+                line = stdout_queue.get(timeout=_POLL_INTERVAL_S)
             except queue.Empty:
                 # No data yet, check if process has exited
                 if proc.poll() is not None:

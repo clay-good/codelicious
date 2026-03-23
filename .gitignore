@@ -25,6 +25,7 @@ env/
 # Environment variables / secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 credentials.json
@@ -46,6 +47,10 @@ Thumbs.db
 coverage/
 htmlcov/
 .coverage
+coverage.xml
+
+# SQLite databases
+*.sqlite3
 
 # Node (not used at runtime, but just in case)
 node_modules/

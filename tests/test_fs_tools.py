@@ -287,3 +287,115 @@ def test_null_bytes_in_path_blocked(fs_tooling: FSTooling) -> None:
     response = fs_tooling.native_write_file("file\x00.py", "malicious")
     assert response["success"] is False
     assert "null" in response["stderr"].lower() or "traversal" in response["stderr"].lower()
+
+
+# -- Directory Listing DoS Protection Tests (P2-5) --
+
+
+def test_directory_listing_depth_limited(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """Create a 10-level deep tree, list with max_depth=3, verify only 3 levels returned."""
+    # Create a 10-level deep directory structure
+    current = tmp_path
+    for i in range(10):
+        current = current / f"level{i}"
+        current.mkdir()
+        (current / f"file{i}.py").write_text(f"# level {i}", encoding="utf-8")
+
+    # List with max_depth=3 (depth 0 = root, depth 1 = level0, depth 2 = level1, depth 3 = level2)
+    response = fs_tooling.native_list_directory(".", max_depth=3)
+    assert response["success"] is True
+    stdout = response["stdout"]
+
+    # Should see level0, level1, level2 and their files
+    assert "level0" in stdout
+    assert "level1" in stdout
+    assert "level2" in stdout
+    assert "file0.py" in stdout
+    assert "file1.py" in stdout
+    assert "file2.py" in stdout
+
+    # Should NOT see level3 and beyond
+    assert "level3" not in stdout
+    assert "level4" not in stdout
+    assert "file3.py" not in stdout
+    assert "file9.py" not in stdout
+
+
+def test_directory_listing_entry_limited(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """Create 2000 files, list with max_entries=1000, verify exactly 1001 entries."""
+    # Create a flat directory with 2000 files
+    (tmp_path / "flat").mkdir()
+    for i in range(2000):
+        (tmp_path / "flat" / f"file{i:04d}.py").write_text(f"# {i}", encoding="utf-8")
+
+    # List with max_entries=1000
+    response = fs_tooling.native_list_directory(".", max_entries=1000)
+    assert response["success"] is True
+    stdout = response["stdout"]
+
+    # Should have truncation marker
+    assert "[truncated: max entries reached]" in stdout
+
+    # Count actual entries (lines, including truncation marker)
+    lines = [line for line in stdout.split("\n") if line.strip()]
+    # Should be 1000 entries + 1 truncation marker = 1001
+    # But the directory "flat/" counts as 1 entry too
+    # So it's: flat/ (1) + some files (up to 999) + truncation (1) = 1001 max
+    assert len(lines) <= 1001
+
+
+def test_normal_directory_listing_unchanged(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """Small directory listing returns complete listing with no truncation."""
+    # Create a small directory structure
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("# main", encoding="utf-8")
+    (tmp_path / "src" / "utils.py").write_text("# utils", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_main.py").write_text("# test", encoding="utf-8")
+
+    response = fs_tooling.native_list_directory(".")
+    assert response["success"] is True
+    stdout = response["stdout"]
+
+    # Should see all files
+    assert "main.py" in stdout
+    assert "utils.py" in stdout
+    assert "test_main.py" in stdout
+
+    # Should NOT have truncation marker
+    assert "[truncated" not in stdout
+
+
+def test_directory_listing_zero_depth_returns_only_root_files(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """max_depth=0 returns only files in the target directory, no subdirectories."""
+    # Create structure
+    (tmp_path / "root_file.py").write_text("# root", encoding="utf-8")
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "nested.py").write_text("# nested", encoding="utf-8")
+
+    response = fs_tooling.native_list_directory(".", max_depth=0)
+    assert response["success"] is True
+    stdout = response["stdout"]
+
+    # Should see root file
+    assert "root_file.py" in stdout
+
+    # Should NOT traverse into subdir (it won't even list the subdir name since
+    # it's pruned at depth 0)
+    assert "nested.py" not in stdout
+
+
+def test_directory_listing_max_entries_one(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """max_entries=1 returns exactly one entry plus truncation marker."""
+    # Create multiple files
+    for i in range(10):
+        (tmp_path / f"file{i}.py").write_text(f"# {i}", encoding="utf-8")
+
+    response = fs_tooling.native_list_directory(".", max_entries=1)
+    assert response["success"] is True
+    stdout = response["stdout"]
+
+    # Should have exactly 1 entry + truncation marker
+    lines = [line for line in stdout.split("\n") if line.strip()]
+    assert len(lines) == 2
+    assert "[truncated: max entries reached]" in stdout

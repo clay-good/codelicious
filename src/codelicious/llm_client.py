@@ -5,6 +5,8 @@ import urllib.error
 import logging
 from typing import List, Dict, Any
 
+from codelicious.logger import sanitize_message
+
 logger = logging.getLogger("codelicious.llm")
 
 # Default models on SambaNova via HuggingFace Router
@@ -105,7 +107,10 @@ class LLMClient:
                 return result
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
-            logger.debug("LLM API error body (status %s): %s", e.code, error_body)
+            # Sanitize error body before logging - API providers may echo back
+            # credentials or other sensitive data in error responses (P1-7 fix)
+            sanitized_body = sanitize_message(error_body)
+            logger.debug("LLM API error body (status %s): %s", e.code, sanitized_body)
             raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code))
         except Exception as e:
             logger.error("Failed to connect to LLM API: %s", e)

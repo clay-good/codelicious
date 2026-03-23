@@ -24,10 +24,10 @@ __all__ = [
 
 # Patterns for API key redaction - various provider formats
 _REDACT_PATTERNS: list[re.Pattern[str]] = [
-    # OpenAI keys (sk-...)
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    # OpenAI keys (sk-...) including project keys (sk-proj-...)
+    re.compile(r"sk-[A-Za-z0-9\-_]{20,}"),
     # Generic public keys
-    re.compile(r"pk-[A-Za-z0-9]{20,}"),
+    re.compile(r"pk-[A-Za-z0-9\-_]{20,}"),
     # GitHub Personal Access Tokens
     re.compile(r"ghp_[A-Za-z0-9]{20,}"),
     re.compile(r"gho_[A-Za-z0-9]{20,}"),
@@ -39,8 +39,13 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"ABIA[A-Z0-9]{16}"),
     re.compile(r"ACCA[A-Z0-9]{16}"),
     re.compile(r"ASIA[A-Z0-9]{16}"),
-    # AWS Secret Access Keys (40 char base64)
-    re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40}(?![A-Za-z0-9+/=])"),
+    # AWS Secret Access Keys - require keyword context to avoid false positives
+    # on git SHAs and file hashes (P2-13 fix: narrowed pattern)
+    re.compile(
+        r"(?:aws_secret_access_key|AWS_SECRET|secret_access_key)"
+        r"\s*[=:]\s*[A-Za-z0-9+/]{40}",
+        re.IGNORECASE,
+    ),
     # AWS Session Tokens (FwoG prefix, long base64)
     re.compile(r"FwoG[A-Za-z0-9+/=]{100,}"),
     # Anthropic keys
@@ -64,6 +69,41 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'"private_key"\s*:\s*"[^"]+?"'),
     # Hugging Face tokens
     re.compile(r"\bhf_[a-zA-Z0-9]{20,}\b"),
+    # ===== P2-13 additions: expanded secret detection patterns =====
+    # SSH private keys (RSA, DSA, EC, ED25519, etc.)
+    re.compile(
+        r"-----BEGIN\s+[A-Z\s]*PRIVATE\s+KEY-----"
+        r"[\s\S]*?"
+        r"-----END\s+[A-Z\s]*PRIVATE\s+KEY-----",
+        re.MULTILINE,
+    ),
+    # GitHub webhook URLs (contain webhook secret tokens)
+    re.compile(r"https://[^/\s]*/webhooks/[a-zA-Z0-9_/-]+"),
+    # Slack webhook URLs
+    re.compile(r"https://hooks\.slack\.com/services/[A-Z0-9/]+", re.IGNORECASE),
+    # Discord webhook URLs
+    re.compile(r"https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+"),
+    # Generic webhook URLs with tokens/secrets in path
+    re.compile(r"https://[^/\s]+/webhook[s]?/[A-Za-z0-9_\-]{20,}"),
+    # Authorization: Basic header with base64 credentials
+    re.compile(r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]{20,}", re.IGNORECASE),
+    # NPM tokens (npm_ followed by 36 alphanumeric chars)
+    re.compile(r"npm_[A-Za-z0-9]{30,}"),
+    # PyPI tokens
+    re.compile(r"pypi-[A-Za-z0-9_-]{100,}"),
+    # Google API keys (AIza followed by 35 chars = 39 total)
+    re.compile(r"AIza[0-9A-Za-z_-]{31,}"),
+    # Stripe keys (secret and publishable)
+    re.compile(r"sk_live_[0-9a-zA-Z]{24,}"),
+    re.compile(r"pk_live_[0-9a-zA-Z]{24,}"),
+    re.compile(r"sk_test_[0-9a-zA-Z]{24,}"),
+    re.compile(r"pk_test_[0-9a-zA-Z]{24,}"),
+    # Twilio credentials
+    re.compile(r"SK[a-f0-9]{32}", re.IGNORECASE),
+    # SendGrid API keys (SG. followed by two segments separated by .)
+    re.compile(r"SG\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
+    # Mailchimp API keys
+    re.compile(r"[a-f0-9]{32}-us[0-9]{1,2}"),
 ]
 
 # Pattern for alphanumeric strings adjacent to sensitive variable names

@@ -194,8 +194,18 @@ class Sandbox:
             path=str(resolved_path.name),
         )
 
-    def validate_write(self, relative_path: str, content: str) -> pathlib.Path:
-        """Validate that a write operation is permitted."""
+    def validate_write(self, relative_path: str, content: str) -> tuple[pathlib.Path, bool]:
+        """Validate that a write operation is permitted.
+
+        Returns:
+            A tuple of (resolved_path, is_new_file) where is_new_file indicates
+            whether this is a new file (True) or an overwrite (False).
+
+        Note:
+            For new files, this method increments the file count atomically
+            inside the lock to prevent race conditions where multiple concurrent
+            writes could all pass validation before any increment.
+        """
         logger.debug(
             "Validating write: path=%s, content_size=%d bytes",
             relative_path,
@@ -213,141 +223,164 @@ class Sandbox:
             )
 
         # Check file count limit with thread safety
+        # Capture is_new and increment count atomically inside the lock
+        # to prevent race conditions (P1-4, P1-5 fix)
         with self._lock:
-            logger.debug("File count: %d/%d", self._files_created_count, self.max_file_count)
-            # Check if file already exists - don't count overwrites
-            if not resolved.exists() and self._files_created_count >= self.max_file_count:
+            is_new = not resolved.exists()
+            logger.debug("File count: %d/%d (is_new=%s)", self._files_created_count, self.max_file_count, is_new)
+            # Only check count limit for new files, not overwrites
+            if is_new and self._files_created_count >= self.max_file_count:
                 raise FileCountLimitError(
                     f"File count limit {self.max_file_count} reached",
                     path=relative_path,
                 )
+            # Reserve the slot atomically with the check to prevent concurrent races
+            if is_new:
+                self._files_created_count += 1
             # Create parent directories inside the lock so count check
-            # and directory creation are atomic
+            # and directory creation are atomic (P2-6 fix)
             parent = resolved.parent
             parent.mkdir(parents=True, exist_ok=True, mode=0o755)
 
-        return resolved
+        return resolved, is_new
 
     def write_file(self, relative_path: str, content: str) -> pathlib.Path:
         """Write a file atomically after validation."""
         logger.info("Writing file: %s", relative_path)
-        resolved = self.validate_write(relative_path, content)
+        resolved, is_new = self.validate_write(relative_path, content)
 
         if self.dry_run:
+            # For dry-run, decrement the count since we won't actually write
+            if is_new:
+                with self._lock:
+                    self._files_created_count -= 1
             self._log(f"[dry-run] Would write: {relative_path}")
             return resolved
 
-        # Check if target resolves to a different location (symlink detection)
-        # Use raw path (before realpath resolution) to detect symlinks
-        raw_path = self.project_dir / relative_path.strip()
-        real_target = pathlib.Path(os.path.realpath(str(raw_path)))
-        if os.path.islink(str(raw_path)) or (os.path.exists(str(raw_path)) and real_target != raw_path):
-            raise PathTraversalError(
-                "Target path resolves to a different location (possible symlink)",
-                path=relative_path,
-            )
-
-        # Pre-mkdir realpath verification: check parent path before creation
-        parent = resolved.parent
-        expected_parent = pathlib.Path(os.path.realpath(str(parent)))
-        resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
-        if (
-            not str(expected_parent).startswith(str(resolved_project) + os.sep)
-            and expected_parent != resolved_project
-            and parent.exists()
-        ):
-            raise PathTraversalError(
-                "Parent directory escapes project directory (pre-mkdir)",
-                path=relative_path,
-            )
-        # Create parent directories and set permissions explicitly to handle umask
-        parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-        # Walk created parents and enforce permissions
         try:
-            rel_parent = parent.relative_to(self.project_dir)
-            current = self.project_dir
-            for part in rel_parent.parts:
-                current = current / part
-                try:
-                    current.chmod(0o755)
-                except OSError as chmod_exc:
-                    logger.debug("Failed to chmod directory %s: %s", current, chmod_exc)
-        except ValueError:
-            pass
+            # Check if target resolves to a different location (symlink detection)
+            # Use raw path (before realpath resolution) to detect symlinks
+            raw_path = self.project_dir / relative_path.strip()
+            real_target = pathlib.Path(os.path.realpath(str(raw_path)))
+            if os.path.islink(str(raw_path)) or (os.path.exists(str(raw_path)) and real_target != raw_path):
+                raise PathTraversalError(
+                    "Target path resolves to a different location (possible symlink)",
+                    path=relative_path,
+                )
 
-        # Post-mkdir verification: ensure parent directory is still within project_dir
-        resolved_parent = pathlib.Path(os.path.realpath(str(parent)))
-        resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
-        if not str(resolved_parent).startswith(str(resolved_project) + os.sep) and resolved_parent != resolved_project:
-            raise PathTraversalError(
-                "Parent directory escapes project directory after creation",
-                path=relative_path,
-            )
+            # Pre-mkdir realpath verification: check parent path before creation
+            # Note: Parent directory was already created in validate_write inside the lock
+            parent = resolved.parent
+            expected_parent = pathlib.Path(os.path.realpath(str(parent)))
+            resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
+            if (
+                not str(expected_parent).startswith(str(resolved_project) + os.sep)
+                and expected_parent != resolved_project
+                and parent.exists()
+            ):
+                raise PathTraversalError(
+                    "Parent directory escapes project directory (pre-mkdir)",
+                    path=relative_path,
+                )
 
-        tmp_name: str | None = None
-        try:
-            # Use context manager to ensure proper cleanup
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=str(resolved.parent),
-                delete=False,
-                suffix=".tmp",
-            ) as fd:
-                tmp_name = fd.name
-                fd.write(content)
-                fd.flush()
-                os.fsync(fd.fileno())
-
-            # Now perform the atomic replace
-            logger.debug("Atomic write: temp -> target")
+            # Walk created parents and enforce permissions (parent already created in validate_write)
             try:
-                os.replace(tmp_name, str(resolved))
-            except OSError as exc:
-                import errno
+                rel_parent = parent.relative_to(self.project_dir)
+                current = self.project_dir
+                for part in rel_parent.parts:
+                    current = current / part
+                    try:
+                        current.chmod(0o755)
+                    except OSError as chmod_exc:
+                        logger.warning("Failed to chmod directory %s: %s", current, chmod_exc)
+            except ValueError:
+                pass
 
-                if exc.errno == errno.EXDEV:
-                    # Cross-filesystem move: fall back to shutil.move
-                    logger.warning(
-                        "Cross-filesystem write detected for %s; using shutil.move fallback",
-                        relative_path,
-                    )
-                    shutil.move(tmp_name, str(resolved))
-                else:
-                    raise
-            tmp_name = None  # Successfully moved, don't clean up
-        except BaseException:
-            if tmp_name is not None:
+            # Post-mkdir verification: ensure parent directory is still within project_dir
+            resolved_parent = pathlib.Path(os.path.realpath(str(parent)))
+            resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
+            if (
+                not str(resolved_parent).startswith(str(resolved_project) + os.sep)
+                and resolved_parent != resolved_project
+            ):
+                raise PathTraversalError(
+                    "Parent directory escapes project directory after creation",
+                    path=relative_path,
+                )
+
+            tmp_name: str | None = None
+            try:
+                # Use context manager to ensure proper cleanup
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=str(resolved.parent),
+                    delete=False,
+                    suffix=".tmp",
+                ) as fd:
+                    tmp_name = fd.name
+                    fd.write(content)
+                    fd.flush()
+                    os.fsync(fd.fileno())
+
+                # Now perform the atomic replace
+                logger.debug("Atomic write: temp -> target")
                 try:
-                    os.unlink(tmp_name)
-                except OSError as cleanup_exc:
-                    logger.warning("Failed to clean up temp file %s: %s", tmp_name, cleanup_exc)
+                    os.replace(tmp_name, str(resolved))
+                except OSError as exc:
+                    import errno
+
+                    if exc.errno == errno.EXDEV:
+                        # Cross-filesystem move: fall back to shutil.move
+                        logger.warning(
+                            "Cross-filesystem write detected for %s; using shutil.move fallback",
+                            relative_path,
+                        )
+                        shutil.move(tmp_name, str(resolved))
+                    else:
+                        raise
+                tmp_name = None  # Successfully moved, don't clean up
+            except BaseException:
+                if tmp_name is not None:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError as cleanup_exc:
+                        logger.warning("Failed to clean up temp file %s: %s", tmp_name, cleanup_exc)
+                raise
+
+            # Post-write verification: ensure file still within sandbox (TOCTOU mitigation)
+            resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
+            final_resolved = pathlib.Path(os.path.realpath(resolved))
+            if (
+                not str(final_resolved).startswith(str(resolved_project) + os.sep)
+                and final_resolved != resolved_project
+            ):
+                # Attempt to remove the escaped file
+                try:
+                    os.unlink(str(resolved))
+                except OSError:
+                    pass
+                raise PathTraversalError(
+                    "Post-write verification failed: file escapes project directory",
+                    path=relative_path,
+                )
+
+            logger.debug("TOCTOU: post-write verification realpath=%s", final_resolved)
+            logger.debug("Post-write verification passed: %s", relative_path)
+
+            try:
+                os.chmod(str(resolved), 0o644)
+            except OSError as chmod_exc:
+                logger.warning("Failed to set permissions on %s: %s", relative_path, chmod_exc)
+
+        except BaseException:
+            # If write fails for any reason, decrement the count for new files
+            # to release the reserved slot
+            if is_new:
+                with self._lock:
+                    self._files_created_count -= 1
             raise
 
-        # Post-write verification: ensure file still within sandbox (TOCTOU mitigation)
-        resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
-        final_resolved = pathlib.Path(os.path.realpath(resolved))
-        if not str(final_resolved).startswith(str(resolved_project) + os.sep) and final_resolved != resolved_project:
-            # Attempt to remove the escaped file
-            try:
-                os.unlink(str(resolved))
-            except OSError:
-                pass
-            raise PathTraversalError(
-                "Post-write verification failed: file escapes project directory",
-                path=relative_path,
-            )
-
-        logger.debug("TOCTOU: post-write verification realpath=%s", final_resolved)
-        logger.debug("Post-write verification passed: %s", relative_path)
-
-        try:
-            os.chmod(str(resolved), 0o644)
-        except OSError as chmod_exc:
-            logger.warning("Failed to set permissions on %s: %s", relative_path, chmod_exc)
-
-        with self._lock:
-            self._files_created_count += 1
         self._log(f"Wrote: {relative_path}")
         logger.info(
             "File written successfully: %s (%d bytes)",

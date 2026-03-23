@@ -22,6 +22,7 @@ from codelicious.parser import Section
 __all__ = [
     "DENIED_PATH_SEGMENTS",
     "Task",
+    "_fully_decode_path",
     "analyze_spec_drift",
     "classify_intent",
     "create_plan",
@@ -347,31 +348,41 @@ def _validate_topological_order(tasks: list[Task]) -> None:
         )
 
 
+_MAX_DECODE_ROUNDS: int = 10
+
+
+def _fully_decode_path(raw_path: str, max_rounds: int = _MAX_DECODE_ROUNDS) -> str:
+    """Decode a path repeatedly until stable, to defeat multi-layer encoding attacks.
+
+    This handles triple-encoding (%25252e%25252e), quadruple-encoding, etc.
+    Stops when the output equals the input or after max_rounds iterations.
+    """
+    decoded = raw_path
+    for _ in range(max_rounds):
+        try:
+            next_decoded = urllib.parse.unquote(decoded)
+        except Exception:
+            # If decoding fails, stop with current value
+            break
+        if next_decoded == decoded:
+            # Stable - no more decoding needed
+            break
+        decoded = next_decoded
+    return decoded
+
+
 def _validate_file_paths(tasks: list[Task]) -> None:
     """Reject unsafe file paths in tasks."""
     for task in tasks:
         for fp in task.file_paths:
             logger.debug("Validating file path: %s", fp)
 
-            # Decode URL-encoded paths twice to catch double-encoding
-            # (%252e%252e → %2e%2e → ..)
-            try:
-                decoded_once = urllib.parse.unquote(fp)
-                decoded_twice = urllib.parse.unquote(decoded_once)
-            except Exception:
-                decoded_once = fp
-                decoded_twice = fp
+            # Fully decode URL-encoded paths iteratively to catch any level of encoding
+            # (%252e%252e → %2e%2e → .. after 2 rounds)
+            # (%25252e%25252e → %252e%252e → %2e%2e → .. after 3 rounds)
+            fully_decoded = _fully_decode_path(fp)
 
-            # Check all variants (raw, single-decoded, double-decoded)
-            for variant in (fp, decoded_once, decoded_twice):
-                lower_variant = variant.lower()
-                if ".." in lower_variant:
-                    raise InvalidPlanError(
-                        f"File path contains traversal sequence: {fp}",
-                        path=fp,
-                    )
-
-            # Check for URL-encoded separators in raw path
+            # Check for URL-encoded separators in raw path (before full decode)
             lower_fp = fp.lower()
             if "%2e" in lower_fp or "%2f" in lower_fp:
                 raise InvalidPlanError(
@@ -379,24 +390,31 @@ def _validate_file_paths(tasks: list[Task]) -> None:
                     path=fp,
                 )
 
-            # Check for backslash-based traversal
-            if "\\" in fp:
+            # Check for backslash-based traversal in raw or decoded path
+            if "\\" in fp or "\\" in fully_decoded:
                 raise InvalidPlanError(f"File path contains backslash: {fp}", path=fp)
 
-            # Check decoded variants for additional bypasses
-            paths_to_check = [fp]
-            if decoded_once != fp:
-                paths_to_check.append(decoded_once)
-            if decoded_twice != decoded_once:
-                paths_to_check.append(decoded_twice)
+            # Check for traversal in both raw and fully decoded paths
+            # Use split on both / and \ to catch platform-specific traversal
+            for path_variant in (fp, fully_decoded):
+                # Check for ".." segments in both forward and backslash paths
+                posix_parts = path_variant.split("/")
+                windows_parts = path_variant.split("\\")
+                if ".." in posix_parts or ".." in windows_parts:
+                    raise InvalidPlanError(
+                        f"File path contains traversal sequence: {fp}",
+                        path=fp,
+                    )
 
-            for path_variant in paths_to_check:
-                if ".." in path_variant:
-                    raise InvalidPlanError(f"File path contains traversal sequence: {fp}", path=fp)
+                # Check for absolute paths
                 if path_variant.startswith("/"):
                     raise InvalidPlanError(f"File path is absolute: {fp}", path=fp)
+
+                # Check for null bytes
                 if "\x00" in path_variant:
                     raise InvalidPlanError(f"File path contains null byte: {fp!r}", path=fp)
+
+                # Check for denied path segments
                 for part in pathlib.PurePosixPath(path_variant).parts:
                     if part in DENIED_PATH_SEGMENTS:
                         raise InvalidPlanError(
