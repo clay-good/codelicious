@@ -2,16 +2,16 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-22 (spec-16 Phase 7 Complete)
+**Last Updated:** 2026-03-23 (spec-16 Phase 8 Complete)
 **Current Spec:** spec-16 (Reliability, Test Coverage, and Production Readiness)
-**Phase:** Phase 7 Complete - Prompt sanitization and timeout precision in agent_runner.py
-**Status:** VERIFIED GREEN - 695 tests passing, lint clean, format clean
+**Phase:** Phase 8 Complete - Directory listing DoS protection in fs_tools.py
+**Status:** VERIFIED GREEN - 700 tests passing, lint clean, format clean
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 695 tests passed in 4.86s |
+| Tests | PASS | 700 tests passed in 4.95s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | All files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection in production code |
@@ -75,7 +75,7 @@
 | ~~P2-2~~ | ~~`fs_tools.py:46-47`~~ | ~~Information disclosure~~ | **FIXED:** SandboxViolationError |
 | ~~P2-3~~ | ~~`command_runner.py:79-86`~~ | ~~Missing process group timeout - orphaned children~~ | **FIXED:** spec-16 Phase 1 |
 | ~~P2-4~~ | ~~`fs_tools.py:49-65`~~ | ~~Case-sensitive bypass~~ | **FIXED:** Sandbox handles |
-| P2-5 | `fs_tools.py:100-117` | DoS via large directory tree - no depth/count limits | Open |
+| ~~P2-5~~ | ~~`fs_tools.py:100-117`~~ | ~~DoS via large directory tree - no depth/count limits~~ | **FIXED:** spec-16 Phase 8 - max_depth/max_entries limits |
 | ~~P2-6~~ | ~~`sandbox.py:277`~~ | ~~Race in directory creation - mkdir outside lock~~ | **FIXED:** spec-16 Phase 2 |
 | ~~P2-7~~ | ~~`sandbox.py:365-370`~~ | ~~Silent chmod failure~~ | **FIXED:** spec-16 Phase 2 |
 | P2-8 | `verifier.py:810-817` | Command injection edge cases - newlines not blocked | Open |
@@ -123,7 +123,7 @@
 - [x] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
 - [x] Phase 6: Fix Path Traversal Bypass via Triple-Encoding (P1-10)
 - [x] Phase 7: Fix Agent Runner Command Injection and Timeout (P1-11, P2-10)
-- [ ] Phase 8: Fix Directory Listing DoS (P2-5)
+- [x] Phase 8: Fix Directory Listing DoS (P2-5)
 - [ ] Phase 9: Fix Verifier Command Injection and Secret Detection (P2-8, P2-9)
 - [ ] Phase 10: Fix Regex Catastrophic Backtracking in executor.py (P2-11)
 - [ ] Phase 11: Fix Build Logger File Creation Race (P2-12)
@@ -166,7 +166,7 @@
 | test_context_manager.py | 35 |
 | test_parser.py | 31 |
 | test_scaffolder*.py | 30 |
-| test_fs_tools.py | 27 |
+| test_fs_tools.py | 32 |
 | test_llm_client.py | 22 |
 | test_cache_engine.py | 16 |
 | test_git_orchestrator.py | 16 |
@@ -177,7 +177,7 @@
 | test_planner.py | 31 |
 | test_agent_runner.py | 15 |
 
-**Total: 695 tests**
+**Total: 700 tests**
 
 ---
 
@@ -185,7 +185,7 @@
 
 - **URL:** https://github.com/clay-good/codelicious/pull/5
 - **Branch:** `codelicious/auto-build`
-- **Status:** Draft - spec-16 Phase 7 complete
+- **Status:** Draft - spec-16 Phase 8 complete
 
 ---
 
@@ -197,7 +197,7 @@ The codebase has strong security fundamentals with multiple defense layers. All 
 
 - **0 Original P1 Critical**: All 11 resolved (spec-16 Phases 1-7)
 - **5 New REV-P1**: Documented for spec-17 (mitigated by existing controls)
-- **5 P2 Important**: Resource management (directory DoS, regex backtrack, file race)
+- **4 P2 Important**: Resource management (regex backtrack, file race, git timeout, subprocess group)
 
 The implementation is production-ready for controlled environments.
 
