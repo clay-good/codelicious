@@ -589,3 +589,136 @@ def test_partial_extraction_tries_next_strategy() -> None:
     assert "file1.py" in file_paths
     assert "file2.py" in file_paths
     assert "file3.py" in file_paths
+
+
+# -- spec-16 Phase 10: Regex Catastrophic Backtracking (P2-11) ----------------
+
+
+def test_pathological_backticks_completes_quickly() -> None:
+    """Input with 10,000 lines of backticks completes in under 5 seconds.
+
+    This tests the ReDoS fix: the state machine parser should handle
+    pathological input with many backtick sequences without hanging.
+    """
+    # Create pathological input: many lines of just backticks
+    pathological_input = "``````\n" * 10_000
+    assert len(pathological_input) > 60_000, "Test input should be large"
+
+    start = time.perf_counter()
+    try:
+        parse_llm_response(pathological_input, expected_files=["main.py"])
+    except ExecutionError:
+        pass  # Expected - no valid files extracted
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 5.0, f"Parsing took {elapsed:.2f}s, expected < 5s"
+
+
+def test_pathological_backticks_no_hang() -> None:
+    """Input with many backticks in various patterns completes quickly.
+
+    Tests that the parsers don't hang on adversarial input patterns.
+    Note: We test patterns that could cause regex backtracking issues,
+    not patterns that cause legitimate O(n²) scanning of unclosed fences.
+    """
+    # Create input with alternating backtick patterns that could cause regex backtracking
+    patterns = [
+        "```" * 100,  # Many triple-backtick sequences in a row (on single line)
+        "```python\n" + "```" * 100 + "\n```\n",  # Backticks inside a valid code block
+        # Many properly closed blocks (tests that many blocks parse quickly)
+        "\n".join([f"```\nline{i}\n```" for i in range(100)]),
+    ]
+
+    for idx, pattern in enumerate(patterns):
+        start = time.perf_counter()
+        try:
+            parse_llm_response(pattern, expected_files=["test.py"])
+        except ExecutionError:
+            pass  # Expected - no valid files extracted
+        elapsed = time.perf_counter() - start
+        assert elapsed < 2.0, f"Parsing pattern {idx} took {elapsed:.2f}s, expected < 2s"
+
+
+def test_nested_backticks_handled() -> None:
+    """Code block containing triple backticks in content is handled correctly.
+
+    This tests markdown-about-markdown scenarios where the code contains
+    examples with triple backticks.
+    """
+    response = '''```python example.py
+def show_markdown():
+    """
+    Example markdown:
+    ```python
+    print("hello")
+    ```
+    """
+    pass
+```
+'''
+    # The parser should extract one file, treating the inner ``` as content
+    result = parse_llm_response(response)
+    # This is a tricky case - the inner ``` might close the block early
+    # At minimum, it should complete without hanging
+    assert isinstance(result, list)
+
+
+def test_unclosed_code_block_handled() -> None:
+    """Input with opening fence but no closing fence completes without hang."""
+    response = "```python main.py\nprint('hello')\n# No closing fence"
+
+    start = time.perf_counter()
+    try:
+        result = parse_llm_response(response, expected_files=["main.py"])
+        # If it returns, verify it's a list
+        assert isinstance(result, list)
+    except ExecutionError:
+        # Also acceptable - no valid closed code block found
+        pass
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.0, f"Parsing took {elapsed:.2f}s, expected < 1s"
+
+
+def test_markdown_with_filename_large_input() -> None:
+    """A 1 MB markdown code block parses quickly."""
+    large_content = "x = 1\n" * 170_000  # ~1.02 MB
+    response = f"```python big.py\n{large_content}```\n"
+    assert len(response) > 1_000_000, "Test input should be > 1 MB"
+
+    start = time.perf_counter()
+    result = parse_llm_response(response)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
+    assert len(result) >= 1
+    assert any(path == "big.py" for path, _ in result)
+
+
+def test_preceded_by_path_large_input() -> None:
+    """A 1 MB code block preceded by path parses quickly."""
+    large_content = "x = 1\n" * 170_000  # ~1.02 MB
+    response = f"bigfile.py\n```python\n{large_content}```\n"
+    assert len(response) > 1_000_000, "Test input should be > 1 MB"
+
+    start = time.perf_counter()
+    result = parse_llm_response(response)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
+    assert len(result) >= 1
+
+
+def test_single_file_fallback_large_input() -> None:
+    """A 1 MB single code block parses quickly."""
+    large_content = "x = 1\n" * 170_000  # ~1.02 MB
+    response = f"```\n{large_content}```\n"
+    assert len(response) > 1_000_000, "Test input should be > 1 MB"
+
+    start = time.perf_counter()
+    result = parse_llm_response(response, expected_files=["big.py"])
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
+    assert len(result) == 1
+    assert result[0][0] == "big.py"

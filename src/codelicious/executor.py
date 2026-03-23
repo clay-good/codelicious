@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -250,48 +249,120 @@ def _parse_strict_format(response: str) -> list[tuple[str, str]]:
 
 
 def _parse_markdown_with_filename(response: str) -> list[tuple[str, str]]:
-    """Extract files from ```lang filepath blocks."""
-    pattern = re.compile(
-        r"^```\w*\s+(\S+.*?)\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
-        return []
+    """Extract files from ```lang filepath blocks.
 
+    Uses line-by-line state machine instead of regex to avoid ReDoS.
+    """
     results: list[tuple[str, str]] = []
-    for info, content in matches:
-        # The info string might be just a path or "lang path"
-        path = _strip_and_unify_slashes(info)
-        # If it looks like a file path (has extension), use it
-        if "." in path.split("/")[-1]:
-            results.append((path, content.strip("\n")))
-
+    lines = response.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Check for opening fence: ```lang filepath
+        if stripped.startswith("```"):
+            remainder = stripped[3:].strip()
+            # Skip if no additional info (just ```)
+            if not remainder:
+                i += 1
+                continue
+            # Parse: could be "lang filepath" or just "filepath"
+            parts = remainder.split(None, 1)
+            if len(parts) == 2:
+                # "lang filepath" format
+                info = parts[1].strip()
+            else:
+                # Just "filepath" or "lang" - use the whole remainder
+                info = parts[0].strip()
+            # Collect content lines until closing fence
+            content_lines: list[str] = []
+            i += 1
+            while i < len(lines):
+                end_line = lines[i].strip()
+                if end_line == "```":
+                    break
+                content_lines.append(lines[i])
+                i += 1
+            # Check if info looks like a file path (has extension)
+            path = _strip_and_unify_slashes(info)
+            if "." in path.split("/")[-1]:
+                content = "".join(content_lines).strip("\n")
+                results.append((path, content))
+        i += 1
     return results
 
 
 def _parse_markdown_preceded_by_path(response: str) -> list[tuple[str, str]]:
-    """Extract files from code blocks preceded by a line with a file path."""
-    # Look for lines ending with a file extension, followed by a code block
-    pattern = re.compile(
-        r"^(\S+\.\w+)\s*$\n```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
-        return []
-    return [(_strip_and_unify_slashes(path), content.strip("\n")) for path, content in matches]
+    """Extract files from code blocks preceded by a line with a file path.
+
+    Uses line-by-line state machine instead of regex to avoid ReDoS.
+    """
+    results: list[tuple[str, str]] = []
+    lines = response.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Look for a line that looks like a file path (non-whitespace ending with .ext)
+        if stripped and not stripped.startswith("```"):
+            # Check if it matches pattern: single token with file extension
+            parts = stripped.split()
+            if len(parts) == 1 and "." in parts[0]:
+                # Check if the file extension part is valid (ends with .word)
+                last_dot_idx = parts[0].rfind(".")
+                if last_dot_idx > 0 and last_dot_idx < len(parts[0]) - 1:
+                    ext = parts[0][last_dot_idx + 1 :]
+                    if ext.isalnum():
+                        potential_path = parts[0]
+                        # Check if next line is an opening fence
+                        if i + 1 < len(lines):
+                            next_stripped = lines[i + 1].strip()
+                            if next_stripped.startswith("```"):
+                                # Skip the fence line and collect content
+                                content_lines: list[str] = []
+                                i += 2
+                                while i < len(lines):
+                                    end_line = lines[i].strip()
+                                    if end_line == "```":
+                                        break
+                                    content_lines.append(lines[i])
+                                    i += 1
+                                path = _strip_and_unify_slashes(potential_path)
+                                content = "".join(content_lines).strip("\n")
+                                results.append((path, content))
+        i += 1
+    return results
 
 
 def _parse_single_file_fallback(response: str, expected_file: str) -> list[tuple[str, str]]:
-    """Extract a single code block when exactly one file is expected."""
-    pattern = re.compile(
-        r"^```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if len(matches) == 1:
-        return [(_strip_and_unify_slashes(expected_file), matches[0].strip("\n"))]
+    """Extract a single code block when exactly one file is expected.
+
+    Uses line-by-line state machine instead of regex to avoid ReDoS.
+    """
+    blocks: list[str] = []
+    lines = response.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        # Check for opening fence: ``` or ```lang (but not ```lang path)
+        if stripped.startswith("```"):
+            remainder = stripped[3:].strip()
+            # Only match if there's no path info (just lang or empty)
+            if not remainder or (len(remainder.split()) == 1 and "." not in remainder):
+                content_lines: list[str] = []
+                i += 1
+                while i < len(lines):
+                    end_line = lines[i].strip()
+                    if end_line == "```":
+                        break
+                    content_lines.append(lines[i])
+                    i += 1
+                content = "".join(content_lines).strip("\n")
+                blocks.append(content)
+        i += 1
+    # Only return if exactly one block was found
+    if len(blocks) == 1:
+        return [(_strip_and_unify_slashes(expected_file), blocks[0])]
     return []
 
 
