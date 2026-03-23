@@ -171,16 +171,20 @@ class TestPushPRFlag:
         # Verify transition_pr_to_review was called
         mock_git_manager.transition_pr_to_review.assert_called_once()
 
-    def test_without_push_pr_flag_no_transition(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
+    def test_without_push_pr_flag_no_transition(self, mock_repo: Path, mock_successful_engine):
         """Test that without --push-pr, PR transition is not called."""
+        # Use a fresh mock to avoid state leakage from other tests
+        fresh_git_manager = mock.MagicMock(spec=GitManager)
+        fresh_git_manager.current_branch = "feature/test"
+
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+            with mock.patch("codelicious.cli.GitManager", return_value=fresh_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
                     with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
                         main()
 
         # Verify transition_pr_to_review was NOT called
-        mock_git_manager.transition_pr_to_review.assert_not_called()
+        fresh_git_manager.transition_pr_to_review.assert_not_called()
 
 
 class TestBuildFailure:

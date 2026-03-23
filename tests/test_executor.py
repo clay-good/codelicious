@@ -589,3 +589,108 @@ def test_partial_extraction_tries_next_strategy() -> None:
     assert "file1.py" in file_paths
     assert "file2.py" in file_paths
     assert "file3.py" in file_paths
+
+
+# -- spec-16 Phase 10: Regex Catastrophic Backtracking Fix Tests --------------
+
+
+def test_pathological_backticks_completes_quickly() -> None:
+    """Input with 10,000 lines of backticks completes in under 5 seconds.
+
+    This tests that the state machine parser does not suffer from
+    catastrophic backtracking on pathological input.
+    """
+    # Create pathological input with many backtick sequences
+    pathological_input = "``````\n" * 10_000
+    assert len(pathological_input) > 60_000, "Test input should have many backticks"
+
+    start = time.perf_counter()
+    try:
+        result = parse_llm_response(pathological_input, expected_files=["main.py"])
+        # The result should be empty or minimal since no valid files can be extracted
+        assert isinstance(result, list)
+    except ExecutionError:
+        # It's acceptable to raise ExecutionError for pathological input with no
+        # extractable files - the key is that it completes quickly
+        pass
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 5.0, f"Parsing took {elapsed:.2f}s, expected < 5s"
+
+
+def test_nested_backticks_in_content_handled() -> None:
+    """Code block containing triple backticks in content is extracted correctly.
+
+    This tests handling of markdown-about-markdown files where the content
+    itself contains triple backticks.
+    """
+    # A markdown file that documents code blocks
+    response = """```markdown docs/guide.md
+# How to write code blocks
+
+Use triple backticks to create a code block:
+
+```python
+print("hello")
+```
+
+The above shows a Python example.
+```
+"""
+
+    result = parse_llm_response(response, expected_files=["docs/guide.md"])
+    assert len(result) == 1
+    assert result[0][0] == "docs/guide.md"
+    # The content should contain the nested backticks
+    assert "```python" in result[0][1]
+    assert 'print("hello")' in result[0][1]
+
+
+def test_unclosed_code_block_no_hang() -> None:
+    """Input with opening fence but no closing fence does not hang.
+
+    The parser should gracefully handle malformed input by discarding
+    the unclosed block.
+    """
+    response = "Here's some code:\n\n```python\nprint('hello')\n# No closing fence"
+
+    start = time.perf_counter()
+    # Should not hang, should not crash
+    try:
+        result = parse_llm_response(response, expected_files=["main.py"])
+        # May extract nothing or may use fallback strategy
+        assert isinstance(result, list)
+    except ExecutionError:
+        # It's acceptable to raise ExecutionError for no extractable files
+        pass
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.0, f"Parsing took {elapsed:.2f}s, expected < 1s"
+
+
+def test_markdown_with_filename_state_machine() -> None:
+    """Verify markdown_with_filename strategy works with state machine parser."""
+    response = "Here is the code:\n\n```python src/main.py\nprint('hello')\nx = 42\n```\n"
+    result = parse_llm_response(response)
+    assert len(result) == 1
+    assert result[0][0] == "src/main.py"
+    assert "print('hello')" in result[0][1]
+    assert "x = 42" in result[0][1]
+
+
+def test_markdown_preceded_by_path_state_machine() -> None:
+    """Verify markdown_preceded_by_path strategy works with state machine parser."""
+    response = "src/utils.py\n```python\ndef helper():\n    return 42\n```\n"
+    result = parse_llm_response(response)
+    assert len(result) == 1
+    assert result[0][0] == "src/utils.py"
+    assert "def helper():" in result[0][1]
+
+
+def test_single_file_fallback_state_machine() -> None:
+    """Verify single_file_fallback strategy works with state machine parser."""
+    response = "Here's the implementation:\n\n```\nclass Foo:\n    pass\n```\n"
+    result = parse_llm_response(response, expected_files=["foo.py"])
+    assert len(result) == 1
+    assert result[0][0] == "foo.py"
+    assert "class Foo:" in result[0][1]

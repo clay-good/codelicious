@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -249,49 +248,130 @@ def _parse_strict_format(response: str) -> list[tuple[str, str]]:
     return results
 
 
+def _extract_code_blocks(response: str) -> list[dict[str, str]]:
+    """Extract code blocks using a state machine instead of regex to avoid ReDoS.
+
+    Returns a list of dicts with keys: 'lang', 'info', 'content'.
+    - 'lang' is the language identifier (e.g., 'python', 'js') or empty string.
+    - 'info' is any additional text on the opening fence line (after lang).
+    - 'content' is the code block content.
+
+    This approach is O(n) in the input length with no backtracking.
+    """
+    blocks: list[dict[str, str]] = []
+    current_block: dict[str, str] | None = None
+    content_lines: list[str] = []
+
+    for line in response.split("\n"):
+        stripped = line.rstrip()
+
+        # Check for opening fence: line starts with ```
+        if current_block is None and stripped.startswith("```"):
+            # Opening fence - parse language and info string
+            remainder = stripped[3:].strip()
+            parts = remainder.split(None, 1)
+            lang = parts[0] if parts else ""
+            info = parts[1] if len(parts) > 1 else ""
+            current_block = {"lang": lang, "info": info}
+            content_lines = []
+
+        # Check for closing fence: line is just ``` (possibly with trailing whitespace)
+        elif current_block is not None and stripped == "```":
+            # Closing fence
+            current_block["content"] = "\n".join(content_lines)
+            blocks.append(current_block)
+            current_block = None
+            content_lines = []
+
+        # Inside a code block - accumulate content
+        elif current_block is not None:
+            content_lines.append(line)
+
+    return blocks
+
+
 def _parse_markdown_with_filename(response: str) -> list[tuple[str, str]]:
-    """Extract files from ```lang filepath blocks."""
-    pattern = re.compile(
-        r"^```\w*\s+(\S+.*?)\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
+    """Extract files from ```lang filepath blocks.
+
+    Uses line-by-line state machine parsing to avoid regex catastrophic
+    backtracking on inputs with many backtick sequences.
+    """
+    blocks = _extract_code_blocks(response)
+    if not blocks:
         return []
 
     results: list[tuple[str, str]] = []
-    for info, content in matches:
-        # The info string might be just a path or "lang path"
+    for block in blocks:
+        # The info string should contain a file path
+        info = block.get("info", "")
+        if not info:
+            continue
+
+        # The info string might be just a path or additional metadata
         path = _strip_and_unify_slashes(info)
         # If it looks like a file path (has extension), use it
         if "." in path.split("/")[-1]:
-            results.append((path, content.strip("\n")))
+            content = block.get("content", "").strip("\n")
+            results.append((path, content))
 
     return results
 
 
 def _parse_markdown_preceded_by_path(response: str) -> list[tuple[str, str]]:
-    """Extract files from code blocks preceded by a line with a file path."""
-    # Look for lines ending with a file extension, followed by a code block
-    pattern = re.compile(
-        r"^(\S+\.\w+)\s*$\n```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
-        return []
-    return [(_strip_and_unify_slashes(path), content.strip("\n")) for path, content in matches]
+    """Extract files from code blocks preceded by a line with a file path.
+
+    Uses line-by-line parsing to avoid regex catastrophic backtracking.
+    """
+    results: list[tuple[str, str]] = []
+    lines = response.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+
+        # Check if this line looks like a standalone file path
+        # (non-whitespace string ending with .extension)
+        if line and not line[0].isspace() and "." in line:
+            # Check if it's a simple file path (no spaces, ends with extension)
+            parts = line.split()
+            if len(parts) == 1:
+                potential_path = parts[0]
+                # Check if next line is an opening fence
+                if i + 1 < len(lines) and lines[i + 1].rstrip().startswith("```"):
+                    # Found a path followed by code fence - extract the block
+                    content_lines: list[str] = []
+                    j = i + 2  # Skip the opening fence
+                    while j < len(lines):
+                        if lines[j].rstrip() == "```":
+                            break
+                        content_lines.append(lines[j])
+                        j += 1
+
+                    if j < len(lines):  # Found closing fence
+                        path = _strip_and_unify_slashes(potential_path)
+                        content = "\n".join(content_lines).strip("\n")
+                        results.append((path, content))
+                        i = j + 1  # Move past the closing fence
+                        continue
+
+        i += 1
+
+    return results
 
 
 def _parse_single_file_fallback(response: str, expected_file: str) -> list[tuple[str, str]]:
-    """Extract a single code block when exactly one file is expected."""
-    pattern = re.compile(
-        r"^```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if len(matches) == 1:
-        return [(_strip_and_unify_slashes(expected_file), matches[0].strip("\n"))]
+    """Extract a single code block when exactly one file is expected.
+
+    Uses line-by-line state machine parsing to avoid regex catastrophic
+    backtracking.
+    """
+    blocks = _extract_code_blocks(response)
+
+    # Only use fallback if there's exactly one code block
+    if len(blocks) == 1:
+        content = blocks[0].get("content", "").strip("\n")
+        return [(_strip_and_unify_slashes(expected_file), content)]
+
     return []
 
 
