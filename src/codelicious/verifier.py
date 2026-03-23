@@ -457,12 +457,29 @@ _SECURITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
+    # OpenAI-style API keys
     re.compile(r"""['"]sk-[A-Za-z0-9]{10,}['"]"""),
     re.compile(r"""['"]pk-[A-Za-z0-9]{10,}['"]"""),
+    # GitHub personal access tokens
     re.compile(r"""['"]ghp_[A-Za-z0-9]{10,}['"]"""),
+    # AWS access key IDs
     re.compile(r"""['"]AKIA[A-Z0-9]{10,}['"]"""),
+    # Generic password/secret/api_key assignments
     re.compile(
         r"""(?:password|secret|api_key)\s*=\s*['"][^'"]{4,}['"]""",
+        re.IGNORECASE,
+    ),
+    # P2-9: Google API keys (AIza prefix)
+    re.compile(r"""['"]AIza[0-9A-Za-z_-]{35}['"]"""),
+    # P2-9: Stripe secret keys (sk_live_)
+    re.compile(r"""['"]sk_live_[0-9a-zA-Z]{24,}['"]"""),
+    # P2-9: Stripe publishable keys (pk_live_)
+    re.compile(r"""['"]pk_live_[0-9a-zA-Z]{24,}['"]"""),
+    # P2-9: JWT tokens (three base64url segments)
+    re.compile(r"""['"]eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+['"]"""),
+    # P2-9: Password/secret/token followed by base64-like value
+    re.compile(
+        r"""(?:password|secret|token)\s*[=:]\s*['"][A-Za-z0-9+/]{20,}={0,2}['"]""",
         re.IGNORECASE,
     ),
 ]
@@ -779,6 +796,14 @@ def check_custom_command(
             name="custom",
             passed=True,
             message="No custom command configured",
+        )
+
+    # P2-8: Check for newlines BEFORE shlex.split() since shlex treats them as whitespace
+    if "\n" in command or "\r" in command:
+        return CheckResult(
+            name="custom",
+            passed=False,
+            message="Custom command rejected: newline in command",
         )
 
     try:
