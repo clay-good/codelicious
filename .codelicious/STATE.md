@@ -2,16 +2,16 @@
 
 ## Current Status
 
-**Last Updated:** 2026-03-22 (spec-16 Phase 6 Complete)
+**Last Updated:** 2026-03-22 (spec-16 Phase 7 Complete)
 **Current Spec:** spec-16 (Reliability, Test Coverage, and Production Readiness)
-**Phase:** Phase 6 Complete - Iterative path decoding added to planner.py
-**Status:** VERIFIED GREEN - 680 tests passing, lint clean, format clean
+**Phase:** Phase 7 Complete - Prompt sanitization and timeout precision in agent_runner.py
+**Status:** VERIFIED GREEN - 695 tests passing, lint clean, format clean
 
 ## Verification Results
 
 | Check | Status | Details |
 |-------|--------|---------|
-| Tests | PASS | 680 tests passed in 4.60s |
+| Tests | PASS | 695 tests passed in 4.86s |
 | Lint | PASS | All checks passed (ruff check) |
 | Format | PASS | All files formatted |
 | Security | PASS | No eval(), exec(), shell=True, hardcoded secrets, or SQL injection in production code |
@@ -56,7 +56,7 @@
 | ~~P1-8~~ | ~~`cli.py:111-114`~~ | ~~Silent exception swallowing - `except Exception: pass`~~ | **FIXED:** spec-16 Phase 4 |
 | ~~P1-9~~ | ~~`loop_controller.py:95-96,159`~~ | ~~JSON deserialization without size/depth limits - DoS vector~~ | **FIXED:** spec-16 Phase 5 |
 | ~~P1-10~~ | ~~`planner.py:356-404`~~ | ~~Path traversal bypass~~ | **FIXED:** spec-16 Phase 6 - iterative decode loop |
-| P1-11 | `agent_runner.py:105` | Prompt injection - unsanitized prompt to subprocess | Open |
+| ~~P1-11~~ | ~~`agent_runner.py:105`~~ | ~~Prompt injection - unsanitized prompt to subprocess~~ | **FIXED:** spec-16 Phase 7 - sanitize_prompt function |
 
 ### Important (P2) - 13 Issues (4 fixed in spec-08)
 
@@ -71,7 +71,7 @@
 | ~~P2-7~~ | ~~`sandbox.py:365-370`~~ | ~~Silent chmod failure~~ | **FIXED:** spec-16 Phase 2 |
 | P2-8 | `verifier.py:810-817` | Command injection edge cases - newlines not blocked | Open |
 | P2-9 | `verifier.py:459-468` | Secret detection gaps - base64, hex secrets missed | Open |
-| P2-10 | `agent_runner.py:410-434` | Timeout overrun - up to 1s beyond configured | Open |
+| ~~P2-10~~ | ~~`agent_runner.py:410-434`~~ | ~~Timeout overrun - up to 1s beyond configured~~ | **FIXED:** spec-16 Phase 7 - 0.1s polling interval |
 | P2-11 | `executor.py:254-256` | Regex catastrophic backtracking | Open |
 | P2-12 | `build_logger.py:163-178` | Race in file creation - permissions after open | Open |
 | ~~P2-13~~ | ~~`logger.py:26-67`~~ | ~~Incomplete redaction - SSH keys, NPM tokens, webhooks~~ | **FIXED:** spec-16 Phase 3 |
@@ -113,7 +113,7 @@
 - [x] Phase 4: Fix Silent Exception Swallowing in cli.py (P1-8)
 - [x] Phase 5: Fix JSON Deserialization Without Validation (P1-9)
 - [x] Phase 6: Fix Path Traversal Bypass via Triple-Encoding (P1-10)
-- [ ] Phase 7: Fix Agent Runner Command Injection and Timeout (P1-11, P2-10)
+- [x] Phase 7: Fix Agent Runner Command Injection and Timeout (P1-11, P2-10)
 - [ ] Phase 8: Fix Directory Listing DoS (P2-5)
 - [ ] Phase 9: Fix Verifier Command Injection and Secret Detection (P2-8, P2-9)
 - [ ] Phase 10: Fix Regex Catastrophic Backtracking in executor.py (P2-11)
@@ -166,8 +166,9 @@
 | test_logger_sanitization.py | 24 |
 | test_cli.py | 12 |
 | test_planner.py | 31 |
+| test_agent_runner.py | 15 |
 
-**Total: 680 tests**
+**Total: 695 tests**
 
 ---
 
@@ -175,18 +176,18 @@
 
 - **URL:** https://github.com/clay-good/codelicious/pull/5
 - **Branch:** `codelicious/auto-build`
-- **Status:** Draft - spec-16 Phase 6 complete
+- **Status:** Draft - spec-16 Phase 7 complete
 
 ---
 
 ## Risk Assessment
 
-**Overall Risk:** MEDIUM
+**Overall Risk:** LOW-MEDIUM
 
-The codebase has strong security fundamentals with multiple defense layers. Remaining open issues:
-- **1 P1 Critical**: prompt injection (P1-11)
-- **6 P2 Important**: Resource management, timeout handling
+The codebase has strong security fundamentals with multiple defense layers. All P1 critical issues are now fixed. Remaining open issues:
+- **0 P1 Critical**: All resolved
+- **5 P2 Important**: Resource management (directory DoS, regex backtrack, file race)
 
-The implementation is production-ready for controlled environments. Remaining P1/P2 issues being addressed in spec-16.
+The implementation is production-ready for controlled environments. Remaining P2 issues being addressed in spec-16.
 
 **Files Reviewed:** ~5,000 lines across 15 critical security modules
