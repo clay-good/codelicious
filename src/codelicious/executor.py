@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -250,48 +249,143 @@ def _parse_strict_format(response: str) -> list[tuple[str, str]]:
 
 
 def _parse_markdown_with_filename(response: str) -> list[tuple[str, str]]:
-    """Extract files from ```lang filepath blocks."""
-    pattern = re.compile(
-        r"^```\w*\s+(\S+.*?)\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
-        return []
+    """Extract files from ```lang filepath blocks.
 
+    Uses a line-by-line state machine instead of regex to avoid
+    catastrophic backtracking on inputs with many backtick sequences.
+    """
     results: list[tuple[str, str]] = []
-    for info, content in matches:
-        # The info string might be just a path or "lang path"
-        path = _strip_and_unify_slashes(info)
-        # If it looks like a file path (has extension), use it
-        if "." in path.split("/")[-1]:
-            results.append((path, content.strip("\n")))
+    lines = response.splitlines(keepends=True)
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check for opening fence: ```lang filepath
+        if stripped.startswith("```"):
+            remainder = stripped[3:].strip()
+            # Must have something after the backticks (lang and/or filepath)
+            if remainder:
+                # Extract the info string (everything after ```)
+                # Could be "lang path" or just "path"
+                info = remainder
+                content_lines: list[str] = []
+                i += 1
+
+                # Collect content until closing fence
+                while i < len(lines):
+                    content_line = lines[i]
+                    content_stripped = content_line.strip()
+                    if content_stripped == "```":
+                        # Found closing fence
+                        break
+                    content_lines.append(content_line)
+                    i += 1
+
+                # Only add if we found a closing fence
+                if i < len(lines) and lines[i].strip() == "```":
+                    path = _strip_and_unify_slashes(info)
+                    # If it looks like a file path (has extension), use it
+                    if "." in path.split("/")[-1]:
+                        content = "".join(content_lines).strip("\n")
+                        results.append((path, content))
+        i += 1
 
     return results
 
 
 def _parse_markdown_preceded_by_path(response: str) -> list[tuple[str, str]]:
-    """Extract files from code blocks preceded by a line with a file path."""
-    # Look for lines ending with a file extension, followed by a code block
-    pattern = re.compile(
-        r"^(\S+\.\w+)\s*$\n```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if not matches:
-        return []
-    return [(_strip_and_unify_slashes(path), content.strip("\n")) for path, content in matches]
+    """Extract files from code blocks preceded by a line with a file path.
+
+    Uses a line-by-line state machine instead of regex to avoid
+    catastrophic backtracking on inputs with many backtick sequences.
+    """
+    results: list[tuple[str, str]] = []
+    lines = response.splitlines(keepends=True)
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check for a line that looks like a file path (ends with .extension)
+        if stripped and not stripped.startswith("```"):
+            # Check if it's a simple path (non-whitespace ending with .ext)
+            parts = stripped.split()
+            if len(parts) == 1 and "." in stripped.split("/")[-1]:
+                potential_path = stripped
+                # Check if next line is an opening fence
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if next_line.startswith("```"):
+                        # Found opening fence after path
+                        i += 2  # Skip past the fence line
+                        content_lines: list[str] = []
+
+                        # Collect content until closing fence
+                        while i < len(lines):
+                            content_line = lines[i]
+                            content_stripped = content_line.strip()
+                            if content_stripped == "```":
+                                # Found closing fence
+                                break
+                            content_lines.append(content_line)
+                            i += 1
+
+                        # Only add if we found a closing fence
+                        if i < len(lines) and lines[i].strip() == "```":
+                            path = _strip_and_unify_slashes(potential_path)
+                            content = "".join(content_lines).strip("\n")
+                            results.append((path, content))
+                        continue
+        i += 1
+
+    return results
 
 
 def _parse_single_file_fallback(response: str, expected_file: str) -> list[tuple[str, str]]:
-    """Extract a single code block when exactly one file is expected."""
-    pattern = re.compile(
-        r"^```\w*\s*$\n(.*?)^```\s*$",
-        re.MULTILINE | re.DOTALL,
-    )
-    matches = pattern.findall(response)
-    if len(matches) == 1:
-        return [(_strip_and_unify_slashes(expected_file), matches[0].strip("\n"))]
+    """Extract a single code block when exactly one file is expected.
+
+    Uses a line-by-line state machine instead of regex to avoid
+    catastrophic backtracking on inputs with many backtick sequences.
+    """
+    blocks: list[str] = []
+    lines = response.splitlines(keepends=True)
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check for opening fence: ``` or ```lang (with nothing after lang)
+        if stripped.startswith("```"):
+            remainder = stripped[3:].strip()
+            # For single file fallback, we only match fences without filepath
+            # i.e., ```lang or just ```
+            if not remainder or (remainder.isalnum() or remainder == ""):
+                content_lines: list[str] = []
+                i += 1
+
+                # Collect content until closing fence
+                while i < len(lines):
+                    content_line = lines[i]
+                    content_stripped = content_line.strip()
+                    if content_stripped == "```":
+                        # Found closing fence
+                        break
+                    content_lines.append(content_line)
+                    i += 1
+
+                # Only add if we found a closing fence
+                if i < len(lines) and lines[i].strip() == "```":
+                    content = "".join(content_lines).strip("\n")
+                    blocks.append(content)
+        i += 1
+
+    # Only return if exactly one block was found
+    if len(blocks) == 1:
+        return [(_strip_and_unify_slashes(expected_file), blocks[0])]
     return []
 
 

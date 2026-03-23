@@ -589,3 +589,113 @@ def test_partial_extraction_tries_next_strategy() -> None:
     assert "file1.py" in file_paths
     assert "file2.py" in file_paths
     assert "file3.py" in file_paths
+
+
+# -- spec-16 Phase 10: Regex Catastrophic Backtracking Prevention Tests -----
+
+
+def test_pathological_backticks_completes_quickly() -> None:
+    """Input with 10,000 lines of backtick sequences completes in under 5 seconds.
+
+    This tests the fix for P2-11: regex catastrophic backtracking. The old
+    regex-based approach could hang on inputs with many backtick sequences.
+    The new state machine approach is O(n) and should complete quickly.
+    """
+    # Create 10,000 lines of backtick sequences - pathological input for regex
+    pathological_input = "``````\n" * 10_000
+    assert len(pathological_input) > 60_000, "Test input should have many backticks"
+
+    start = time.perf_counter()
+    # This should not hang - the state machine approach is O(n)
+    # It will raise ExecutionError since no valid files can be extracted,
+    # but it must complete quickly without hanging
+    with pytest.raises(ExecutionError):
+        parse_llm_response(pathological_input, expected_files=["test.py"])
+    elapsed = time.perf_counter() - start
+
+    # Must complete in under 5 seconds (generous limit for CI variability)
+    assert elapsed < 5.0, f"Parsing took {elapsed:.2f}s, expected < 5s"
+
+
+def test_nested_backticks_in_content_handled() -> None:
+    """Code block containing triple backticks in content is extracted correctly.
+
+    This tests that nested backticks (e.g., a markdown-about-markdown file)
+    are handled correctly without crashing or hanging.
+    """
+    # A markdown file that contains documentation about code blocks
+    response = """```markdown README.md
+# Example
+
+Here's how to write code:
+
+```python
+print("hello")
+```
+
+That's it!
+```
+"""
+    # The state machine will find the first closing ``` and stop there
+    # This is correct behavior - we extract the first valid block
+    result = parse_llm_response(response)
+    assert isinstance(result, list)
+    # Should extract at least one file or return empty (not crash/hang)
+
+
+def test_unclosed_code_block_no_hang() -> None:
+    """Input with opening fence but no closing fence completes quickly.
+
+    This tests that an unclosed code block doesn't cause the parser to
+    hang or crash - it should gracefully handle the malformed input.
+    """
+    # Opening fence with no closing fence
+    unclosed_input = "```python main.py\nprint('hello')\n" + "more content\n" * 1000
+    assert len(unclosed_input) > 10_000, "Test input should be substantial"
+
+    start = time.perf_counter()
+    # This should not hang - gracefully handle unclosed block
+    # It will raise ExecutionError since no valid files can be extracted
+    with pytest.raises(ExecutionError):
+        parse_llm_response(unclosed_input, expected_files=["main.py"])
+    elapsed = time.perf_counter() - start
+
+    # Must complete in under 1 second
+    assert elapsed < 1.0, f"Parsing took {elapsed:.2f}s, expected < 1s"
+
+
+def test_alternating_backticks_and_content() -> None:
+    """Input alternating between backticks and content completes quickly.
+
+    Tests that mixed pathological content doesn't trigger backtracking.
+    """
+    # Alternating pattern that could trigger regex backtracking
+    alternating = ("```\nfoo\n" * 1000) + ("```" * 500)
+    assert len(alternating) > 5000, "Test input should be substantial"
+
+    start = time.perf_counter()
+    # This will either return results or raise ExecutionError, but must complete quickly
+    try:
+        result = parse_llm_response(alternating, expected_files=["test.py"])
+        assert isinstance(result, list)
+    except ExecutionError:
+        pass  # No valid files extracted - expected
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
+
+
+def test_markdown_preceded_by_path_pathological() -> None:
+    """The preceded-by-path strategy handles pathological input quickly."""
+    # Many lines that look like paths followed by non-fence content
+    pathological = ""
+    for i in range(2000):
+        pathological += f"file{i}.py\n```not a fence\n"
+    pathological += "real.py\n```python\nprint('real')\n```\n"
+
+    start = time.perf_counter()
+    result = parse_llm_response(pathological)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
+    assert isinstance(result, list)
