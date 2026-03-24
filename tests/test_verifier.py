@@ -642,3 +642,102 @@ def test_syntax_check_aggregate_timeout(tmp_path: pathlib.Path) -> None:
     assert "Aggregate timeout" in result.details
     # Verify not all files were checked (early termination)
     assert "after checking" in result.details
+
+
+# -- spec-16 Phase 9: Verifier Command Injection and Secret Detection ------
+
+
+def test_custom_command_rejects_newline_in_command(tmp_path: pathlib.Path) -> None:
+    """Commands with newline characters are rejected (P2-8)."""
+    result = check_custom_command(tmp_path, "echo hello\nrm -rf /")
+    assert result.passed is False
+    assert "newline" in result.message.lower()
+
+
+def test_custom_command_rejects_carriage_return_in_command(tmp_path: pathlib.Path) -> None:
+    """Commands with carriage return are rejected (P2-8)."""
+    result = check_custom_command(tmp_path, "echo hello\rmalicious")
+    assert result.passed is False
+    assert "newline" in result.message.lower()
+
+
+def test_google_api_key_detected(tmp_path: pathlib.Path) -> None:
+    """Google API keys (AIza...) are detected as secrets (P2-9)."""
+    (tmp_path / "secrets.py").write_text(
+        "API_KEY = 'AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe'\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    assert result.passed is False
+    assert "secret" in result.details.lower()
+
+
+def test_stripe_secret_key_detected(tmp_path: pathlib.Path) -> None:
+    """Stripe secret keys (sk_live_...) are detected as secrets (P2-9).
+
+    Note: We use 51iveXXX instead of sk_live_ to avoid GitHub secret scanning
+    while still testing the regex pattern. The test file is written dynamically.
+    """
+    # Construct the key dynamically to avoid GitHub secret scanning in this file
+    sk_prefix = "sk_" + "live_"  # noqa: S105
+    key_suffix = "XXXXXXXXXXXXXXXXXXXXXXXXXX"
+    (tmp_path / "payment.py").write_text(
+        f"STRIPE_KEY = '{sk_prefix}{key_suffix}'\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    assert result.passed is False
+    assert "secret" in result.details.lower()
+
+
+def test_stripe_publishable_key_detected(tmp_path: pathlib.Path) -> None:
+    """Stripe publishable keys (pk_live_...) are detected as secrets (P2-9).
+
+    Note: We construct the key dynamically to avoid GitHub secret scanning.
+    """
+    # Construct the key dynamically to avoid GitHub secret scanning in this file
+    pk_prefix = "pk_" + "live_"  # noqa: S105
+    key_suffix = "XXXXXXXXXXXXXXXXXXXXXXXXXX"
+    (tmp_path / "payment.py").write_text(
+        f"STRIPE_PK = '{pk_prefix}{key_suffix}'\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    assert result.passed is False
+    assert "secret" in result.details.lower()
+
+
+def test_jwt_token_detected(tmp_path: pathlib.Path) -> None:
+    """JWT tokens (eyJ...) are detected as secrets (P2-9)."""
+    # A realistic JWT structure: header.payload.signature
+    (tmp_path / "auth.py").write_text(
+        "TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N'\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    assert result.passed is False
+    assert "secret" in result.details.lower()
+
+
+def test_password_base64_detected(tmp_path: pathlib.Path) -> None:
+    """Password/secret/token with base64 value is detected (P2-9)."""
+    (tmp_path / "config.py").write_text(
+        "password = 'SGVsbG9Xb3JsZEVuY29kZWRQYXNzd29yZA=='\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    assert result.passed is False
+    assert "secret" in result.details.lower()
+
+
+def test_legitimate_base64_not_flagged_without_context(tmp_path: pathlib.Path) -> None:
+    """Base64 strings without password/secret/token context are not flagged."""
+    # A base64 string that is NOT preceded by password/secret/token keyword
+    (tmp_path / "data.py").write_text(
+        "encoded_data = 'SGVsbG9Xb3JsZEVuY29kZWREYXRh'\n",
+        encoding="utf-8",
+    )
+    result = check_security(tmp_path)
+    # This should pass because it's not preceded by password/secret/token
+    # and doesn't match other secret patterns
+    assert result.passed is True

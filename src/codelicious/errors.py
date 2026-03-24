@@ -30,6 +30,8 @@ __all__ = [
     "LLMProviderError",
     "LLMRateLimitError",
     "LLMResponseError",
+    "LLMResponseFormatError",
+    "LLMResponseTooLargeError",
     "LLMTimeoutError",
     "LoopError",
     "PRCreationError",
@@ -126,6 +128,14 @@ class LLMTimeoutError(LLMClientError):
 
 class LLMResponseError(LLMClientError):
     """Raised when the LLM response is malformed or unusable."""
+
+
+class LLMResponseTooLargeError(LLMClientError):
+    """Raised when the LLM response exceeds the maximum allowed size."""
+
+
+class LLMResponseFormatError(LLMClientError):
+    """Raised when the LLM response is not the expected type (e.g., not a dict)."""
 
 
 class LLMProviderError(LLMClientError):

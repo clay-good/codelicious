@@ -3,11 +3,43 @@ import json
 from codelicious.tools.registry import ToolRegistry
 from codelicious.llm_client import LLMClient
 from codelicious.context_manager import estimate_tokens
+from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
 
 logger = logging.getLogger("codelicious.loop")
 
 # Maximum token budget for message history to prevent OOM and API rejection
 MAX_HISTORY_TOKENS = 80_000
+
+# Maximum size for LLM JSON responses (5 MB) to prevent DoS via memory exhaustion
+MAX_RESPONSE_BYTES = 5_000_000
+
+
+def parse_json_response(
+    raw_response: str, *, require_dict: bool = True
+) -> dict | list | str | int | float | bool | None:
+    """Parse a JSON string with size and type validation.
+
+    Args:
+        raw_response: The raw JSON string to parse.
+        require_dict: If True, raise LLMResponseFormatError if the parsed value is not a dict.
+
+    Returns:
+        The parsed JSON value.
+
+    Raises:
+        LLMResponseTooLargeError: If the response exceeds MAX_RESPONSE_BYTES.
+        LLMResponseFormatError: If require_dict is True and the parsed value is not a dict.
+        json.JSONDecodeError: If the response is not valid JSON.
+    """
+    if len(raw_response) > MAX_RESPONSE_BYTES:
+        raise LLMResponseTooLargeError(f"LLM response too large: {len(raw_response)} bytes (max {MAX_RESPONSE_BYTES})")
+
+    parsed = json.loads(raw_response)
+
+    if require_dict and not isinstance(parsed, dict):
+        raise LLMResponseFormatError(f"Expected dict from LLM, got {type(parsed).__name__}")
+
+    return parsed
 
 
 def truncate_history(messages: list[dict], max_tokens: int = MAX_HISTORY_TOKENS) -> list[dict]:
@@ -156,7 +188,8 @@ class BuildLoop:
         # Deterministic Interception: Execute the requested tools
         for tool_call in tool_calls:
             try:
-                args = json.loads(tool_call["function"]["arguments"])
+                raw_args = tool_call["function"]["arguments"]
+                args = parse_json_response(raw_args, require_dict=True)
                 name = tool_call["function"]["name"]
 
                 # Execute mapped function in python

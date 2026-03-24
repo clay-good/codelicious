@@ -1,4 +1,3 @@
-import argparse
 import sys
 import logging
 from pathlib import Path
@@ -15,58 +14,26 @@ def setup_logger():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Codelicious: Headless Agentic Developer")
-    parser.add_argument("repo_path", type=str, help="Path to the repository to process")
-    parser.add_argument("--spec", type=str, help="Path to a specific markdown spec to run")
-    parser.add_argument(
-        "--engine",
-        type=str,
-        choices=["auto", "claude", "huggingface"],
-        default="auto",
-        help="Build engine to use (default: auto-detect)",
-    )
-    parser.add_argument("--model", type=str, default="", help="Model override (e.g. claude-sonnet-4-6)")
-    parser.add_argument(
-        "--agent-timeout",
-        type=int,
-        default=1800,
-        help="Claude engine timeout in seconds (default: 1800)",
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default="",
-        help="Resume a previous Claude Code session by ID",
-    )
-    parser.add_argument(
-        "--verify-passes",
-        type=int,
-        default=3,
-        help="Number of verification passes (default: 3)",
-    )
-    parser.add_argument("--no-reflect", action="store_true", help="Skip the reflect/review phase")
-    parser.add_argument("--push-pr", action="store_true", help="Push changes and create/update PR")
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=50,
-        help="Max iterations for HF engine (default: 50)",
-    )
-    parser.add_argument("--dry-run", action="store_true", help="Log what would happen without executing")
-
-    args = parser.parse_args()
     logger = setup_logger()
 
-    repo_path = Path(args.repo_path).resolve()
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print("Usage: codelicious <repo_path>")
+        print()
+        print("Point codelicious at a repo and it builds every spec to completion.")
+        print("Auto-loops, parallel builds in worktrees, parallel reviewers,")
+        print("pushes commits, creates PR. One command. That's it.")
+        sys.exit(0 if sys.argv[1:] == ["--help"] or sys.argv[1:] == ["-h"] else 2)
+
+    repo_path = Path(sys.argv[1]).resolve()
     if not repo_path.is_dir():
         logger.error("Repository path %s does not exist or is not a directory.", repo_path)
         sys.exit(1)
 
     logger.info("Starting Codelicious workflow in %s", repo_path)
 
-    # 1. Select build engine
+    # 1. Select build engine (auto-detect)
     try:
-        engine = select_engine(args.engine)
+        engine = select_engine("auto")
     except RuntimeError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -85,35 +52,39 @@ def main():
     logger.info("Branch: %s", git_manager.current_branch)
 
     try:
-        # 5. Run the build cycle
+        # 5. Run the build cycle — everything ON by default
         result = engine.run_build_cycle(
             repo_path=repo_path,
             git_manager=git_manager,
             cache_manager=cache_manager,
-            spec_filter=args.spec,
-            # Claude engine kwargs
-            model=args.model,
-            agent_timeout_s=args.agent_timeout,
-            verify_passes=args.verify_passes,
-            reflect=not args.no_reflect,
-            push_pr=args.push_pr,
-            resume_session_id=args.resume,
-            dry_run=args.dry_run,
+            spec_filter=None,
+            model="",
+            agent_timeout_s=1800,
+            verify_passes=3,
+            reflect=True,
+            push_pr=True,
+            resume_session_id="",
+            dry_run=False,
             effort="",
             max_turns=0,
-            # HF engine kwargs
-            max_iterations=args.max_iterations,
+            auto_mode=True,
+            max_cycles=50,
+            parallel=3,
+            orchestrate=True,
+            reviewers="",
+            build_workers=3,
+            review_workers=4,
+            max_iterations=50,
         )
 
         if result.success:
-            logger.info("Build cycle completed successfully. %s", result.message)
-            if args.push_pr:
-                try:
-                    git_manager.transition_pr_to_review()
-                except Exception:
-                    pass  # Already handled in engine
+            logger.info("Build completed successfully. %s", result.message)
+            try:
+                git_manager.transition_pr_to_review()
+            except Exception as e:
+                logger.warning("PR transition to ready-for-review failed: %s", e)
         else:
-            logger.error("Build cycle failed: %s", result.message)
+            logger.error("Build failed: %s", result.message)
             sys.exit(1)
 
     except KeyboardInterrupt:

@@ -1,6 +1,14 @@
-"""Tests for loop_controller message history truncation."""
+"""Tests for loop_controller message history truncation and JSON validation."""
 
-from codelicious.loop_controller import MAX_HISTORY_TOKENS, truncate_history
+import json
+import pytest
+from codelicious.loop_controller import (
+    MAX_HISTORY_TOKENS,
+    MAX_RESPONSE_BYTES,
+    truncate_history,
+    parse_json_response,
+)
+from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
 
 
 class TestTruncateHistory:
@@ -185,3 +193,161 @@ class TestTruncateHistoryEdgeCases:
 
         # System should always be present
         assert result[0]["role"] == "system"
+
+
+class TestParseJsonResponse:
+    """Tests for parse_json_response function (P1-9 fix)."""
+
+    def test_valid_json_accepted(self):
+        """Normal dict response parses without error."""
+        raw = '{"tool": "read_file", "path": "/test.py"}'
+        result = parse_json_response(raw)
+        assert result == {"tool": "read_file", "path": "/test.py"}
+
+    def test_oversized_json_rejected(self):
+        """Response string exceeding 5MB raises LLMResponseTooLargeError."""
+        # Create a response of 6 MB
+        large_content = "x" * (6 * 1024 * 1024)
+        raw = '{"content": "' + large_content + '"}'
+
+        with pytest.raises(LLMResponseTooLargeError) as exc_info:
+            parse_json_response(raw)
+
+        assert "too large" in str(exc_info.value).lower()
+        assert str(MAX_RESPONSE_BYTES) in str(exc_info.value)
+
+    def test_non_dict_json_rejected(self):
+        """Response that is valid JSON but a list raises LLMResponseFormatError."""
+        raw = '["item1", "item2"]'
+
+        with pytest.raises(LLMResponseFormatError) as exc_info:
+            parse_json_response(raw, require_dict=True)
+
+        assert "Expected dict" in str(exc_info.value)
+        assert "list" in str(exc_info.value)
+
+    def test_string_json_rejected(self):
+        """Response that is valid JSON but a string raises LLMResponseFormatError."""
+        raw = '"just a string"'
+
+        with pytest.raises(LLMResponseFormatError) as exc_info:
+            parse_json_response(raw, require_dict=True)
+
+        assert "Expected dict" in str(exc_info.value)
+        assert "str" in str(exc_info.value)
+
+    def test_integer_json_rejected(self):
+        """Response that is valid JSON but an integer raises LLMResponseFormatError."""
+        raw = "42"
+
+        with pytest.raises(LLMResponseFormatError) as exc_info:
+            parse_json_response(raw, require_dict=True)
+
+        assert "Expected dict" in str(exc_info.value)
+        assert "int" in str(exc_info.value)
+
+    def test_null_json_rejected(self):
+        """Response that is JSON null raises LLMResponseFormatError."""
+        raw = "null"
+
+        with pytest.raises(LLMResponseFormatError) as exc_info:
+            parse_json_response(raw, require_dict=True)
+
+        assert "Expected dict" in str(exc_info.value)
+        assert "NoneType" in str(exc_info.value)
+
+    def test_empty_string_raises_json_decode_error(self):
+        """Empty string raises json.JSONDecodeError."""
+        raw = ""
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_json_response(raw)
+
+    def test_exactly_at_size_limit_accepted(self):
+        """Response of exactly MAX_RESPONSE_BYTES parses without error."""
+        # Create content that will result in exactly 5MB total
+        # We need to account for the JSON structure: {"x":"..."}
+        overhead = len('{"x":""}')
+        content_size = MAX_RESPONSE_BYTES - overhead
+        content = "a" * content_size
+        raw = '{"x":"' + content + '"}'
+
+        # Should be exactly at the limit
+        assert len(raw) == MAX_RESPONSE_BYTES
+
+        # Should parse successfully
+        result = parse_json_response(raw)
+        assert isinstance(result, dict)
+        assert result["x"] == content
+
+    def test_require_dict_false_allows_list(self):
+        """With require_dict=False, list responses are accepted."""
+        raw = '["item1", "item2"]'
+        result = parse_json_response(raw, require_dict=False)
+        assert result == ["item1", "item2"]
+
+    def test_require_dict_false_allows_string(self):
+        """With require_dict=False, string responses are accepted."""
+        raw = '"just a string"'
+        result = parse_json_response(raw, require_dict=False)
+        assert result == "just a string"
+
+    def test_nested_dict_accepted(self):
+        """Nested dict structures are parsed correctly."""
+        raw = '{"outer": {"inner": {"deep": "value"}}, "list": [1, 2, 3]}'
+        result = parse_json_response(raw)
+        assert result["outer"]["inner"]["deep"] == "value"
+        assert result["list"] == [1, 2, 3]
+
+    def test_max_response_bytes_constant_exists(self):
+        """MAX_RESPONSE_BYTES constant should be defined as 5MB."""
+        assert MAX_RESPONSE_BYTES == 5_000_000
+
+
+class TestParseJsonResponseEdgeCases:
+    """Edge case tests for parse_json_response."""
+
+    def test_malformed_json_raises(self):
+        """Malformed JSON raises json.JSONDecodeError."""
+        raw = '{"key": "value"'  # Missing closing brace
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_json_response(raw)
+
+    def test_unicode_in_json(self):
+        """Unicode content is handled correctly."""
+        raw = '{"emoji": "🎉", "chinese": "中文"}'
+        result = parse_json_response(raw)
+        assert result["emoji"] == "🎉"
+        assert result["chinese"] == "中文"
+
+    def test_whitespace_only_raises(self):
+        """Whitespace-only string raises json.JSONDecodeError."""
+        raw = "   \n\t  "
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_json_response(raw)
+
+    def test_boolean_json_rejected(self):
+        """Boolean JSON values are rejected when require_dict=True."""
+        for raw in ["true", "false"]:
+            with pytest.raises(LLMResponseFormatError):
+                parse_json_response(raw, require_dict=True)
+
+    def test_empty_dict_accepted(self):
+        """Empty dict is a valid response."""
+        raw = "{}"
+        result = parse_json_response(raw)
+        assert result == {}
+
+    def test_one_byte_over_limit_rejected(self):
+        """Response one byte over MAX_RESPONSE_BYTES is rejected."""
+        overhead = len('{"x":""}')
+        content_size = MAX_RESPONSE_BYTES - overhead + 1
+        content = "a" * content_size
+        raw = '{"x":"' + content + '"}'
+
+        assert len(raw) == MAX_RESPONSE_BYTES + 1
+
+        with pytest.raises(LLMResponseTooLargeError):
+            parse_json_response(raw)
