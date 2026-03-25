@@ -40,11 +40,20 @@ You are codelicious, an autonomous build agent for {{project_name}}.
 
 ## Your mission
 
-Build the NEXT incomplete task from the project's spec. You own the full
-lifecycle: understand → branch → build → test → commit → push → PR.
+Build the NEXT incomplete task from the project's spec. You handle
+understanding, implementation, and testing. The orchestrator handles
+all git operations (branching, committing, pushing, PRs) — you MUST NOT.
 
-**You MUST create a pull request.** This is not optional. Every run that
-produces a commit MUST have a PR on GitHub.
+## CRITICAL: Do NOT run git or gh commands
+
+The codelicious orchestrator manages all git and GitHub operations
+deterministically. You MUST NOT run any of these commands:
+- git checkout, git branch, git add, git commit, git push
+- gh pr create, gh pr view, gh pr edit
+- Any other git or gh CLI commands
+
+If you run git or gh commands, you will create duplicate branches and
+PRs. The orchestrator will commit and push your work automatically.
 
 ### Step 1: Understand the project
 
@@ -60,23 +69,12 @@ produces a commit MUST have a PR on GitHub.
 ### Step 2: Find the next task
 
 - Look through all spec/task files for the first unchecked `- [ ]` item.
-- Check `git log --oneline -20` to see what's already been done.
 - **If ALL tasks are `- [x]` (nothing left to do):**
   1. Update CLAUDE.md with any best practices you discovered.
   2. Update .codelicious/STATE.md to reflect completion.
   3. Write "DONE" to `.codelicious/BUILD_COMPLETE` and stop.
 
-### Step 3: Set up git branch
-
-- Run `git branch --show-current` to check your current branch.
-- If you're on main/master, create a feature branch:
-  `git checkout -b codelicious/<spec-name>`
-- If a `codelicious/*` branch already exists for this spec, check
-  it out: `git checkout codelicious/<spec-name>`
-- Push to set upstream: `git push -u origin <branch-name>`
-  If push fails, continue — commit locally and push later.
-
-### Step 4: Build it
+### Step 3: Build it
 
 - Read existing code before modifying. Match existing patterns.
 - Implement the task completely.
@@ -86,44 +84,18 @@ produces a commit MUST have a PR on GitHub.
   3. Run tests again
   4. Repeat until green (up to 3 attempts)
 
-### Step 5: Commit, push, and create PR
-
-This is the critical step. Do ALL of these IN ORDER:
-
-1. **Commit**: `git add -A && git commit -m "<what you built>"`
-2. **Push**: `git push` (or `git push -u origin <branch>` if no upstream)
-3. **Check for existing PR**: `gh pr view --json url 2>/dev/null`
-4. **Create PR if none exists**:
-   ```
-   gh pr create --draft --base main \
-     --title "<concise title of what you're building>" \
-     --body "## Summary\n<what this PR does>\n\nBuilt by codelicious."
-   ```
-5. **If PR already exists**, your push already updated it — just confirm
-   with `gh pr view --json url` and log the URL.
-
-**If `gh pr create` fails**, diagnose why and fix it. Common issues:
-- Not pushed yet → push first, then retry
-- No upstream → `git push -u origin <branch>`, then retry
-- Already exists → that's fine, just push
-
-### Step 6: Mark progress
+### Step 4: Mark progress
 
 - Mark the task done in the spec file: change `- [ ]` to `- [x]`.
 - Update .codelicious/STATE.md with current status.
-- Commit and push this progress update (the PR auto-updates).
 - Write "DONE" to `.codelicious/BUILD_COMPLETE`
 
 ## Rules
 
-- **ONE task per run.** Build one task, commit, push, PR, then stop.
-- Every commit MUST pass tests. No broken commits.
+- **ONE task per run.** Build one task, then stop.
+- Every change MUST pass tests. No broken code.
 - Keep docs (README, CLAUDE.md) current if your changes affect them.
-- NEVER push to main/master/develop directly.
-- NEVER force-push. NEVER amend published commits.
-- The PR is mandatory. Do not skip it. Do not exit without creating one.
-- Use the SAME branch for all tasks from the same spec. Push additional
-  commits to the same branch — the PR updates automatically.
+- Do NOT run git or gh commands. The orchestrator handles all git ops.
 """
 
 # Keep old prompts as aliases for backward compat / tests
@@ -224,6 +196,7 @@ def clear_build_complete(project_root: pathlib.Path) -> None:
 
 
 _UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
+_CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]", re.MULTILINE)
 
 # Common locations where spec/task files live
 _SPEC_GLOBS: list[str] = [
@@ -234,12 +207,30 @@ _SPEC_GLOBS: list[str] = [
     ".codelicious/STATE.md",
 ]
 
+# Files that are never treated as specs even if they match globs
+_SPEC_EXCLUDE_NAMES: frozenset[str] = frozenset(
+    {
+        "README.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+        "LICENSE.md",
+        "CLAUDE.md",
+        "MEMORY.md",
+    }
+)
+
 
 def scan_remaining_tasks(project_root: pathlib.Path) -> int:
-    """Count unchecked ``- [ ]`` items across all spec/task markdown files.
+    """Count remaining work across all spec/task markdown files.
 
-    Returns the total number of unchecked checkboxes found.  A return
-    value of 0 means all discoverable tasks appear complete.
+    Returns a count of remaining work items:
+    - Each unchecked ``- [ ]`` checkbox counts as 1.
+    - A spec file with NO checkboxes at all counts as 1 (it has not
+      been processed/marked up yet and needs work).
+    - A spec file where all checkboxes are checked contributes 0.
+
+    A return value of 0 means all discoverable specs appear complete.
     """
     total = 0
     seen: set[pathlib.Path] = set()
@@ -248,12 +239,20 @@ def scan_remaining_tasks(project_root: pathlib.Path) -> int:
             resolved = path.resolve()
             if resolved in seen or not resolved.is_file():
                 continue
+            if resolved.name in _SPEC_EXCLUDE_NAMES:
+                continue
             seen.add(resolved)
             try:
                 content = resolved.read_text(encoding="utf-8", errors="replace")
-                count = len(_UNCHECKED_RE.findall(content))
-                if count > 0:
-                    total += count
+                unchecked = len(_UNCHECKED_RE.findall(content))
+                has_checked = bool(_CHECKED_RE.search(content))
+
+                if unchecked > 0:
+                    total += unchecked
+                elif not has_checked:
+                    # No checkboxes at all -- prose spec, count as 1
+                    # remaining item so the loop doesn't exit early
+                    total += 1
             except OSError:
                 pass
     return total

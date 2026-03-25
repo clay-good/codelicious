@@ -90,43 +90,8 @@ class TestSingleCommand:
         assert call_kwargs.kwargs["push_pr"] is True
         assert call_kwargs.kwargs["reflect"] is True
 
-        # PR transition called on success
-        mock_git_manager.transition_pr_to_review.assert_called_once()
-
-
-class TestPRTransitionErrorHandling:
-    """Tests for PR transition error handling."""
-
-    def test_pr_transition_failure_logs_warning(
-        self, mock_repo: Path, mock_successful_engine, mock_git_manager, caplog
-    ):
-        """Test that PR transition failure logs a warning but doesn't raise."""
-        mock_git_manager.transition_pr_to_review.side_effect = RuntimeError("GitHub API error: rate limit exceeded")
-
-        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
-                with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        with caplog.at_level(logging.WARNING):
-                            main()
-
-        assert any(
-            "PR transition to ready-for-review failed" in record.message and "rate limit exceeded" in record.message
-            for record in caplog.records
-        )
-
-    def test_pr_transition_success_no_warning(self, mock_repo: Path, mock_successful_engine, mock_git_manager, caplog):
-        """Test that successful PR transition does not log a warning."""
-        mock_git_manager.transition_pr_to_review.return_value = None
-
-        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
-            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
-                with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        with caplog.at_level(logging.WARNING):
-                            main()
-
-        assert not any("PR transition to ready-for-review failed" in record.message for record in caplog.records)
+        # PR lifecycle is handled by git_orchestrator, not cli.py
+        mock_git_manager.transition_pr_to_review.assert_not_called()
 
 
 class TestErrorHandling:

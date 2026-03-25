@@ -79,10 +79,6 @@ def main():
 
         if result.success:
             logger.info("Build completed successfully. %s", result.message)
-            try:
-                git_manager.transition_pr_to_review()
-            except Exception as e:
-                logger.warning("PR transition to ready-for-review failed: %s", e)
         else:
             logger.error("Build failed: %s", result.message)
             sys.exit(1)

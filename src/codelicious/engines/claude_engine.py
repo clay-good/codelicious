@@ -40,10 +40,20 @@ _SPEC_FILE_GLOBS: list[str] = [
 ]
 
 _UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
+_CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]", re.MULTILINE)
 
 
 def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
-    """Find spec files that still have unchecked ``- [ ]`` items."""
+    """Find spec files that still need work.
+
+    A spec is considered *incomplete* (and returned) when any of:
+    1. It contains unchecked ``- [ ]`` checkboxes.
+    2. It contains no checkboxes at all (prose/numbered-list spec that
+       has not been marked up yet -- treat as needing work).
+
+    A spec is considered *complete* (and skipped) only when it has at
+    least one checked ``- [x]`` checkbox and zero unchecked ones.
+    """
     specs: list[pathlib.Path] = []
     seen: set[pathlib.Path] = set()
     for pattern in _SPEC_FILE_GLOBS:
@@ -54,8 +64,17 @@ def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
             seen.add(resolved)
             try:
                 content = resolved.read_text(encoding="utf-8", errors="replace")
-                if _UNCHECKED_RE.search(content):
+                has_unchecked = bool(_UNCHECKED_RE.search(content))
+                has_checked = bool(_CHECKED_RE.search(content))
+
+                if has_unchecked:
+                    # Unchecked items remain -- definitely incomplete
                     specs.append(resolved)
+                elif not has_checked:
+                    # No checkboxes at all -- spec uses prose/numbered
+                    # lists and has not been processed yet
+                    specs.append(resolved)
+                # else: all checkboxes are checked -- spec is complete
             except OSError:
                 pass
     return specs
@@ -238,13 +257,14 @@ class ClaudeCodeEngine(BuildEngine):
         except Exception as e:
             logger.warning("Git commit failed: %s", e)
 
-        # ── Phase 6: PUSH + PR ─────────────────────────────────────
+        # ── Phase 6: PR (ensure exactly one exists) ────────────────
         if push_pr:
-            logger.info("Phase 6/6: PR — pushing and creating pull request")
+            logger.info("Phase 6/6: PR — ensuring draft PR exists for branch")
             try:
-                git_manager.ensure_draft_pr_exists()
-                git_manager.transition_pr_to_review()
-                logger.info("PR created/updated.")
+                git_manager.ensure_draft_pr_exists(
+                    spec_summary=f"codelicious: build {project_name}"
+                )
+                logger.info("PR ensured.")
             except Exception as e:
                 logger.warning("PR creation failed: %s", e)
         else:
@@ -396,6 +416,11 @@ class ClaudeCodeEngine(BuildEngine):
         # ── Orchestrate mode: phase-based pipeline ────────────────
         if orchestrate:
             from codelicious.orchestrator import Orchestrator
+            from codelicious.prompts import clear_build_complete
+
+            # Clear stale BUILD_COMPLETE from previous runs so we
+            # actually re-scan for incomplete specs.
+            clear_build_complete(repo_path)
 
             specs = _discover_incomplete_specs(repo_path)
             if not specs:

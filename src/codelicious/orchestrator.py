@@ -417,7 +417,9 @@ class Orchestrator:
         """
         from codelicious.prompts import AGENT_BUILD_SPEC, render
 
-        branch_name = f"codelicious/build-{spec_path.stem}"
+        from codelicious.git.git_orchestrator import GitManager
+
+        branch_name = GitManager.branch_for_spec(spec_path.name)
         worktree_dir: pathlib.Path | None = None
 
         try:

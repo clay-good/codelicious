@@ -63,8 +63,16 @@ class GitManager:
             raise RuntimeError(f"Command {' '.join(args)} failed: {res.stderr}")
         return res.stdout.strip()
 
-    def assert_safe_branch(self):
-        """Ensures the agent never executes against main/master directly."""
+    def assert_safe_branch(self, spec_name: str = ""):
+        """Ensures the agent never executes against main/master directly.
+
+        If on a forbidden branch (main/master/production), checks out a
+        deterministic feature branch derived from spec_name. If no spec_name
+        is provided, falls back to 'codelicious/auto-build'.
+
+        The branch name is always 'codelicious/{spec_name}' so that
+        repeated runs for the same spec reuse the same branch and PR.
+        """
         if not self._has_git():
             logger.warning(
                 "A .git folder was not found so no git orchestration will occur. USER: Please add a .git or change directory to build within a repository."
@@ -74,8 +82,7 @@ class GitManager:
         try:
             branch = self._run_cmd(["git", "branch", "--show-current"])
             if branch in self.forbidden_branches:
-                # Enforce generation of a deterministic feature branch
-                feature_branch = "codelicious/auto-build"
+                feature_branch = self.branch_for_spec(spec_name)
                 logger.info(
                     "Current branch is %s. Codelicious requires an isolated feature branch. Checking out %s.",
                     branch,
@@ -86,6 +93,19 @@ class GitManager:
                 logger.info("Operating on safe feature branch: %s", branch)
         except Exception as e:
             logger.error("Failed to verify safe git branch: %s", e)
+
+    @staticmethod
+    def branch_for_spec(spec_name: str) -> str:
+        """Return a deterministic branch name for a spec.
+
+        Strips file extensions and path components so that
+        ``branch_for_spec("docs/specs/spec-v3.md")`` returns
+        ``"codelicious/spec-v3"``.
+        """
+        if not spec_name:
+            return "codelicious/auto-build"
+        stem = Path(spec_name).stem  # "spec-v3.md" → "spec-v3"
+        return f"codelicious/{stem}"
 
     def checkout_or_create_feature_branch(self, branch_name: str):
         """Checkout feature branch, creating it if it doesn't exist."""
@@ -167,41 +187,63 @@ class GitManager:
                 capture_output=True,
             )
 
-            # Since a commit just happened, ensure a Draft PR exists for it
-            self.ensure_draft_pr_exists(commit_message)
-
         except Exception as e:
             logger.error("Failed to commit or push: %s", e)
 
-    def ensure_draft_pr_exists(self, spec_summary: str):
-        """Uses the local `gh` CLI to orchestrate Draft PRs if one doesn't exist."""
+    def ensure_draft_pr_exists(self, spec_summary: str = ""):
+        """Ensure exactly one PR exists for the current branch.
+
+        Uses ``gh pr list --head <branch>`` to check for existing PRs
+        (including closed/merged) before creating. This prevents duplicate
+        PRs when the same spec is run multiple times.
+        """
         if not self._has_git():
             return
-
-        logger.info("Checking for existing active PRs via `gh` CLI...")
 
         # Check if gh CLI is installed
         gh_check = subprocess.run(["gh", "--version"], capture_output=True)
         if gh_check.returncode != 0:
-            logger.warning("GitHub CLI (`gh`) not found! Cannot automatically orchestrate PR API. Continuing locally.")
+            logger.warning("GitHub CLI (`gh`) not found. Skipping PR creation.")
             return
 
-        # Check if a PR already exists for this branch
-        pr_status = subprocess.run(["gh", "pr", "view"], cwd=self.repo_path, capture_output=True)
+        current_branch = self.current_branch
+        if current_branch in self.forbidden_branches or current_branch == "unknown":
+            logger.warning("Cannot create PR from branch %s.", current_branch)
+            return
 
-        if pr_status.returncode != 0:
-            logger.info("No PR found for this branch. Creating a new Draft PR.")
-            title = f"Autonomous Implementation: {spec_summary}"
-            body = "This PR was generated entirely by Codelicious using DeepSeek and Qwen."
+        # Check if a PR already exists for this exact branch (any state)
+        pr_check = subprocess.run(
+            ["gh", "pr", "list", "--head", current_branch, "--state", "all", "--json", "number,url,state", "--limit", "1"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+        )
 
-            subprocess.run(
-                ["gh", "pr", "create", "--draft", "--title", title, "--body", body],
-                cwd=self.repo_path,
-                capture_output=True,
-            )
-            logger.info("Successfully created Draft PR via `gh`.")
+        if pr_check.returncode == 0 and pr_check.stdout.strip() not in ("", "[]"):
+            try:
+                prs = json.loads(pr_check.stdout)
+                if prs:
+                    logger.info("PR already exists for branch %s: %s (state: %s). Commits appended via push.",
+                                current_branch, prs[0].get("url", ""), prs[0].get("state", ""))
+                    return
+            except json.JSONDecodeError:
+                pass
+
+        # No PR exists — create one
+        logger.info("No PR found for branch %s. Creating draft PR.", current_branch)
+        title = spec_summary or f"codelicious: {current_branch}"
+        body = "## Summary\n\nAutonomous implementation by codelicious.\n\nThis PR updates automatically as new commits are pushed."
+
+        result = subprocess.run(
+            ["gh", "pr", "create", "--draft", "--title", title, "--body", body],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            logger.info("Created draft PR: %s", result.stdout.strip())
         else:
-            logger.info("Draft PR already exists. Commits have been appended.")
+            logger.warning("Failed to create PR: %s", result.stderr.strip())
 
     def transition_pr_to_review(self):
         """

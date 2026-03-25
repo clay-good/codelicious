@@ -1126,6 +1126,277 @@ xychart-beta
     bar [1350, 1300, 1500, 1600, 1500]
 ```
 
+### Spec-21 Coverage Gap Analysis
+
+```mermaid
+flowchart TB
+    subgraph Zero["0% Coverage (No Tests)"]
+        Z1["budget_guard.py\n134 lines"]
+        Z2["config.py\n455 lines"]
+        Z3["orchestrator.py\n709 lines"]
+        Z4["huggingface_engine.py\n166 lines"]
+        Z5["__main__.py\n9 lines"]
+    end
+
+    subgraph Low["Below 50% Coverage"]
+        L1["engines/__init__.py\n30%"]
+        L2["planner.py\n29%"]
+        L3["registry.py\n33%"]
+        L4["claude_engine.py\n34%"]
+        L5["git_orchestrator.py\n36%"]
+        L6["logger.py\n39%"]
+        L7["prompts.py\n47%"]
+        L8["loop_controller.py\n50%"]
+    end
+
+    subgraph Good["Above 80% Coverage"]
+        G1["sandbox.py 91%"]
+        G2["executor.py 96%"]
+        G3["command_runner.py 97%"]
+        G4["context_manager.py 95%"]
+        G5["cli.py 94%"]
+        G6["parser.py 93%"]
+        G7["llm_client.py 93%"]
+        G8["scaffolder.py 92%"]
+    end
+
+    Zero -->|"Spec-21 Target: 80%+"| Good
+    Low -->|"Spec-21 Target: 60%+"| Good
+
+    style Zero fill:#DC143C,color:#fff
+    style Low fill:#DAA520,color:#000
+    style Good fill:#228B22,color:#fff
+```
+
+### Spec-21 Deterministic vs Probabilistic Logic
+
+```mermaid
+pie title Codebase Logic Distribution (9,842 lines)
+    "Deterministic (56%): CLI, config, parser, sandbox, verifier, fs_tools, command_runner, git, logger, security, errors" : 5500
+    "Probabilistic (44%): executor, planner, llm_client, loop_controller, orchestrator, engines, agent_runner, rag, prompts" : 4300
+```
+
+### Spec-21 Security Finding Closure
+
+```mermaid
+flowchart TB
+    subgraph Original["Original P2 (3 Open)"]
+        O1["P2-12: Build logger\nfile creation race"]
+        O2["P2-NEW-1: Git push\nmissing timeout"]
+        O3["P2-NEW-2: Verifier\nno process group"]
+    end
+
+    subgraph REV1["REV-P1 (5 Open)"]
+        R1["REV-P1-1: Assertions\nin threaded code"]
+        R2["REV-P1-2: Executor\nReDoS"]
+        R3["REV-P1-3: Sandbox\nTOCTOU"]
+        R4["REV-P1-4: JSON\ndepth limits"]
+        R5["REV-P1-5: Verifier\nSIGKILL"]
+    end
+
+    subgraph REV2["REV-P2 (5 Open)"]
+        R6["REV-P2-1: Thread\nlifecycle race"]
+        R7["REV-P2-2: Dead code\nCommandDeniedError"]
+        R8["REV-P2-3: mkdir\nsymlink"]
+        R9["REV-P2-4: Secret\npatterns"]
+        R10["REV-P2-5: Timing\nside-channel"]
+    end
+
+    subgraph New["S21 New (3 P2)"]
+        N1["S21-P2-1: Logger\nReDoS"]
+        N2["S21-P2-2: Backoff\nclamping"]
+        N3["S21-P2-3: Bare\nBaseException"]
+    end
+
+    Original --> Closed["All Findings Closed\n16 fixes across 22 phases"]
+    REV1 --> Closed
+    REV2 --> Closed
+    New --> Closed
+
+    style Original fill:#DAA520,color:#000
+    style REV1 fill:#DC143C,color:#fff
+    style REV2 fill:#DAA520,color:#000
+    style New fill:#4169E1,color:#fff
+    style Closed fill:#228B22,color:#fff
+```
+
+### Spec-21 Implementation Phase Dependencies
+
+```mermaid
+flowchart LR
+    subgraph Security["Security Fixes (Phases 1-11)"]
+        P1["P1: Logger\nfile race"]
+        P2["P2: Git\ntimeout"]
+        P3["P3: Verifier\nproc group"]
+        P4["P4: Assert\nreplacement"]
+        P5["P5: Executor\nReDoS"]
+        P6["P6: Sandbox\nTOCTOU"]
+        P7["P7: JSON\ndepth"]
+        P8["P8: Verifier\nSIGKILL"]
+        P9["P9: REV-P2\nclosure"]
+        P10["P10: Logger\nReDoS"]
+        P11["P11: Backoff\nclamp"]
+    end
+
+    subgraph Coverage["Coverage Expansion (Phases 12-16)"]
+        P12["P12: budget_guard\n0% to 80%+"]
+        P13["P13: config\n0% to 80%+"]
+        P14["P14: orchestrator\n0% to 60%+"]
+        P15["P15: hf_engine\n0% to 70%+"]
+        P16["P16: Low-coverage\nmodules 60%+"]
+    end
+
+    subgraph Docs["Documentation (Phases 17-22)"]
+        P17["P17: README\nnumber fixes"]
+        P18["P18: CI\npipeline"]
+        P19["P19: Exception\nhardening"]
+        P20["P20: Test\nfixtures"]
+        P21["P21: STATE.md\nupdate"]
+        P22["P22: Mermaid\ndiagrams"]
+    end
+
+    Security --> Coverage --> Docs
+
+    style Security fill:#DC143C,color:#fff
+    style Coverage fill:#4169E1,color:#fff
+    style Docs fill:#228B22,color:#fff
+```
+
+### Spec-21 CI Quality Gate Pipeline (Updated)
+
+```mermaid
+flowchart LR
+    A[Push / PR] --> B[Install\npip install -e .[dev]]
+    B --> B2[Verify Install\nimport codelicious]
+    B2 --> C[Lint\nruff check]
+    C --> D[Format\nruff format]
+    D --> E[Tests + Coverage\npytest --cov-fail-under=75]
+    E --> F[Security\nbandit]
+    F --> G[Audit\npip-audit]
+    G --> H{All Pass?}
+    H -->|Yes| I[Merge Ready]
+    H -->|No| J[Block Merge]
+
+    style I fill:#228B22,color:#fff
+    style J fill:#DC143C,color:#fff
+    style B2 fill:#4169E1,color:#fff
+```
+
+---
+
+### Spec-22 Spec-as-PR Lifecycle
+
+```mermaid
+flowchart TD
+    A["User runs: codelicious /path/to/repo --push-pr"] --> B["CLI parses args"]
+    B --> C["Engine selection: Claude or HuggingFace"]
+    C --> D["GitManager.assert_safe_branch with spec_id"]
+    D --> E{"On forbidden branch?"}
+    E -->|Yes| F["Create/checkout codelicious/spec-N"]
+    E -->|No| G["Continue on current branch"]
+    F --> H["Scaffold: write CLAUDE.md + .claude/"]
+    G --> H
+    H --> I["Build: spawn agent with spec prompt"]
+    I --> J["Verify: syntax + tests + security scan"]
+    J -->|Fail| K["Fix agent: re-run with error context"]
+    K --> J
+    J -->|Pass| L["Commit: git add specific-files + commit"]
+    L --> M["Push: git push to spec branch"]
+    M --> N{"Push succeeded?"}
+    N -->|No| O["Log error, skip PR"]
+    N -->|Yes| P["ensure_draft_pr_exists with spec_id"]
+    P --> Q{"PR with spec-N prefix exists?"}
+    Q -->|Yes| R["Log: PR already exists, commits appended"]
+    Q -->|No| S["gh pr create --draft with spec-N title"]
+    R --> T{"Verify passed?"}
+    S --> T
+    T -->|Yes| U["transition_pr_to_review"]
+    T -->|No| V["PR stays as draft"]
+
+    style F fill:#4169E1,color:#fff
+    style R fill:#228B22,color:#fff
+    style S fill:#DAA520,color:#000
+    style U fill:#228B22,color:#fff
+    style O fill:#DC143C,color:#fff
+```
+
+### Spec-22 Duplicate PR Prevention
+
+```mermaid
+flowchart LR
+    A["ensure_draft_pr_exists called"] --> B["gh pr list --state open --json"]
+    B --> C{"Parse JSON response"}
+    C -->|Success| D{"Any PR title starts\nwith [spec-N]?"}
+    C -->|Failure| E["Log warning, return None"]
+    D -->|"Found PR #X"| F["Return PR number X\n(commits auto-appended)"]
+    D -->|Not found| G["gh pr create --draft\ntitle: [spec-N] summary"]
+    G --> H{"Create succeeded?"}
+    H -->|Yes| I["Return new PR number"]
+    H -->|No| J["Log error, return None"]
+
+    style F fill:#228B22,color:#fff
+    style I fill:#228B22,color:#fff
+    style E fill:#DC143C,color:#fff
+    style J fill:#DC143C,color:#fff
+```
+
+### Spec-22 Finding Resolution by Phase
+
+```mermaid
+flowchart TB
+    subgraph P1_Fixes["P1 Critical (4 Findings)"]
+        F1["S22-P1-1\nTypeError in\nensure_draft_pr_exists"]
+        F2["S22-P1-2\nDuplicate PR\ncreation"]
+        F3["S22-P1-3\nPush failure\nsilently swallowed"]
+        F4["S22-P1-4\nbuild_logger\ncleanup never runs"]
+    end
+
+    subgraph P2_Fixes["P2 Important (20 Findings)"]
+        G1["Thread safety\naudit_logger\nbudget_guard\nprogress"]
+        G2["Token budget\nbypass in\ncontext_manager"]
+        G3["TOCTOU race\nin parser"]
+        G4["Denylist gaps\ngit, java, go\ncargo, dotnet"]
+        G5["Agent prompt\nstages secrets\ncreates PRs"]
+    end
+
+    subgraph Phases["Implementation Phases"]
+        Ph1["Phase 1: Branch mapping"]
+        Ph2["Phase 2: PR dedup"]
+        Ph3["Phase 3: Prompt cleanup"]
+        Ph4["Phase 4: Full lifecycle"]
+        Ph5["Phase 5: Build logger"]
+        Ph6["Phase 6: Thread safety"]
+        Ph7["Phase 7: Budget + TOCTOU"]
+        Ph8["Phase 8: Denylist + cache"]
+        Ph9["Phase 9: Test coverage"]
+        Ph10["Phase 10: Documentation"]
+    end
+
+    F1 --> Ph2
+    F2 --> Ph2
+    F3 --> Ph2
+    F4 --> Ph5
+    G1 --> Ph6
+    G2 --> Ph7
+    G3 --> Ph7
+    G4 --> Ph8
+    G5 --> Ph3
+
+    Ph1 & Ph2 & Ph3 & Ph4 & Ph5 & Ph6 & Ph7 & Ph8 & Ph9 & Ph10 --> Zero["Zero Duplicate PRs\nZero P1 Findings\n760+ Tests"]
+
+    style P1_Fixes fill:#DC143C,color:#fff
+    style P2_Fixes fill:#DAA520,color:#000
+    style Zero fill:#228B22,color:#fff
+```
+
+### Spec-22 Deterministic vs Probabilistic Logic
+
+```mermaid
+pie title Codebase Logic Breakdown (9,893 lines)
+    "Deterministic Safety Harness (56%)" : 5500
+    "Probabilistic LLM-Driven (44%)" : 4400
+```
+
 ---
 
 ## Zero Dependencies
