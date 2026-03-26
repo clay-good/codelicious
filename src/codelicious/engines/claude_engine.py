@@ -15,6 +15,7 @@ import concurrent.futures
 import logging
 import pathlib
 import re
+import subprocess
 import sys
 import time
 
@@ -28,56 +29,118 @@ _DEFAULT_RATE_LIMIT_BACKOFF_S = 65.0  # Wait after rate limit before retry
 _DEFAULT_TOKEN_EXHAUST_BACKOFF_S = 10.0  # Wait after token exhaustion before retry
 _DEFAULT_PARALLEL_WORKERS = 1  # Default: serial execution
 
-# Patterns used to discover spec files in a repo
-_SPEC_FILE_GLOBS: list[str] = [
-    "docs/specs/*.md",
-    "specs/*.md",
-    "spec.md",
-    "spec-*.md",
-    "*.spec.md",
-    "ROADMAP.md",
-    "TODO.md",
-]
+# Filename patterns that indicate a spec/task file (case-insensitive match).
+_SPEC_FILENAME_RE = re.compile(
+    r"(^spec[\w\-]*\.md$"    # spec.md, spec-v1.md, spec_foo.md
+    r"|\.spec\.md$"          # foo.spec.md
+    r"|^roadmap\.md$"        # ROADMAP.md
+    r"|^todo\.md$)",         # TODO.md
+    re.IGNORECASE,
+)
+
+# Directories that should never be searched (even if not in .gitignore).
+_SKIP_DIRS: set[str] = {
+    ".git", ".hg", ".svn",
+    "node_modules", "__pycache__",
+    ".venv", "venv", "env",
+    ".tox", ".mypy_cache", ".pytest_cache",
+    "dist", "build", "target",
+    ".next", ".nuxt",
+    ".codelicious",
+    ".claude",
+}
 
 _UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
 _CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]", re.MULTILINE)
 
 
+def _git_tracked_files(repo_path: pathlib.Path) -> set[pathlib.Path] | None:
+    """Return the set of tracked files, or None if not a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        return {
+            (repo_path / f).resolve()
+            for f in result.stdout.split("\0")
+            if f
+        }
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _walk_for_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
+    """Walk the entire repo tree and return files whose names match spec patterns."""
+    matches: list[pathlib.Path] = []
+    tracked = _git_tracked_files(repo_path)
+
+    for dirpath, dirnames, filenames in repo_path.walk():
+        # Prune skipped directories in-place
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+
+        for fname in filenames:
+            if _SPEC_FILENAME_RE.search(fname):
+                full = (dirpath / fname).resolve()
+                # If we have git info, only consider tracked files
+                if tracked is not None and full not in tracked:
+                    continue
+                matches.append(full)
+
+    return sorted(matches)
+
+
 def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
-    """Find spec files that still need work.
+    """Find spec files anywhere in the repo that still need work.
 
-    A spec is considered *incomplete* (and returned) when any of:
-    1. It contains unchecked ``- [ ]`` checkboxes.
-    2. It contains no checkboxes at all (prose/numbered-list spec that
-       has not been marked up yet -- treat as needing work).
+    Walks the entire repository (respecting .gitignore via git ls-files)
+    and matches filenames like spec.md, spec-v1.md, ROADMAP.md, TODO.md,
+    etc.
 
-    A spec is considered *complete* (and skipped) only when it has at
-    least one checked ``- [x]`` checkbox and zero unchecked ones.
+    A spec is *incomplete* when it has unchecked ``- [ ]`` checkboxes or
+    no checkboxes at all. A spec is *complete* only when every checkbox
+    is checked.
     """
-    specs: list[pathlib.Path] = []
-    seen: set[pathlib.Path] = set()
-    for pattern in _SPEC_FILE_GLOBS:
-        for path in repo_path.glob(pattern):
-            resolved = path.resolve()
-            if resolved in seen or not resolved.is_file():
-                continue
-            seen.add(resolved)
-            try:
-                content = resolved.read_text(encoding="utf-8", errors="replace")
-                has_unchecked = bool(_UNCHECKED_RE.search(content))
-                has_checked = bool(_CHECKED_RE.search(content))
+    all_specs = _walk_for_specs(repo_path)
+    incomplete: list[pathlib.Path] = []
+    complete: list[pathlib.Path] = []
 
-                if has_unchecked:
-                    # Unchecked items remain -- definitely incomplete
-                    specs.append(resolved)
-                elif not has_checked:
-                    # No checkboxes at all -- spec uses prose/numbered
-                    # lists and has not been processed yet
-                    specs.append(resolved)
-                # else: all checkboxes are checked -- spec is complete
-            except OSError:
-                pass
-    return specs
+    for path in all_specs:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            has_unchecked = bool(_UNCHECKED_RE.search(content))
+            has_checked = bool(_CHECKED_RE.search(content))
+
+            if has_unchecked:
+                incomplete.append(path)
+            elif not has_checked:
+                incomplete.append(path)
+            else:
+                complete.append(path)
+        except OSError:
+            pass
+
+    # Log discovery summary
+    total = len(all_specs)
+    if total:
+        rel = lambda p: p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+        logger.info(
+            "Spec discovery: found %d spec file(s) — %d incomplete, %d complete.",
+            total, len(incomplete), len(complete),
+        )
+        for s in incomplete:
+            logger.info("  [incomplete] %s", rel(s))
+        for s in complete:
+            logger.info("  [complete]   %s", rel(s))
+    else:
+        logger.warning("Spec discovery: no spec files found in %s", repo_path)
+
+    return incomplete
 
 
 class ClaudeCodeEngine(BuildEngine):

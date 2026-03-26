@@ -470,21 +470,43 @@ class Orchestrator:
         )
 
         results: list[tuple[str, bool]] = []
+        completed_count = 0
+
+        def _log_spec_progress(spec: pathlib.Path, branch: str, ok: bool) -> None:
+            nonlocal completed_count
+            completed_count += 1
+            status = "OK" if ok else "FAILED"
+            logger.info(
+                "  [%d/%d] %s — %s (branch: %s)",
+                completed_count, len(specs), spec.name, status, branch,
+            )
 
         if workers <= 1:
             # Serial fallback
             for spec in specs:
-                results.append(self._build_spec_in_worktree(spec))
+                logger.info("  Building spec: %s ...", spec.name)
+                branch, ok = self._build_spec_in_worktree(spec)
+                _log_spec_progress(spec, branch, ok)
+                results.append((branch, ok))
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {pool.submit(self._build_spec_in_worktree, spec): spec for spec in specs}
+                for spec in specs:
+                    logger.info("  Queued spec: %s", spec.name)
                 for future in concurrent.futures.as_completed(futures):
                     spec = futures[future]
                     try:
-                        results.append(future.result())
+                        branch, ok = future.result()
+                        _log_spec_progress(spec, branch, ok)
+                        results.append((branch, ok))
                     except Exception as e:
-                        logger.error("Worker for %s raised: %s", spec.name, e)
-                        results.append((f"codelicious/build-{spec.stem}", False))
+                        branch = f"codelicious/build-{spec.stem}"
+                        completed_count += 1
+                        logger.error(
+                            "  [%d/%d] %s — ERROR: %s",
+                            completed_count, len(specs), spec.name, e,
+                        )
+                        results.append((branch, False))
 
         return results
 
@@ -659,6 +681,8 @@ class Orchestrator:
         )
 
         # ── Phase 1: BUILD ─────────────────────────────────────────
+        logger.info("")
+        logger.info("---- Phase 1/4: BUILD ----")
         build_results = self._phase_build(specs, max_build_workers)
         successful_builds = sum(1 for _, ok in build_results if ok)
         logger.info("Phase 1 complete: %d/%d specs built successfully.", successful_builds, len(specs))
@@ -671,13 +695,19 @@ class Orchestrator:
             )
 
         # ── Phase 2: MERGE ─────────────────────────────────────────
+        logger.info("")
+        logger.info("---- Phase 2/4: MERGE ----")
         merged = self._phase_merge(build_results)
         logger.info("Phase 2 complete: %d branches merged.", merged)
 
         # ── Phase 3: REVIEW ────────────────────────────────────────
+        logger.info("")
+        logger.info("---- Phase 3/4: REVIEW ----")
         findings = self._phase_review(reviewers, max_review_workers)
 
         # ── Phase 4: FIX ──────────────────────────────────────────
+        logger.info("")
+        logger.info("---- Phase 4/4: FIX ----")
         fix_ok = self._phase_fix(findings)
 
         # ── Commit & PR ────────────────────────────────────────────

@@ -19,7 +19,9 @@ from codelicious.git.git_orchestrator import GitManager
 
 @pytest.fixture
 def mock_repo(tmp_path: Path) -> Path:
-    """Create a minimal mock repository directory."""
+    """Create a minimal mock repository directory with a spec file."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n- [ ] Build the thing\n")
     return tmp_path
 
 
@@ -59,6 +61,14 @@ def mock_git_manager():
     return manager
 
 
+def _mock_spec_discovery(*specs):
+    """Return mock patches for _walk_for_specs and _discover_incomplete_specs."""
+    return (
+        mock.patch("codelicious.cli._walk_for_specs", return_value=list(specs)),
+        mock.patch("codelicious.cli._discover_incomplete_specs", return_value=list(specs)),
+    )
+
+
 class TestSetupLogger:
     """Tests for the setup_logger function."""
 
@@ -74,11 +84,15 @@ class TestSingleCommand:
 
     def test_bare_command_runs_full_pipeline(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
         """Test that `codelicious <repo>` runs the full pipeline."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine) as mock_select:
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        main()
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                            main()
 
         # Engine auto-detected
         mock_select.assert_called_once_with("auto")
@@ -137,22 +151,30 @@ class TestBuildFailure:
 
     def test_failed_build_exits_with_error(self, mock_repo: Path, mock_failed_engine, mock_git_manager):
         """Test that a failed build result causes exit with code 1."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
         with mock.patch("codelicious.cli.select_engine", return_value=mock_failed_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        with pytest.raises(SystemExit) as exc_info:
-                            main()
-                        assert exc_info.value.code == 1
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                            with pytest.raises(SystemExit) as exc_info:
+                                main()
+                            assert exc_info.value.code == 1
 
     def test_failed_build_does_not_transition_pr(self, mock_repo: Path, mock_failed_engine, mock_git_manager):
         """Test that a failed build does not attempt PR transition."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
         with mock.patch("codelicious.cli.select_engine", return_value=mock_failed_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        with pytest.raises(SystemExit):
-                            main()
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                            with pytest.raises(SystemExit):
+                                main()
 
         mock_git_manager.transition_pr_to_review.assert_not_called()
 
@@ -163,11 +185,14 @@ class TestKeyboardInterrupt:
     def test_keyboard_interrupt_exits_gracefully(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
         """Test that KeyboardInterrupt is caught and exits with code 130."""
         mock_successful_engine.run_build_cycle.side_effect = KeyboardInterrupt()
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
 
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                        with pytest.raises(SystemExit) as exc_info:
-                            main()
-                        assert exc_info.value.code == 130
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                            with pytest.raises(SystemExit) as exc_info:
+                                main()
+                            assert exc_info.value.code == 130
