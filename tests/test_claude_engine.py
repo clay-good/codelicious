@@ -763,8 +763,6 @@ class TestGitTrackedFiles:
 
     def test_nonzero_returncode_returns_none(self, tmp_path: pathlib.Path) -> None:
         """A non-zero exit code from git ls-files causes the function to return None."""
-        import subprocess
-
         from codelicious.engines.claude_engine import _git_tracked_files
 
         fake_result = mock.MagicMock()
@@ -810,8 +808,6 @@ class TestGitTrackedFiles:
 
     def test_success_returns_set_of_paths(self, tmp_path: pathlib.Path) -> None:
         """A zero returncode with valid output returns a set of resolved Path objects."""
-        import subprocess
-
         from codelicious.engines.claude_engine import _git_tracked_files
 
         fake_result = mock.MagicMock()

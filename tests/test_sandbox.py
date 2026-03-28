@@ -653,8 +653,6 @@ def test_read_file_post_read_toctou_symlink_escape(tmp_path: pathlib.Path) -> No
     target.write_text("safe content", encoding="utf-8")
 
     outside = str(tmp_path.parent / "outside_file.py")
-    real_project = str(tmp_path.resolve())
-
     original_realpath = os.path.realpath
     call_count = {"n": 0}
 
