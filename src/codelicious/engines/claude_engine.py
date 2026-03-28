@@ -12,6 +12,7 @@ backoff and retry with a new session context.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import re
 import subprocess
@@ -85,13 +86,13 @@ def _walk_for_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
     matches: list[pathlib.Path] = []
     tracked = _git_tracked_files(repo_path)
 
-    for dirpath, dirnames, filenames in repo_path.walk():
+    for dirpath_str, dirnames, filenames in os.walk(repo_path):
         # Prune skipped directories in-place
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
 
         for fname in filenames:
             if _SPEC_FILENAME_RE.search(fname):
-                full = (dirpath / fname).resolve()
+                full = (pathlib.Path(dirpath_str) / fname).resolve()
                 # If we have git info, only consider tracked files
                 if tracked is not None and full not in tracked:
                     continue
