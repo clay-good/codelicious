@@ -331,9 +331,7 @@ class TestAllowDangerousEnvVar:
             cmd = _build_agent_command("test", tmp_path, config, "claude")
         assert "--dangerously-skip-permissions" not in cmd
 
-    def test_exact_value_logs_security_warning(
-        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_exact_value_logs_security_warning(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
         """Activating via env var must emit a WARNING-level security message."""
         import types
 

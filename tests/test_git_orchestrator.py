@@ -248,15 +248,18 @@ class TestSensitivePatterns:
 class TestSensitivePatternsExtended:
     """Tests for the additional SENSITIVE_PATTERNS entries added in Finding 42."""
 
-    @pytest.mark.parametrize("pattern", [
-        ".npmrc",
-        ".pypirc",
-        ".netrc",
-        "kubeconfig",
-        "service-account",
-        "aws-credentials",
-        "docker-config",
-    ])
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            "kubeconfig",
+            "service-account",
+            "aws-credentials",
+            "docker-config",
+        ],
+    )
     def test_new_pattern_is_present_in_constant(self, pattern: str) -> None:
         """Each newly added pattern must exist in SENSITIVE_PATTERNS."""
         assert pattern in SENSITIVE_PATTERNS, f"Missing pattern: {pattern!r}"
@@ -797,9 +800,9 @@ class TestCommitVerifiedChangesCriticalPaths:
             # except Exception handler, so it should not propagate to the caller.
             manager.commit_verified_changes("Failing commit", files_to_stage=["foo.py"])
 
-        assert any(
-            len(call) >= 3 and call[2] == "HEAD" for call in reset_calls
-        ), "git reset HEAD must be called when commit fails"
+        assert any(len(call) >= 3 and call[2] == "HEAD" for call in reset_calls), (
+            "git reset HEAD must be called when commit fails"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -983,9 +986,7 @@ class TestEnsureDraftPrExistsTimeoutPaths:
         gh_version_ok = mock.MagicMock()
         gh_version_ok.returncode = 0
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="unknown"
-        ):
+        with mock.patch.object(type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="unknown"):
             with mock.patch("subprocess.run", return_value=gh_version_ok) as mock_run:
                 manager.ensure_draft_pr_exists("spec summary")
 

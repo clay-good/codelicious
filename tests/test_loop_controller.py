@@ -20,6 +20,7 @@ from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_chat_response(content: str = "", tool_calls: list = None) -> dict:
     """Build a minimal OpenAI-compatible chat completion response dict."""
     message = {"role": "assistant", "content": content}
@@ -36,6 +37,7 @@ def _make_tool_call(name: str, arguments: str, call_id: str = "tc_1") -> dict:
 # ---------------------------------------------------------------------------
 # Fixture: BuildLoop with all external I/O mocked
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def build_loop(tmp_path: pathlib.Path, monkeypatch):

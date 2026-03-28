@@ -506,6 +506,7 @@ class TestValidateFilePathsEdgeCases:
 # Helpers shared by Finding 4 and Finding 5 tests
 # ---------------------------------------------------------------------------
 
+
 def _make_section(title: str = "Build a login page", body: str = "Implement OAuth2.") -> Section:
     """Return a minimal Section suitable for create_plan calls."""
     return Section(level=1, title=title, body=body, line_number=1)

@@ -479,9 +479,9 @@ def test_cleanup_rmtree_failure_logs_warning_and_returns_zero(
     # rmtree failed, so the count should be 0 (nothing was actually removed)
     assert removed == 0
     # A warning must have been logged about the failure
-    assert any(
-        "failed" in r.message.lower() or "remove" in r.message.lower() for r in caplog.records
-    ), f"Expected a warning log; got: {[r.message for r in caplog.records]}"
+    assert any("failed" in r.message.lower() or "remove" in r.message.lower() for r in caplog.records), (
+        f"Expected a warning log; got: {[r.message for r in caplog.records]}"
+    )
 
 
 # ---------------------------------------------------------------------------

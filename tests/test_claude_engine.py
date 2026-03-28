@@ -318,7 +318,9 @@ class TestContinuousModeLoop:
         engine, repo = self._engine_and_path(tmp_path)
 
         rate_limit_result = BuildResult(success=False, message="RATE_LIMIT:30.0", session_id="", elapsed_s=0.1)
-        success_result = BuildResult(success=True, message="Build cycle complete in 1.0s", session_id="s1", elapsed_s=1.0)
+        success_result = BuildResult(
+            success=True, message="Build cycle complete in 1.0s", session_id="s1", elapsed_s=1.0
+        )
 
         call_count = 0
 
@@ -385,7 +387,9 @@ class TestContinuousModeLoop:
         """Continuous mode exits early (success=True) when agent_done=True and remaining==0."""
         engine, repo = self._engine_and_path(tmp_path)
 
-        success_result = BuildResult(success=True, message="Build cycle complete in 1.0s", session_id="s1", elapsed_s=1.0)
+        success_result = BuildResult(
+            success=True, message="Build cycle complete in 1.0s", session_id="s1", elapsed_s=1.0
+        )
 
         with (
             mock.patch.object(engine, "_run_single_cycle", return_value=success_result),
@@ -414,7 +418,9 @@ class TestContinuousModeLoop:
         engine, repo = self._engine_and_path(tmp_path)
 
         token_result = BuildResult(success=False, message="TOKEN_EXHAUSTED:", session_id="old", elapsed_s=0.1)
-        success_result = BuildResult(success=True, message="Build cycle complete in 1.0s", session_id="new", elapsed_s=1.0)
+        success_result = BuildResult(
+            success=True, message="Build cycle complete in 1.0s", session_id="new", elapsed_s=1.0
+        )
 
         call_count = 0
 
@@ -561,7 +567,9 @@ class TestSingleCycleErrorHandlers:
 
         assert isinstance(result, BuildResult)
         assert result.success is False
-        assert result.message.startswith("TOKEN_EXHAUSTED:"), f"Expected TOKEN_EXHAUSTED prefix, got: {result.message!r}"
+        assert result.message.startswith("TOKEN_EXHAUSTED:"), (
+            f"Expected TOKEN_EXHAUSTED prefix, got: {result.message!r}"
+        )
 
     def test_token_exhaust_detected_for_various_messages(
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
@@ -1075,9 +1083,7 @@ class TestVerifyPhase:
         vresult_pass.all_passed = True
         vresult_pass.checks = []
 
-        run_agent_mock = mock.MagicMock(
-            return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0)
-        )
+        run_agent_mock = mock.MagicMock(return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0))
 
         with (
             mock.patch("codelicious.agent_runner.run_agent", run_agent_mock),
@@ -1100,9 +1106,7 @@ class TestVerifyPhase:
             f"Expected 2 run_agent calls (build + fix), got {run_agent_mock.call_count}"
         )
 
-    def test_verify_importerror_skips_phase(
-        self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
-    ) -> None:
+    def test_verify_importerror_skips_phase(self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager) -> None:
         """When the verifier module cannot be imported, the VERIFY phase is silently skipped.
 
         The overall cycle must still complete and return a BuildResult.
@@ -1119,9 +1123,7 @@ class TestVerifyPhase:
 
         original_import = builtins.__import__
 
-        run_agent_mock = mock.MagicMock(
-            return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0)
-        )
+        run_agent_mock = mock.MagicMock(return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0))
 
         with (
             mock.patch("codelicious.agent_runner.run_agent", run_agent_mock),
@@ -1149,9 +1151,7 @@ class TestVerifyPhase:
         (tmp_path / ".codelicious").mkdir(exist_ok=True)
         engine = ClaudeCodeEngine()
 
-        run_agent_mock = mock.MagicMock(
-            return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0)
-        )
+        run_agent_mock = mock.MagicMock(return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0))
 
         with (
             mock.patch("codelicious.agent_runner.run_agent", run_agent_mock),
@@ -1302,9 +1302,7 @@ class TestReflectAndPRPhases:
         (tmp_path / ".codelicious").mkdir(exist_ok=True)
         engine = ClaudeCodeEngine()
 
-        run_agent_mock = mock.MagicMock(
-            return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0)
-        )
+        run_agent_mock = mock.MagicMock(return_value=mock.MagicMock(success=True, session_id="s1", elapsed_s=1.0))
 
         with (
             mock.patch("codelicious.agent_runner.run_agent", run_agent_mock),
@@ -1341,9 +1339,7 @@ class TestReflectAndPRPhases:
 
         assert isinstance(result, BuildResult)
 
-    def test_pr_skipped_when_push_pr_false(
-        self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
-    ) -> None:
+    def test_pr_skipped_when_push_pr_false(self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager) -> None:
         """When push_pr=False, ensure_draft_pr_exists is never called."""
         self._run_cycle(
             tmp_path,
@@ -1355,9 +1351,7 @@ class TestReflectAndPRPhases:
 
         mock_git_manager.ensure_draft_pr_exists.assert_not_called()
 
-    def test_pr_called_when_push_pr_true(
-        self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
-    ) -> None:
+    def test_pr_called_when_push_pr_true(self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager) -> None:
         """When push_pr=True, ensure_draft_pr_exists is called with a spec_summary string."""
         self._run_cycle(
             tmp_path,

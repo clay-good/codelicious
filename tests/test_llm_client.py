@@ -463,9 +463,7 @@ class TestLLMClientNetworkRetry:
             with pytest.raises(RuntimeError):
                 client.chat_completion([{"role": "user", "content": "test"}])
 
-            expected_sleeps = [
-                call(client._BACKOFF_BASE_S * (2**i)) for i in range(client._MAX_RETRIES)
-            ]
+            expected_sleeps = [call(client._BACKOFF_BASE_S * (2**i)) for i in range(client._MAX_RETRIES)]
             assert mock_sleep.call_args_list == expected_sleeps
 
     def test_network_error_succeeds_on_retry(self, client):
@@ -484,14 +482,18 @@ class TestLLMClientNetworkRetry:
                 val = fail_then_succeed.pop(0)
                 if isinstance(val, Exception):
                     raise val
+
                 # Return a context manager whose read() gives the JSON bytes
                 class _FakeResponse:
                     def __enter__(self_inner):
                         return self_inner
+
                     def __exit__(self_inner, *a):
                         return False
+
                     def read(self_inner):
                         return json.dumps(success_response).encode("utf-8")
+
                 return _FakeResponse()
 
             mock_urlopen.side_effect = side_effect

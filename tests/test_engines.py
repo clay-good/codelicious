@@ -287,9 +287,7 @@ class TestHuggingFaceEngineToolDispatch:
         assert result.success is True, f"Expected success=True after error recovery, got: {result.success!r}"
         # chat_completion was called exactly twice: once for the tool-call response,
         # once for the completion response.
-        assert mock_completion.call_count == 2, (
-            f"Expected 2 chat_completion calls, got {mock_completion.call_count}"
-        )
+        assert mock_completion.call_count == 2, f"Expected 2 chat_completion calls, got {mock_completion.call_count}"
 
     def test_tool_dispatch_json_decode_error_handled(
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
@@ -334,9 +332,7 @@ class TestHuggingFaceEngineToolDispatch:
         assert isinstance(result, BuildResult)
         assert result.success is True, f"Expected success=True after JSON error recovery, got: {result.success!r}"
         # chat_completion called twice: first iteration (bad JSON tool call) + second (completion)
-        assert mock_completion.call_count == 2, (
-            f"Expected 2 chat_completion calls, got {mock_completion.call_count}"
-        )
+        assert mock_completion.call_count == 2, f"Expected 2 chat_completion calls, got {mock_completion.call_count}"
 
     def test_spec_filter_included_in_system_prompt(
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
@@ -466,9 +462,7 @@ class TestHuggingFaceEngineSafeErrorMessage:
 
         captured_messages: list[dict] = []
 
-        original_truncate = __import__(
-            "codelicious.loop_controller", fromlist=["truncate_history"]
-        ).truncate_history
+        original_truncate = __import__("codelicious.loop_controller", fromlist=["truncate_history"]).truncate_history
 
         def _capturing_truncate(msgs, max_tokens):
             captured_messages.clear()
@@ -493,12 +487,6 @@ class TestHuggingFaceEngineSafeErrorMessage:
                             )
 
         # Collect all user-role message contents that were passed to the LLM
-        all_content = " ".join(
-            m.get("content", "") or ""
-            for m in captured_messages
-            if m.get("role") == "user"
-        )
-        assert sensitive_detail not in all_content, (
-            "Sensitive exception detail must not appear in conversation history"
-        )
+        all_content = " ".join(m.get("content", "") or "" for m in captured_messages if m.get("role") == "user")
+        assert sensitive_detail not in all_content, "Sensitive exception detail must not appear in conversation history"
         assert "The previous API call failed. Please continue your work." in all_content
