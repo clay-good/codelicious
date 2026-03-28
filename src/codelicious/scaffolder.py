@@ -41,10 +41,8 @@ the current task list and progress.
 - Use TodoWrite to track sub-steps within complex tasks.
 
 ## Git & PR Policy
-- You own all git operations: add, commit, push, branch creation.
-- Write clear, descriptive commit messages that explain what changed and why.
-- One commit per logical unit of work (e.g. one task, one fix).
-- Create PRs with meaningful titles and descriptions summarizing actual changes.
+- The codelicious orchestrator owns all git operations: add, commit, push, branch creation.
+- You MUST NOT run git or gh commands. The orchestrator handles them.
 - NEVER push to main/master/develop/release branches directly.
 - NEVER force-push or amend published commits.
 
@@ -414,8 +412,10 @@ def _build_permissions(
 ) -> dict[str, list[str]]:
     """Build allow/deny permission lists.
 
-    Claude Code gets broad permissions. Only truly dangerous
-    operations are denied.
+    Claude Code receives an explicit allowlist of safe Bash commands rather than
+    the broad ``Bash(*)`` wildcard.  Dangerous operations are also enumerated in
+    the deny list so that any future widening of the allowlist cannot accidentally
+    re-enable them.
     """
     allow: list[str] = [
         "Read",
@@ -423,20 +423,58 @@ def _build_permissions(
         "Write",
         "Glob",
         "Grep",
-        "Bash(*)",
         "Agent",
         "TodoWrite",
+        # Safe read-only / inspection commands
+        "Bash(cat *)",
+        "Bash(ls *)",
+        "Bash(find *)",
+        "Bash(head *)",
+        "Bash(tail *)",
+        "Bash(wc *)",
+        "Bash(diff *)",
+        "Bash(grep *)",
+        "Bash(sort *)",
+        "Bash(echo *)",
+        # Safe filesystem mutation commands
+        "Bash(mkdir *)",
+        "Bash(cp *)",
+        "Bash(mv *)",
+        "Bash(touch *)",
+        # Test runners
+        "Bash(pytest *)",
+        "Bash(python -m pytest *)",
+        # Linters / formatters
+        "Bash(ruff *)",
+        "Bash(black *)",
+        # JavaScript / TypeScript tooling
+        "Bash(npm test *)",
+        "Bash(npm run *)",
+        "Bash(npx tsc *)",
+        # Package installation
+        "Bash(pip install *)",
+        "Bash(pip3 install *)",
+        "Bash(npm install *)",
     ]
 
     deny: list[str] = [
+        # Prevent force-pushes and pushes to protected branches
         "Bash(git push --force*)",
         "Bash(git push -f *)",
         "Bash(git checkout main*)",
         "Bash(git checkout master*)",
         "Bash(git push * main*)",
         "Bash(git push * master*)",
+        # Prevent destructive filesystem operations
         "Bash(rm -rf /*)",
+        "Bash(rm -rf .)",
+        "Bash(rm -rf ~*)",
         "Bash(sudo *)",
+        # Prevent data exfiltration / network access
+        "Bash(curl *)",
+        "Bash(wget *)",
+        "Bash(nc *)",
+        "Bash(dd *)",
     ]
 
     return {"allow": allow, "deny": deny}

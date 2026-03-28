@@ -91,5 +91,37 @@ DENIED_COMMANDS: frozenset[str] = frozenset(
         "julia",
         "pwsh",
         "powershell",
+        # Alternative tool names that can bypass the denylist (Finding 39)
+        # Environment / execution wrappers
+        "env",
+        "xargs",
+        "nohup",
+        "timeout",
+        # Debuggers / tracers (can inject code into running processes)
+        "strace",
+        "ltrace",
+        "gdb",
+        # Container / package managers that spawn arbitrary environments
+        "docker",
+        "kubectl",
+        "nix-shell",
+        "flatpak",
+        "snap",
+        # Swiss-army-knife binary that bundles many POSIX tools
+        "busybox",
+        # Git is managed exclusively by the orchestrator; the agent must not run it
+        "git",
+        # Package managers / build tools that execute arbitrary code
+        # make: executes arbitrary Makefile recipes
+        "make",
+        # pip/pip3: pip install runs setup.py / build hooks
+        "pip",
+        "pip3",
+        # pipx: installs and runs packages in isolated environments
+        "pipx",
+        # npx: downloads and executes arbitrary npm packages
+        "npx",
+        # go: `go run` compiles and executes arbitrary Go source
+        "go",
     }
 )

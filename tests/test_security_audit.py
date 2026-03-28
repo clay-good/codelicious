@@ -248,22 +248,40 @@ class TestAuditFormatter:
 
         This is the key fix: previously, module-level calls to logging.addLevelName()
         would inject ANSI escape codes into ALL loggers in the entire process.
+
+        Uses importlib.reload() to re-import the module in a clean state so the test
+        is not order-dependent on other tests that may have already imported the module.
         """
-        # Get the standard level names (before any mutation)
-        # After our fix, these should remain as Python defaults
-        info_name = logging.getLevelName(logging.INFO)
-        warning_name = logging.getLevelName(logging.WARNING)
-        error_name = logging.getLevelName(logging.ERROR)
+        import importlib
 
-        # These should be the standard Python names, not our custom colored names
-        assert info_name == "INFO", f"Expected 'INFO', got '{info_name}'"
-        assert warning_name == "WARNING", f"Expected 'WARNING', got '{warning_name}'"
-        assert error_name == "ERROR", f"Expected 'ERROR', got '{error_name}'"
+        import codelicious.tools.audit_logger as audit_logger_module
 
-        # Verify no ANSI escape codes in global level names
-        assert "\033" not in info_name, "INFO level name should not contain ANSI codes"
-        assert "\033" not in warning_name, "WARNING level name should not contain ANSI codes"
-        assert "\033" not in error_name, "ERROR level name should not contain ANSI codes"
+        # Snapshot global level names before reload
+        info_before = logging.getLevelName(logging.INFO)
+        warning_before = logging.getLevelName(logging.WARNING)
+        error_before = logging.getLevelName(logging.ERROR)
+
+        # Reload the module — this re-executes all module-level code
+        importlib.reload(audit_logger_module)
+
+        # After reload, global level names must remain unchanged
+        info_after = logging.getLevelName(logging.INFO)
+        warning_after = logging.getLevelName(logging.WARNING)
+        error_after = logging.getLevelName(logging.ERROR)
+
+        assert info_after == info_before, f"INFO changed after reload: '{info_before}' -> '{info_after}'"
+        assert warning_after == warning_before, f"WARNING changed after reload: '{warning_before}' -> '{warning_after}'"
+        assert error_after == error_before, f"ERROR changed after reload: '{error_before}' -> '{error_after}'"
+
+        # The standard Python level names must not contain ANSI escape codes
+        assert "\033" not in info_after, "INFO level name should not contain ANSI codes"
+        assert "\033" not in warning_after, "WARNING level name should not contain ANSI codes"
+        assert "\033" not in error_after, "ERROR level name should not contain ANSI codes"
+
+        # Verify the actual values are the expected Python defaults
+        assert info_after == "INFO", f"Expected 'INFO', got '{info_after}'"
+        assert warning_after == "WARNING", f"Expected 'WARNING', got '{warning_after}'"
+        assert error_after == "ERROR", f"Expected 'ERROR', got '{error_after}'"
 
     def test_formatter_with_color_enabled(self):
         """Verify AuditFormatter includes ANSI codes when use_color=True."""

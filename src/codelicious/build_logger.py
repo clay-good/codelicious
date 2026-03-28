@@ -214,7 +214,8 @@ class BuildSession:
         Args:
             success: Whether the build succeeded.
         """
-        self._explicit_success = success
+        with self._lock:
+            self._explicit_success = success
 
     def close(
         self,
@@ -255,12 +256,29 @@ class BuildSession:
                 tasks_failed,
             )
 
+    def __del__(self) -> None:
+        """Safety-net finalizer: close file handles if not already closed.
+
+        This is called by the garbage collector and prevents file handle
+        leaks when the context manager is not used or an exception bypasses
+        __exit__. It is not guaranteed to be called (e.g. at interpreter
+        shutdown), but covers the common case.
+        """
+        try:
+            if not self._closed:
+                self.close()
+        except Exception:
+            # __del__ must never raise — swallow any errors silently.
+            pass
+
     def __enter__(self) -> "BuildSession":
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        if self._explicit_success is not None:
-            self.close(success=self._explicit_success)
+        with self._lock:
+            explicit = self._explicit_success
+        if explicit is not None:
+            self.close(success=explicit)
         else:
             self.close(success=(exc_type is None))
         return False

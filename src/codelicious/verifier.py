@@ -520,28 +520,42 @@ def check_syntax(
             msg = f"Aggregate timeout: syntax check exceeded {aggregate_timeout}s after checking {i} files"
             errors.append(msg)
             break
-        # Clamp per-file timeout to remaining aggregate time
-        remaining_agg = aggregate_timeout - elapsed_agg
-        file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
+
+        # Use the built-in compile() in-process instead of spawning a subprocess
+        # per file. Fall back to subprocess only if the file cannot be read.
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "py_compile", str(py_file)],
-                capture_output=True,
-                text=True,
-                timeout=file_timeout,
-                cwd=str(project_dir),
-            )
-            if result.returncode != 0:
-                err = result.stderr.strip() or result.stdout.strip()
-                errors.append(f"{py_file.name}: {err}")
-        except FileNotFoundError:
-            return CheckResult(
-                name="syntax",
-                passed=False,
-                message="Python interpreter not found",
-            )
-        except subprocess.TimeoutExpired:
-            errors.append(f"{py_file.name}: compilation timed out")
+            source = py_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Cannot read the file — fall back to subprocess check
+            logger.debug("Cannot read %s (%s); falling back to subprocess syntax check", py_file.name, exc)
+            elapsed_agg = time.monotonic() - aggregate_start
+            remaining_agg = aggregate_timeout - elapsed_agg
+            file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "py_compile", str(py_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=file_timeout,
+                    cwd=str(project_dir),
+                )
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    errors.append(f"{py_file.name}: {err}")
+            except FileNotFoundError:
+                return CheckResult(
+                    name="syntax",
+                    passed=False,
+                    message="Python interpreter not found",
+                )
+            except subprocess.TimeoutExpired:
+                errors.append(f"{py_file.name}: compilation timed out")
+            continue
+
+        try:
+            compile(source, str(py_file), "exec")
+        except SyntaxError as exc:
+            errors.append(f"{py_file.name}:{exc.lineno}: {exc.msg}")
 
     logger.debug("Syntax check complete: %d errors found", len(errors))
     if errors:

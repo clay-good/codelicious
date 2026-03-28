@@ -295,8 +295,8 @@ def test_extreme_truncation_logged(caplog: pytest.LogCaptureFixture) -> None:
 # -- Phase 13: Context Manager Boundary Conditions -------------------------
 
 
-def test_budget_with_zero_completed_tasks() -> None:
-    """build_task_prompt succeeds when there are no completed tasks."""
+def test_budget_with_zero_completed_tasks_and_empty_file_tree() -> None:
+    """build_task_prompt succeeds with no completed tasks and an empty file tree."""
     task = FakeTask()
     budget = ContextBudget(max_tokens=10_000)
     _sys, user = build_task_prompt(
@@ -309,25 +309,11 @@ def test_budget_with_zero_completed_tasks() -> None:
     )
     assert isinstance(user, str)
     assert len(user) > 0
-
-
-def test_budget_with_empty_file_tree() -> None:
-    """build_task_prompt with an empty project_file_tree list succeeds."""
-    task = FakeTask()
-    budget = ContextBudget(max_tokens=10_000)
-    _sys, user = build_task_prompt(
-        task=task,
-        system_prompt="You are a coder.",
-        existing_file_contents={},
-        completed_tasks=[],
-        project_file_tree=[],
-        budget=budget,
-    )
-    assert isinstance(user, str)
+    assert task.title in user
+    assert task.description in user
 
 
 def test_estimate_tokens_single_character() -> None:
-    """estimate_tokens of a single character returns a non-negative integer."""
+    """estimate_tokens of a single character returns 0 (rounds down to zero tokens)."""
     result = estimate_tokens("a")
-    assert isinstance(result, int)
-    assert result >= 0
+    assert result == 0

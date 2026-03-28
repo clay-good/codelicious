@@ -8,6 +8,14 @@ from codelicious.context.rag_engine import RagEngine
 
 logger = logging.getLogger("codelicious.tools.registry")
 
+# Default maximum number of tool calls allowed per iteration (Finding 44).
+# Can be overridden via the ``max_calls_per_iteration`` config key.
+_DEFAULT_MAX_CALLS_PER_ITERATION: int = 50
+
+
+class ToolCallLimitError(Exception):
+    """Raised when the per-iteration tool call limit is exceeded."""
+
 
 class ToolRegistry:
     """
@@ -20,6 +28,12 @@ class ToolRegistry:
         self.audit = AuditLogger(repo_path)
         self.rag = RagEngine(repo_path)
 
+        # Per-iteration call counter with configurable maximum (Finding 44)
+        self._call_count: int = 0
+        self._max_calls_per_iteration: int = int(
+            config.get("max_calls_per_iteration", _DEFAULT_MAX_CALLS_PER_ITERATION)
+        )
+
         # Mapping Tool Name -> Function execution
         self.registry: dict[str, Callable] = {
             "read_file": self.fs_tools.native_read_file,
@@ -29,10 +43,33 @@ class ToolRegistry:
             "semantic_search": self.rag.semantic_search,
         }
 
+    def reset_call_count(self) -> None:
+        """Reset the per-iteration tool call counter.
+
+        Must be called between agent iterations to allow the next iteration
+        a fresh quota of tool calls.
+        """
+        self._call_count = 0
+        logger.debug("Tool call counter reset (max=%d).", self._max_calls_per_iteration)
+
     def dispatch(self, tool_name: str, kwargs: dict) -> dict[str, Any]:
         """
         Safely invokes a tool based on the LLMs JSON output request.
+
+        Raises ToolCallLimitError if the per-iteration call limit is exceeded
+        (Finding 44: rate limiting on tool dispatch).
         """
+
+        # [RATE LIMIT] Enforce per-iteration call cap before any work (Finding 44)
+        self._call_count += 1
+        if self._call_count > self._max_calls_per_iteration:
+            error_msg = (
+                f"Tool call limit reached: {self._max_calls_per_iteration} calls per iteration. "
+                "Call reset_call_count() to begin a new iteration."
+            )
+            logger.error(error_msg)
+            self.audit.log_sandbox_violation(error_msg)
+            raise ToolCallLimitError(error_msg)
 
         # [AUDIT TRAIL] 1: Log Intent
         self.audit.log_tool_intent(tool_name, kwargs)

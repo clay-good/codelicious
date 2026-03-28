@@ -2,8 +2,10 @@
 
 import io
 import json
+import socket
+import ssl
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, call
 import urllib.error
 
 from codelicious.llm_client import LLMClient
@@ -123,9 +125,9 @@ class TestLLMClientErrorSanitization:
             assert "status 500" in caplog.text
 
     def test_connection_error_handling(self, client):
-        """Generic connection errors should also produce clean messages."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = ConnectionError("Connection refused")
+        """Network errors exhaust retries then produce a clean LLM Connection Error message."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
             with pytest.raises(RuntimeError) as exc_info:
                 client.chat_completion([{"role": "user", "content": "test"}])
@@ -225,6 +227,13 @@ class TestLLMClientInitialization:
         monkeypatch.setenv("HF_TOKEN", "hf_test")
         client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
         assert client.endpoint_url == "https://custom.api.com/v1/chat"
+
+    def test_llm_api_key_takes_priority_over_hf_token(self, monkeypatch):
+        """LLM_API_KEY should take priority over HF_TOKEN when both are set."""
+        monkeypatch.setenv("HF_TOKEN", "hf_should_not_be_used")
+        monkeypatch.setenv("LLM_API_KEY", "llm_key_takes_priority")
+        client = LLMClient()
+        assert client.api_key == "llm_key_takes_priority"
 
 
 class TestLLMClientErrorBodySanitization:
@@ -373,3 +382,136 @@ class TestLLMClientErrorBodySanitization:
             assert "model_not_found" in caplog.text
             assert "gpt-4-unknown" in caplog.text
             assert "req-12345" in caplog.text
+
+
+class TestLLMClientNetworkRetry:
+    """Tests for network-level error retry logic (URLError, socket.timeout, ssl.SSLError, etc.)."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        """Create an LLMClient with a mock API key."""
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token_12345")
+        return LLMClient()
+
+    def test_url_error_retries_and_raises(self, client):
+        """URLError should be retried up to _MAX_RETRIES times then raise RuntimeError."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            # Should have attempted 1 + _MAX_RETRIES times total
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            # Sleep should be called _MAX_RETRIES times (not on the final attempt)
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_socket_timeout_retries_and_raises(self, client):
+        """socket.timeout should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = socket.timeout("timed out")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_ssl_error_retries_and_raises(self, client):
+        """ssl.SSLError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = ssl.SSLError("SSL handshake failed")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_connection_reset_error_retries_and_raises(self, client):
+        """ConnectionResetError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = ConnectionResetError("Connection reset by peer")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_os_error_retries_and_raises(self, client):
+        """OSError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = OSError("Network unreachable")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_network_error_exponential_backoff_intervals(self, client):
+        """Sleep durations should follow exponential backoff: 1s, 2s, 4s."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = urllib.error.URLError("timeout")
+
+            with pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            expected_sleeps = [
+                call(client._BACKOFF_BASE_S * (2**i)) for i in range(client._MAX_RETRIES)
+            ]
+            assert mock_sleep.call_args_list == expected_sleeps
+
+    def test_network_error_succeeds_on_retry(self, client):
+        """A transient network error should succeed once the connection recovers."""
+        success_response = {"choices": [{"message": {"content": "hello"}}]}
+
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            # Fail on the first two attempts, succeed on the third
+            fail_then_succeed = [
+                urllib.error.URLError("temporary failure"),
+                urllib.error.URLError("temporary failure"),
+                io.StringIO(json.dumps(success_response)),
+            ]
+
+            def side_effect(*args, **kwargs):
+                val = fail_then_succeed.pop(0)
+                if isinstance(val, Exception):
+                    raise val
+                # Return a context manager whose read() gives the JSON bytes
+                class _FakeResponse:
+                    def __enter__(self_inner):
+                        return self_inner
+                    def __exit__(self_inner, *a):
+                        return False
+                    def read(self_inner):
+                        return json.dumps(success_response).encode("utf-8")
+                return _FakeResponse()
+
+            mock_urlopen.side_effect = side_effect
+
+            result = client.chat_completion([{"role": "user", "content": "test"}])
+            assert result == success_response
+            assert mock_urlopen.call_count == 3
+
+    def test_network_error_warning_logged(self, client, caplog):
+        """A warning should be logged for each retried network error."""
+        import logging
+
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+            with caplog.at_level(logging.WARNING, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # A warning should appear for each retry attempt
+            warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warning_records) == client._MAX_RETRIES
+            assert all("Transient network error" in r.message for r in warning_records)

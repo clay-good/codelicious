@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -37,7 +38,7 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    non_alnum = sum(1 for ch in text if not ch.isalnum() and not ch.isspace())
+    non_alnum = len(re.sub(r"[a-zA-Z0-9\s]", "", text))
     ratio = non_alnum / len(text)
     if ratio > 0.30:
         tokens = int(len(text) / 3.5 * 1.1)

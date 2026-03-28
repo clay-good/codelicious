@@ -319,9 +319,9 @@ def test_backslash_paths_normalized() -> None:
 def test_parse_response_with_nested_code_blocks() -> None:
     """Nested markdown code blocks inside file content are handled without crash."""
     response = '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
-    # May succeed or return empty; must not raise an unhandled exception
     result = parse_llm_response(response, expected_files=["main.py"])
-    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0][0] == "main.py"
 
 
 def test_parse_response_extremely_large() -> None:
@@ -330,10 +330,9 @@ def test_parse_response_extremely_large() -> None:
     large_content = "x = 1\n" * 200_000  # ~1.4 MB
     response = "--- FILE: big.py ---\n" + large_content + "--- END FILE ---\n"
     result = parse_llm_response(response)
-    assert isinstance(result, list)
-    if result:
-        assert result[0][0] == "big.py"
-        assert len(result[0][1]) > 0
+    assert len(result) >= 1
+    assert result[0][0] == "big.py"
+    assert len(result[0][1]) > 0
 
 
 def test_parse_response_binary_content() -> None:
@@ -656,28 +655,26 @@ def show_markdown():
     pass
 ```
 '''
-    # The parser should extract one file, treating the inner ``` as content
+    # The parser should extract one file (example.py via markdown_with_filename).
+    # The inner ``` closes the block early, so content is truncated, but the
+    # file path is still correctly identified.
     result = parse_llm_response(response)
-    # This is a tricky case - the inner ``` might close the block early
-    # At minimum, it should complete without hanging
-    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0][0] == "example.py"
 
 
 def test_unclosed_code_block_handled() -> None:
-    """Input with opening fence but no closing fence completes without hang."""
+    """Input with opening fence but no closing fence completes without hang and extracts the file."""
     response = "```python main.py\nprint('hello')\n# No closing fence"
 
     start = time.perf_counter()
-    try:
-        result = parse_llm_response(response, expected_files=["main.py"])
-        # If it returns, verify it's a list
-        assert isinstance(result, list)
-    except ExecutionError:
-        # Also acceptable - no valid closed code block found
-        pass
+    result = parse_llm_response(response, expected_files=["main.py"])
     elapsed = time.perf_counter() - start
 
     assert elapsed < 1.0, f"Parsing took {elapsed:.2f}s, expected < 1s"
+    assert len(result) == 1
+    assert result[0][0] == "main.py"
+    assert "print('hello')" in result[0][1]
 
 
 def test_markdown_with_filename_large_input() -> None:
@@ -722,3 +719,62 @@ def test_single_file_fallback_large_input() -> None:
     assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
     assert len(result) == 1
     assert result[0][0] == "big.py"
+
+
+# ---------------------------------------------------------------------------
+# Finding 87: Response truncation at MAX limit
+# ---------------------------------------------------------------------------
+
+
+def test_parse_response_truncated_at_max_limit() -> None:
+    """A response exactly 1 byte over MAX_RESPONSE_LENGTH is truncated and still parsed.
+
+    The test constructs a strict-format response whose total length is
+    _MAX_RESPONSE_LENGTH + 1, verifies that parse_llm_response still returns
+    results (the truncation must not destroy the extractable portion).
+    """
+    from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+    # Build a large but valid response that comfortably fits within the limit
+    # and then pad it to exceed the limit by exactly 1 byte.
+    header = "--- FILE: big.py ---\n"
+    footer = "\n--- END FILE ---\n"
+    # Calculate how much filler we need so that total length = _MAX_RESPONSE_LENGTH + 1
+    filler_len = _MAX_RESPONSE_LENGTH + 1 - len(header) - len(footer)
+    assert filler_len > 0, "MAX_RESPONSE_LENGTH constant is too small for this test"
+
+    response = header + ("x" * filler_len) + footer
+    assert len(response) == _MAX_RESPONSE_LENGTH + 1, "Response must be exactly 1 byte over limit"
+
+    result = parse_llm_response(response)
+    # After truncation the --- END FILE --- marker is cut off, so the strict
+    # parser won't find the closing marker for big.py. The function should
+    # still return a non-empty result via one of the other strategies or
+    # raise ExecutionError — neither should crash or hang.
+    # We only assert that it completes without unhandled exception.
+    assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Finding 88: Path traversal in parse_llm_response
+# ---------------------------------------------------------------------------
+
+
+def test_parse_llm_response_path_traversal_raises() -> None:
+    """parse_llm_response must raise SandboxViolationError for traversal paths."""
+    from codelicious.errors import SandboxViolationError
+
+    traversal_response = "--- FILE: ../../etc/passwd ---\nroot:x:0:0:root\n--- END FILE ---\n"
+
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)
+
+
+def test_parse_llm_response_double_dot_in_middle_raises() -> None:
+    """parse_llm_response raises SandboxViolationError for mid-path .. traversal."""
+    from codelicious.errors import SandboxViolationError
+
+    traversal_response = "--- FILE: src/../../../etc/shadow ---\ncontent\n--- END FILE ---\n"
+
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)

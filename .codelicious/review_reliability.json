@@ -1,0 +1,162 @@
+[
+  {
+    "severity": "P1",
+    "file": "src/codelicious/llm_client.py",
+    "line": 189,
+    "title": "Network errors (DNS, connection, SSL) not retried — single transient failure kills the build",
+    "description": "The retry logic in chat_completion only retries urllib.error.HTTPError with status codes 429/502/503/504 (line 173). All other exceptions — including urllib.error.URLError (DNS failure, connection refused), socket.timeout, ssl.SSLError, and ConnectionResetError — are caught by the generic 'except Exception' on line 189 and immediately raised as RuntimeError with no retry. In a long-running build with dozens of LLM calls, a single transient DNS blip or TCP reset crashes the entire build.",
+    "fix": "Add urllib.error.URLError, socket.timeout, ssl.SSLError, ConnectionResetError, and OSError to the retry logic alongside HTTP 429/502/503/504. Apply the same exponential backoff."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 681,
+    "title": "Race condition on completed_count counter in parallel builds",
+    "description": "The completed_count nonlocal variable in _phase_build is incremented by _log_spec_progress (line 686) from multiple ThreadPoolExecutor worker threads without any synchronization. When max_workers > 1 (line 704), concurrent increments are a data race. While CPython's GIL provides incidental protection, this is not guaranteed by the Python specification and breaks under free-threaded Python (PEP 703) or alternative runtimes. The same pattern appears in _phase_review error handling (line 716).",
+    "fix": "Protect completed_count with a threading.Lock, or use an itertools.count() / threading-safe counter."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 83,
+    "title": "No message history truncation — unbounded memory growth over 50 iterations",
+    "description": "HuggingFaceEngine.run_build_cycle appends LLM responses (line 132) and tool results (lines 158-180) to the messages list on every iteration (up to 50) but never calls truncate_history(). The original BuildLoop in loop_controller.py calls truncate_history(self.messages, MAX_HISTORY_TOKENS) at the start of each iteration (line 168), but this was not carried forward into the refactored engine. Tool results from read_file can be large source files, so after many iterations the list can grow to hundreds of megabytes, causing OOM or API rejection.",
+    "fix": "Import and call truncate_history(messages, MAX_HISTORY_TOKENS) from loop_controller at the start of each iteration, matching the behavior of BuildLoop._execute_agentic_iteration."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/llm_client.py",
+    "line": 163,
+    "title": "Socket-level timeout does not cap total request duration",
+    "description": "urllib.request.urlopen(req, timeout=120) sets a per-socket-operation timeout, not a total request timeout. A server that sends data very slowly (e.g., 1 byte every 119 seconds) can keep the connection open indefinitely while never triggering the 120s socket timeout. This can cause a build to hang forever waiting for an LLM response.",
+    "fix": "Wrap the urlopen call in a threading.Timer that kills the request after a hard wall-clock deadline (e.g., 300s). Or switch to a library that supports total timeouts."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 91,
+    "title": "Socket-level timeout on embedding API does not cap total request time",
+    "description": "Same issue as llm_client.py: urlopen(req, timeout=30) sets a socket timeout only. A slow-drip response from the HuggingFace embedding endpoint can exceed the 30s intent. Additionally, _get_embeddings_batch is called per-file during ingestion, so a single hung request blocks the entire pipeline with no way to break out.",
+    "fix": "Implement a wall-clock deadline using threading.Timer or signal.alarm (POSIX)."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/build_logger.py",
+    "line": 217,
+    "title": "set_result writes _explicit_success without holding the lock",
+    "description": "set_result() on line 217 sets self._explicit_success = success without acquiring self._lock. The __exit__ method reads self._explicit_success on line 277, also without the lock. If set_result is called from a different thread than __exit__ (e.g., a signal handler or an orchestrator callback), this is a data race — the write could be partially visible or reordered.",
+    "fix": "Acquire self._lock in set_result() when writing, and in __exit__ when reading."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 704,
+    "title": "ThreadPoolExecutor shutdown blocks indefinitely on KeyboardInterrupt",
+    "description": "When _phase_build uses ThreadPoolExecutor (line 704), the 'with' statement's __exit__ calls shutdown(wait=True). If the user presses Ctrl+C during parallel builds, KeyboardInterrupt triggers the context manager exit, which waits for all running futures to complete. Since each future runs _build_spec_in_worktree (spawning a Claude agent for up to agent_timeout_s seconds), the shutdown can block for the full timeout duration. The same applies to _phase_review on line 805.",
+    "fix": "Catch KeyboardInterrupt inside the 'with' block, cancel pending futures, and call pool.shutdown(wait=False, cancel_futures=True) (Python 3.9+)."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 571,
+    "title": "Branch name collision when specs in different directories share the same filename",
+    "description": "GitManager.branch_for_spec(spec_path.name) derives branch names from only the filename stem. If two specs in different directories have the same name (e.g., docs/specs/spec-v3.md and other/spec-v3.md), they produce the same branch 'codelicious/spec-v3'. When run in parallel via _phase_build, the second _create_worktree call fails because the branch is already checked out in the first worktree.",
+    "fix": "Include a hash or sanitized relative path in the branch name to ensure uniqueness across directories."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git_orchestrator.py",
+    "line": 276,
+    "title": "commit_verified_changes silently swallows all exceptions",
+    "description": "The outer 'except Exception as e' on line 276 catches all exceptions from the git add/commit pipeline (including RuntimeError from failed commands and programming errors) and only logs them at ERROR level. The caller receives no indication that the commit failed. Changes can be silently lost: if 'git add .' fails, no commit happens, but the orchestrator proceeds to the next phase.",
+    "fix": "Re-raise the exception after logging, or return a boolean success indicator. Distinguish between 'nothing to commit' (harmless) and 'commit failed' (should propagate)."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/tools/audit_logger.py",
+    "line": 104,
+    "title": "Audit log file opened and closed on every write with no thread safety",
+    "description": "_write_to_file and _write_to_security_log open the log file with open(self.log_file, 'a'), write one line, and close on every call. When parallel reviewer agents (Phase 3) or parallel builder agents (Phase 1) log concurrently from ThreadPoolExecutor threads, these unsynchronized operations can produce interleaved entries. Each open() creates a separate fd so OS-level atomic append guarantees are per-fd, not cross-fd.",
+    "fix": "Keep the file handle open for the AuditLogger's lifetime and protect writes with a threading.Lock, or use Python's logging.FileHandler which handles both."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 418,
+    "title": "stderr_lines list accessed from multiple threads without synchronization",
+    "description": "stderr_lines is a plain list shared between the _drain_stderr background thread (appending on line 424) and the main thread (reading len and indexing on lines 476-478). The main thread's read of len(stderr_lines) followed by stderr_lines[-1] is not atomic — the list could grow between the two accesses, causing the logged 'last line' to not match the count. Under free-threaded Python (PEP 703), this is a genuine data race with potential for segfaults.",
+    "fix": "Use a threading.Lock to synchronize access, or copy the needed values atomically."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 207,
+    "title": "No size limit on individual tool results appended to message history",
+    "description": "In BuildLoop._execute_agentic_iteration, tool call results are appended to self.messages via json.dumps(tool_result) (line 213) without any per-message size limit. A single read_file call returning a 500KB source file adds that entire content. While truncate_history runs at the start of the next iteration, between iterations the message list can spike significantly. Multiple large tool results in one iteration could push memory to tens of megabytes before truncation.",
+    "fix": "Truncate individual tool result content (cap at 50KB) before appending. Consider running truncate_history after each tool call batch."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/cache_engine.py",
+    "line": 63,
+    "title": "flush_cache has no thread safety — concurrent calls can lose updates",
+    "description": "flush_cache writes to cache.json using tempfile+os.replace (atomic at filesystem level), but there is no lock protecting the caller's read→modify→write cycle. If two threads both call load_cache, modify the dict, and call flush_cache, one thread's changes silently overwrite the other's. The _mutation_lock only protects state.json via record_memory_mutation, not cache.json.",
+    "fix": "Add a separate _cache_lock or reuse _mutation_lock to protect the entire read→modify→flush_cache cycle."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 164,
+    "title": "BuildLoop._execute_agentic_iteration has no error handling for LLM call",
+    "description": "The call to self.llm.chat_completion on line 172 can raise RuntimeError for any HTTP failure, but _execute_agentic_iteration has no try/except. The run_continuous_cycle caller (line 244) also doesn't catch exceptions. A single LLM failure crashes the entire build loop with an unhandled exception. The newer HuggingFaceEngine has proper retry logic with consecutive error tracking, but the legacy BuildLoop does not.",
+    "fix": "Add try/except around the llm.chat_completion call, with exponential backoff and consecutive error tracking, matching the HuggingFaceEngine pattern."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/llm_client.py",
+    "line": 188,
+    "title": "Broad exception catch masks programming errors as 'LLM Connection Error'",
+    "description": "The 'except Exception as e' on line 189 catches all non-HTTPError exceptions (including AttributeError, KeyError, TypeError from bugs in request/response handling code) and wraps them as RuntimeError('LLM Connection Error: ...'). This makes debugging extremely difficult because the misleading error message hides the root cause.",
+    "fix": "Narrow the catch to known network errors: (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError, ConnectionError). Let programming errors propagate with their original traceback."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 155,
+    "title": "No size limit on LLM-provided tool call arguments before JSON parsing",
+    "description": "json.loads(tool_call['function']['arguments']) on line 155 parses LLM-provided JSON without any size check. A malformed response could contain extremely large argument payloads. The BuildLoop in loop_controller.py uses parse_json_response() which enforces MAX_RESPONSE_BYTES, but HuggingFaceEngine does not.",
+    "fix": "Check len(tool_call['function']['arguments']) against MAX_RESPONSE_BYTES before calling json.loads, or use parse_json_response()."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 600,
+    "title": "Unbounded time.sleep on rate limit backoff — no upper cap",
+    "description": "In the continuous mode loop (line 600-604), the backoff value is parsed from the rate limit error message string with float(). If the message contains an unexpectedly large number (malformed LLM output), the process could sleep for hours or days. The default fallback is 65s, but the parsed value has no upper bound.",
+    "fix": "Cap the backoff: backoff = min(backoff, 300) to ensure sleep never exceeds 5 minutes."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 248,
+    "title": "Stale worktrees accumulate on repeated failures or timeouts",
+    "description": "_remove_worktree catches TimeoutExpired and logs a warning (line 258) but the stale worktree directory remains. Over multiple build runs with timeouts, stale worktrees accumulate in .codelicious/worktrees/, consuming disk space. While _create_worktree attempts cleanup of stale worktrees by the same name (line 206-215), worktrees from renamed specs or interrupted runs persist indefinitely.",
+    "fix": "Run 'git worktree prune' at orchestrator startup. Or track worktrees in a manifest and clean up at start of each run."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 90,
+    "title": "No retry for transient embedding API failures — silently degrades search quality",
+    "description": "_get_embeddings_batch makes a single HTTP request to the embedding API with no retry. Transient failures (429, 503) cause it to return an empty list, which means all chunks processed during the outage get no embeddings and become invisible to semantic_search. The degradation is silent — no error propagates to the caller.",
+    "fix": "Add retry-with-backoff (2-3 attempts) for transient HTTP errors. Return empty list only after all retries exhausted."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/tools/command_runner.py",
+    "line": 106,
+    "title": "Popen process can leak if exception occurs between creation and communicate()",
+    "description": "subprocess.Popen is created on line 106, then communicate() is called on line 117. If an exception occurs between these lines (MemoryError, KeyboardInterrupt), the child process is leaked — it continues running in its own process group (start_new_session=True) with no parent tracking it.",
+    "fix": "Wrap the Popen creation and communicate in a try/finally that ensures proc.kill() and proc.wait() on any exception."
+  }
+]

@@ -1,5 +1,9 @@
 import json
 import os
+import socket
+import ssl
+import time
+import urllib.parse
 import urllib.request
 import urllib.error
 import logging
@@ -15,6 +19,41 @@ logger = logging.getLogger("codelicious.llm")
 _DEFAULT_PLANNER_MODEL = "DeepSeek-V3-0324"
 _DEFAULT_CODER_MODEL = "Qwen3-235B"
 _DEFAULT_ENDPOINT = "https://router.huggingface.co/sambanova/v1/chat/completions"
+
+
+def _validate_endpoint_url(url: str) -> None:
+    """Validate the LLM endpoint URL against SSRF risk (Finding 43).
+
+    Rules:
+    - Only HTTPS is accepted, except for localhost/127.0.0.1 which may use HTTP
+      for local development proxies.
+    - Any other scheme (http to a remote host, ftp, file, …) is rejected.
+
+    Raises:
+        ValueError: If the URL fails validation.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as exc:
+        raise ValueError(f"Unparseable LLM endpoint URL: {url!r}") from exc
+
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+
+    is_localhost = hostname in ("localhost", "127.0.0.1", "::1")
+
+    if scheme == "https":
+        # HTTPS is always acceptable
+        return
+
+    if scheme == "http" and is_localhost:
+        # Plain HTTP is allowed only for local development endpoints
+        return
+
+    raise ValueError(
+        f"Insecure or disallowed LLM endpoint URL: {url!r}. "
+        "Only HTTPS URLs are permitted (or HTTP to localhost for development)."
+    )
 
 
 class LLMClient:
@@ -46,6 +85,16 @@ class LLMClient:
         #   SambaNova: https://router.huggingface.co/sambanova/v1/chat/completions
         self.endpoint_url = endpoint_url or os.environ.get("LLM_ENDPOINT", _DEFAULT_ENDPOINT)
 
+        # Validate endpoint URL to prevent SSRF via user-supplied configuration (Finding 43)
+        _validate_endpoint_url(self.endpoint_url)
+
+        # Warn when a non-default endpoint is in use so operators are aware
+        if self.endpoint_url != _DEFAULT_ENDPOINT:
+            logger.warning(
+                "Non-default LLM endpoint configured: %s — ensure this is intentional.",
+                self.endpoint_url,
+            )
+
         if not self.api_key:
             raise RuntimeError(
                 "No HuggingFace API token found.\n\n"
@@ -59,14 +108,24 @@ class LLMClient:
         logger.info("LLM Planner: %s | Coder: %s", self.planner_model, self.coder_model)
         logger.info("LLM Endpoint: %s", self.endpoint_url)
 
+    # HTTP status codes that are transient and should be retried
+    _RETRYABLE_HTTP_CODES: frozenset[int] = frozenset({429, 502, 503, 504})
+    # Maximum number of retries for transient errors
+    _MAX_RETRIES: int = 3
+    # Exponential backoff base in seconds (1s, 2s, 4s)
+    _BACKOFF_BASE_S: float = 1.0
+
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
         tools: List[Dict] = None,
         role: str = "planner",
     ) -> Dict[str, Any]:
-        """
-        Executes a synchronous POST to the inference endpoint.
+        """Executes a synchronous POST to the inference endpoint.
+
+        Retries up to _MAX_RETRIES times with exponential backoff (1s, 2s, 4s)
+        for transient HTTP errors (429, 502, 503, 504). Permanent errors are
+        re-raised immediately without retrying.
 
         Args:
             messages: OpenAI-compatible message list.
@@ -94,27 +153,67 @@ class LLMClient:
 
         logger.debug("Calling %s (%s)...", model, role)
 
-        req = urllib.request.Request(
-            self.endpoint_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        last_error: Exception | None = None
+        for attempt in range(self._MAX_RETRIES + 1):
+            req = urllib.request.Request(
+                self.endpoint_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                    return result
+            except urllib.error.HTTPError as e:
+                error_body = e.read().decode("utf-8")
+                # Sanitize error body before logging - API providers may echo back
+                # credentials or other sensitive data in error responses (P1-7 fix)
+                sanitized_body = sanitize_message(error_body)
+                logger.debug("LLM API error body (status %s): %s", e.code, sanitized_body)
 
-        try:
-            with urllib.request.urlopen(req, timeout=120) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                return result
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8")
-            # Sanitize error body before logging - API providers may echo back
-            # credentials or other sensitive data in error responses (P1-7 fix)
-            sanitized_body = sanitize_message(error_body)
-            logger.debug("LLM API error body (status %s): %s", e.code, sanitized_body)
-            raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code))
-        except Exception as e:
-            logger.error("Failed to connect to LLM API: %s", e)
-            raise RuntimeError("LLM Connection Error: %s" % e)
+                if e.code in self._RETRYABLE_HTTP_CODES and attempt < self._MAX_RETRIES:
+                    backoff = self._BACKOFF_BASE_S * (2**attempt)
+                    logger.warning(
+                        "Transient HTTP %d from LLM API (%s); retrying in %.0fs (attempt %d/%d).",
+                        e.code,
+                        model,
+                        backoff,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                    )
+                    time.sleep(backoff)
+                    last_error = e
+                    continue
+
+                # Permanent error — raise immediately
+                raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code))
+            except (urllib.error.URLError, socket.timeout, ssl.SSLError, ConnectionResetError, OSError) as e:
+                if attempt < self._MAX_RETRIES:
+                    backoff = self._BACKOFF_BASE_S * (2**attempt)
+                    logger.warning(
+                        "Transient network error from LLM API (%s): %s; retrying in %.0fs (attempt %d/%d).",
+                        model,
+                        type(e).__name__,
+                        backoff,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                    )
+                    time.sleep(backoff)
+                    last_error = e
+                    continue
+
+                # Retries exhausted — raise as connection error
+                logger.error("Failed to connect to LLM API after %d retries: %s", self._MAX_RETRIES, e)
+                raise RuntimeError("LLM Connection Error: %s" % e)
+            except Exception as e:
+                logger.error("Failed to connect to LLM API: %s", e)
+                raise RuntimeError("LLM Connection Error: %s" % e)
+
+        # All retries exhausted
+        raise RuntimeError(
+            "LLM API Error (%s): exceeded %d retries for transient error: %s" % (model, self._MAX_RETRIES, last_error)
+        )
 
     def parse_tool_calls(self, completion_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extracts tool execution requests from the OpenAI-compatible response."""

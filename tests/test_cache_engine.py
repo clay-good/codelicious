@@ -50,12 +50,17 @@ class TestFlushCache:
         assert "New" in loaded["ast_exports"]
 
     def test_flush_cache_atomic_on_failure(self, tmp_path: Path):
-        """When os.replace fails, original file should be unchanged."""
+        """When os.replace fails, original file should be unchanged (verified via raw read)."""
         manager = CacheManager(tmp_path)
+        cache_file = tmp_path / ".codelicious" / "cache.json"
+        codelicious_dir = tmp_path / ".codelicious"
 
         # Write initial valid cache
         original_cache = {"file_hashes": {"original.py": "orig123"}, "ast_exports": {}}
         manager.flush_cache(original_cache)
+
+        # Capture raw bytes of the original file BEFORE the failed flush
+        original_raw = cache_file.read_bytes()
 
         # Attempt to flush with mocked os.replace failure
         new_cache = {"file_hashes": {"new.py": "new456"}, "ast_exports": {}}
@@ -63,11 +68,21 @@ class TestFlushCache:
             with pytest.raises(OSError, match="Simulated disk error"):
                 manager.flush_cache(new_cache)
 
-        # Verify original file is unchanged
+        # Verify original file is unchanged via raw file read (not via load_cache)
+        # This confirms the atomic swap (os.replace) is the protection mechanism —
+        # the original file is never touched because os.replace was never called.
+        raw_after = cache_file.read_bytes()
+        assert raw_after == original_raw, "Original file bytes changed despite os.replace failure"
+
+        # Also verify through load_cache for completeness
         loaded = manager.load_cache()
         assert loaded == original_cache
         assert "original.py" in loaded["file_hashes"]
         assert "new.py" not in loaded["file_hashes"]
+
+        # Verify no temp files were left behind after the failed flush
+        temp_files = list(codelicious_dir.glob("cache_*.tmp"))
+        assert len(temp_files) == 0, f"Temp files not cleaned up after failure: {temp_files}"
 
     def test_flush_cache_cleans_temp_on_failure(self, tmp_path: Path):
         """Temp file should be cleaned up when flush fails."""
@@ -132,6 +147,33 @@ class TestRecordMemoryMutation:
 
         state = manager.load_state()
         assert state["memory_ledger"] == entries
+
+    def test_record_memory_mutation_caps_ledger_at_500(self, tmp_path: Path):
+        """memory_ledger must not grow beyond 500 entries (Finding 36)."""
+        manager = CacheManager(tmp_path)
+
+        # Pre-populate the ledger with 502 entries via state file
+        state_file = tmp_path / ".codelicious" / "state.json"
+        initial_state = {
+            "memory_ledger": [f"old-entry-{i}" for i in range(502)],
+            "completed_tasks": [],
+        }
+        state_file.write_text(json.dumps(initial_state), encoding="utf-8")
+
+        # Record one more mutation — should trim to last 500
+        manager.record_memory_mutation("newest-entry")
+
+        state = manager.load_state()
+        assert len(state["memory_ledger"]) == 500
+        # The very last entry must be the one we just appended
+        assert state["memory_ledger"][-1] == "newest-entry"
+        # The two oldest entries (old-entry-0 and old-entry-1) must be gone
+        assert "old-entry-0" not in state["memory_ledger"]
+        assert "old-entry-1" not in state["memory_ledger"]
+        # old-entry-2 is entry index 2; after appending "newest-entry" to 502
+        # items (total 503), the slice [-500:] keeps indices 3..502, so
+        # old-entry-3 is the first surviving entry.
+        assert state["memory_ledger"][0] == "old-entry-3"
 
     def test_record_memory_mutation_preserves_completed_tasks(self, tmp_path: Path):
         """Recording mutations should not affect completed_tasks."""

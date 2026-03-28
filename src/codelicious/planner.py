@@ -7,7 +7,6 @@ import logging
 import pathlib
 import re
 import urllib.parse
-import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -15,7 +14,7 @@ from codelicious.errors import (
     IntentRejectedError,
     InvalidPlanError,
     PlanningError,
-    PromptInjectionWarning,
+    PromptInjectionError,
 )
 from codelicious.parser import Section
 
@@ -189,15 +188,22 @@ class Task:
 
 
 def _check_injection(spec_text: str) -> None:
-    """Scan for prompt injection patterns and emit warnings."""
+    """Scan for prompt injection patterns and raise if detected.
+
+    This guard is BLOCKING — the build must not proceed when adversarial
+    patterns are found.  Raises PromptInjectionError with details about
+    which pattern matched and where.
+    """
     logger.debug("Scanning for injection patterns (%d patterns)", len(_INJECTION_PATTERNS))
     for pattern in _INJECTION_PATTERNS:
         match = pattern.search(spec_text)
         if match:
-            msg = f"Potential prompt injection detected: '{match.group()}'"
-            logger.warning(msg)
-            warnings.warn(msg, PromptInjectionWarning, stacklevel=3)
-            return
+            # Find approximate line number for the match
+            line_num = spec_text[: match.start()].count("\n") + 1
+            raise PromptInjectionError(
+                f"Prompt injection detected: '{match.group()}' at line {line_num}. "
+                f"Build rejected — spec contains adversarial content."
+            )
     logger.debug("No injection patterns detected")
 
 

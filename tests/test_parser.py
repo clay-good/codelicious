@@ -98,6 +98,28 @@ def test_oversized_file_raises_file_too_large(tmp_path: pathlib.Path) -> None:
         parse_spec(big)
 
 
+def test_file_exactly_at_max_size_does_not_raise(tmp_path: pathlib.Path) -> None:
+    """A file whose size is exactly MAX_FILE_SIZE bytes must not raise FileTooLargeError.
+
+    The parser check is ``file_size > MAX_FILE_SIZE`` (strictly greater-than),
+    so a file at the boundary is allowed.
+    """
+    from codelicious.parser import MAX_FILE_SIZE
+
+    boundary_file = tmp_path / "boundary.md"
+    # Build content of exactly MAX_FILE_SIZE bytes encoded as UTF-8.
+    # A heading prefix ensures the file is parseable.
+    header = b"# Title\n"
+    padding = b"x" * (MAX_FILE_SIZE - len(header))
+    boundary_file.write_bytes(header + padding)
+    assert boundary_file.stat().st_size == MAX_FILE_SIZE
+
+    # Must not raise — file is at the limit, not over it
+    sections = parse_spec(boundary_file)
+    assert isinstance(sections, list)
+    assert len(sections) >= 1
+
+
 def test_non_utf8_file_raises_file_encoding_error(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -262,26 +284,23 @@ def test_parse_spec_binary_file_raises(tmp_path: pathlib.Path) -> None:
 
 
 def test_parse_spec_null_bytes_in_content(tmp_path: pathlib.Path) -> None:
-    """parse_spec on a file with null bytes either succeeds or raises cleanly."""
-    spec = tmp_path / "spec.md"
-    # Null bytes are valid UTF-8 bytes individually but unusual in text
-    spec.write_bytes(b"# Title\n\x00\nBody\n")
-    try:
-        sections = parse_spec(spec)
-        # If it succeeds, sections must be a list
-        assert isinstance(sections, list)
-    except Exception as exc:
-        # Any exception raised must be a CodeliciousError subclass (no bare exceptions)
-        from codelicious.errors import CodeliciousError
+    """parse_spec raises ParseError when the file contains null bytes."""
+    from codelicious.errors import ParseError
 
-        assert isinstance(exc, CodeliciousError), f"Unexpected exception type: {type(exc)}"
+    spec = tmp_path / "spec.md"
+    # Null bytes are explicitly rejected by parser.py (lines 86-90)
+    spec.write_bytes(b"# Title\n\x00\nBody\n")
+    with pytest.raises(ParseError, match="null bytes"):
+        parse_spec(spec)
 
 
 def test_parse_spec_extremely_long_line(tmp_path: pathlib.Path) -> None:
-    """parse_spec on a file with a very long line does not crash."""
+    """parse_spec on a file with a very long line parses the section correctly."""
     spec = tmp_path / "spec.md"
     long_line = "x" * 100_000
     spec.write_text(f"# Title\n{long_line}\n", encoding="utf-8")
     sections = parse_spec(spec)
     assert isinstance(sections, list)
-    assert len(sections) >= 1
+    assert len(sections) == 1
+    assert sections[0].title == "Title"
+    assert long_line in sections[0].body

@@ -1,0 +1,106 @@
+[
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 83,
+    "title": "Unbounded messages list in HuggingFace agentic loop",
+    "description": "The messages list in run_build_cycle grows without limit across up to 50 iterations. Each iteration appends the LLM response plus tool call results (which include full file contents from read_file). Unlike BuildLoop (loop_controller.py:168) which calls truncate_history(), this engine never truncates. Over 50 iterations with large tool responses, the list can grow to hundreds of MB, causing OOM and sending increasingly large JSON payloads (json.dumps at line 158) to the LLM API on each retry.",
+    "fix": "Call truncate_history(messages, MAX_HISTORY_TOKENS) before each chat_completion call, matching the pattern in BuildLoop._execute_agentic_iteration (loop_controller.py:168)."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 215,
+    "title": "Full table scan with JSON deserialization on every semantic search",
+    "description": "semantic_search issues SELECT * with no WHERE clause, loading every row from SQLite. Each row's vector_json (~3KB of JSON for a 384-dim float vector) is deserialized via json.loads (line 221). For a repo with 500 files of ~5KB avg, that's ~5000 chunks, each requiring JSON parsing. This is ~15MB of JSON parsing per search query, all in interpreted Python.",
+    "fix": "Store vectors as BLOB using struct.pack('384f', *vec) instead of JSON strings. Binary deserialization via struct.unpack is 10-50x faster than json.loads. Also consider a two-phase search: first compute rough scores on a smaller representation, then re-rank the top candidates."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 120,
+    "title": "Pure Python cosine similarity on 384-dim vectors in search hot path",
+    "description": "_cosine_similarity and _cosine_similarity_with_norms iterate 384 elements per chunk in interpreted Python (zip + per-element multiply). For 5000 chunks this is ~1.9M Python-level float operations per search. Even with the norms optimization, the dot product at line 149 still uses math.fsum(a * b for a, b in zip(...)) which is ~100x slower than C-level vectorized math.",
+    "fix": "Use array.array('f') for storage and compute dot products using sum(a*b for a,b in zip(va, vb)) which is marginally faster, but ideally use numpy if available: np.dot(). As a zero-dependency improvement, consider using struct.pack/unpack with a C-extension-free dot product via memoryview."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/logger.py",
+    "line": 142,
+    "title": "'://' indicator substring triggers expensive regex path on most log messages",
+    "description": "_SECRET_INDICATOR_SUBSTRINGS includes '://' (line 142). Normal log messages frequently contain '://' (LLM endpoint URLs logged at INFO level in llm_client.py:107, rag_engine.py:29, etc.). When any indicator matches, all 30+ compiled regex patterns are applied sequentially (lines 183-189). The SanitizingFilter runs on EVERY log record including DEBUG level. This means most informational log lines pay the cost of 30+ regex substitutions.",
+    "fix": "Remove '://' from the pre-filter and instead add specific protocol prefixes like 'postgres://', 'mysql://', 'mongodb://' that actually indicate secrets. Alternatively, split _SECRET_INDICATOR_SUBSTRINGS into groups tied to specific regex subsets so only relevant regexes run when a specific indicator matches."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 501,
+    "title": "output_lines list grows without bound during long agent runs",
+    "description": "All stdout lines from the Claude agent subprocess are accumulated in output_lines (line 501) for the entire agent run, which can last up to 2 hours (agent_timeout_s defaults to 7200 at config.py:177). A verbose agent producing 100 lines/sec would accumulate 720K lines (~100MB+). The full list is then joined into a single string at line 287 (''.join(stdout_lines)) creating another copy.",
+    "fix": "Stream stdout to the build session's output_file directly and only keep the last N lines (e.g., 1000) in memory for error detection. Alternatively, write to a temp file and only read back what's needed for session_id extraction and error checking."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context_manager.py",
+    "line": 40,
+    "title": "Character-by-character iteration in estimate_tokens called from hot paths",
+    "description": "estimate_tokens scans every character via a generator expression: sum(1 for ch in text if not ch.isalnum() and not ch.isspace()). This is called from: BudgetGuard.record() (per LLM call), truncate_history() (per message, multiple times), build_task_prompt() (per prompt section), and build_fix_prompt(). For large prompts (100K chars), each call iterates the full string in interpreted Python.",
+    "fix": "Use a fixed chars-per-token ratio (e.g., 3.7) since the precision difference between the code/prose heuristic is negligible for budget tracking. If the heuristic is needed, use len(re.sub(r'[a-zA-Z0-9\\s]', '', text)) which leverages the C regex engine and is 3-5x faster."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/cache_engine.py",
+    "line": 133,
+    "title": "Unbounded memory_ledger growth with full re-serialization on each mutation",
+    "description": "record_memory_mutation reads the entire state.json, deserializes, appends one entry to memory_ledger, re-serializes the whole thing, and writes back. The ledger never gets pruned. Over many builds, state.json grows monotonically. After 1000 mutations, each new mutation reads and writes ~1000 entries. The cost is O(n) per mutation where n is total historical mutations, making the cumulative cost O(n^2).",
+    "fix": "Use append-only writes (open in 'a' mode and write one JSON line per mutation, JSONL format) instead of read-modify-write. Periodically compact/rotate the ledger. Alternatively, cap the ledger to the last N entries."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/cli.py",
+    "line": 59,
+    "title": "_print_result re-walks entire repo tree and re-reads all spec files after build",
+    "description": "_print_result calls _walk_for_specs(repo_path) at line 59 which runs `git ls-files -z` (subprocess) and walks the full directory tree. Then it reads every spec file (line 63-66) to check completion status. This duplicates work already done during startup (cli.py:242) and during the build cycle. For a large repo, this adds seconds of unnecessary I/O after every build.",
+    "fix": "Accept the pre-computed all_specs list as a parameter. Or cache the walk result at module level. The spec list doesn't change between the start and end of a build (only their contents change)."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/verifier.py",
+    "line": 496,
+    "title": "Duplicate directory tree walks in check_syntax and check_security",
+    "description": "Both check_syntax (line 496) and check_security (line 685) independently walk the entire project directory tree with os.walk(), filtering for .py files. In verify() (line 943-949) they are called sequentially, meaning two full directory traversals that produce the same file list. For repos with thousands of files across deep directory trees, this is wasteful.",
+    "fix": "Factor out the .py file collection into a shared helper that walks once. Pass the collected file list to both check_syntax and check_security. The verify() function already calls both sequentially, so this is straightforward."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 74,
+    "title": "Token estimation computed 2-3x per message in truncate_history",
+    "description": "truncate_history calls _estimate_message_tokens for every message at line 74 (to get total_tokens), then again for each message in the reverse loop at line 91, and again at line 101 for the final count. Each message's token estimate is computed 2-3 times. For a history of 200 messages with tool call arguments, this triples the character-scanning work.",
+    "fix": "Pre-compute token estimates into a list: `msg_tokens = [_estimate_message_tokens(m) for m in messages]`. Index into this list for all subsequent lookups. This eliminates redundant string scanning."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/prompts.py",
+    "line": 238,
+    "title": "Multiple overlapping glob patterns cause redundant directory traversals",
+    "description": "scan_remaining_tasks iterates over 5 glob patterns: '*.md', 'docs/**/*.md', 'docs/specs/**/*.md', 'specs/**/*.md', '.codelicious/STATE.md'. The '**/*.md' patterns trigger recursive directory walks. Python's pathlib.glob for '**/*.md' under 'docs/' and 'docs/specs/**/*.md' both traverse the docs/specs/ subtree. The `seen` set prevents duplicate file processing but doesn't prevent duplicate directory traversal.",
+    "fix": "Walk the directory once with os.walk or Path.walk and match filenames against patterns in a single pass, similar to how _walk_for_specs works in claude_engine.py."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 197,
+    "title": "Full stderr/stdout joined and lowercased twice in _check_agent_errors",
+    "description": "_check_agent_errors joins all stderr_lines into stderr_text (line 197), creates stderr_lower (line 198), joins all stdout_lines into stdout_text (line 199), then concatenates stderr_lower + stdout_text.lower() into combined_lower (line 200). For a verbose agent with large stderr/stdout, this creates 4 large string copies. The function is also called from _parse_agent_output which is called at the end of every agent run.",
+    "fix": "Search for rate-limit phrases incrementally: iterate lines and check each line individually rather than joining everything first. Or join once and reuse the lowered string."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/verifier.py",
+    "line": 707,
+    "title": "Character-by-character string parser in security scanner for every source line",
+    "description": "_strip_string_literals (line 631) does character-by-character parsing of each line to remove string literal contents. check_security calls this for every non-comment, non-multiline-string line of every .py file. The inner while loop (line 640-678) processes one character at a time with multiple conditionals. For a 10K-line codebase, this is millions of Python-level character comparisons.",
+    "fix": "Use a regex to strip string literals: re.sub(r'\"\"\".*?\"\"\"|\\'\\'\\'.* ?\\'\\'\\'|\"(?:\\\\.|[^\"])*\"|\\' (?:\\\\.|[^\\'])*\\'', '\"\"', line). The C regex engine handles the character-by-character work ~10x faster than interpreted Python."
+  }
+]

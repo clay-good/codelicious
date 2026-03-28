@@ -13,6 +13,7 @@ import pathlib
 import time
 
 from codelicious.engines.base import BuildEngine, BuildResult
+from codelicious.loop_controller import MAX_HISTORY_TOKENS, truncate_history
 
 logger = logging.getLogger("codelicious.engines.huggingface")
 
@@ -62,15 +63,23 @@ class HuggingFaceEngine(BuildEngine):
         llm = LLMClient()
 
         # System prompt
+        spec_focus = ""
+        if spec_filter:
+            spec_focus = (
+                f"\n\nIMPORTANT: Focus ONLY on the spec file: {spec_filter}\n"
+                "Build ALL unchecked tasks from that spec. Do not look at other spec files.\n"
+            )
+
         system_prompt = (
             "You are Codelicious, an autonomous Outcome-as-a-Service CLI. You operate under a 90% probabilistic model, meaning "
             "YOU are responsible for finding work, planning, and executing. Python is just your sandboxed constraint overlay.\n\n"
+            "CRITICAL: Do NOT run git or gh commands. The orchestrator handles all git operations.\n\n"
             "PHASE 1 (SPEC FINDER): Use the `list_directory` tool to deeply scan the repository root. Find any `*.md` files "
             "(especially in `docs/` or `specs/`) that define your objective.\n\n"
             "PHASE 2 (EXECUTION): Use `read_file` to read the found specifications. Then, aggressively use `write_file` to modify "
             "the codebase to achieve the spec requirements. Run verification tools (like `pytest` or `eslint`) using `run_command`.\n\n"
             "When every single requirement is met and tests pass, reply with the explicit text: 'ALL_SPECS_COMPLETE' so the core "
-            "can trigger the GitHub PR transition."
+            "can trigger the GitHub PR transition." + spec_focus
         )
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -78,25 +87,47 @@ class HuggingFaceEngine(BuildEngine):
         logger.info("LLM Endpoint: %s", llm.endpoint_url)
         logger.info("Initializing Continuous Agentic Loop.")
 
+        # Generate tool schema once before the loop — it is static for the
+        # lifetime of this build cycle and does not need to be regenerated
+        # on every iteration.
+        tool_schema = tool_registry.generate_schema()
+
         completed = False
+        consecutive_errors = 0
+        max_retries = 5
 
         for iteration in range(max_iterations):
             logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
             logger.info("Pinging HuggingFace LLM inference endpoint...")
 
+            # Truncate history before each call to prevent OOM and API rejection
+            messages = truncate_history(messages, MAX_HISTORY_TOKENS)
+
             try:
                 response = llm.chat_completion(
                     messages,
-                    tools=tool_registry.generate_schema(),
+                    tools=tool_schema,
                     role="coder",
                 )
+                consecutive_errors = 0  # Reset on success
             except Exception as e:
-                logger.error("LLM call failed: %s", e)
-                # Simple retry: add error context and continue
+                consecutive_errors += 1
+                if consecutive_errors > max_retries:
+                    logger.error("Aborting after %d consecutive LLM failures.", max_retries)
+                    break
+                backoff = min(2**consecutive_errors, 60)
+                logger.warning(
+                    "LLM call failed (%d/%d): %s — retrying in %ds",
+                    consecutive_errors,
+                    max_retries,
+                    e,
+                    backoff,
+                )
+                time.sleep(backoff)
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"The previous LLM call failed with: {e}. Please continue your work.",
+                        "content": "The previous API call failed. Please continue your work.",
                     }
                 )
                 continue
@@ -155,8 +186,9 @@ class HuggingFaceEngine(BuildEngine):
         if completed:
             try:
                 git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
+                git_manager.push_to_origin()
             except Exception as e:
-                logger.error("Git commit failed: %s", e)
+                logger.error("Git commit/push failed: %s", e)
 
         elapsed = time.monotonic() - start
         return BuildResult(

@@ -1,5 +1,6 @@
 import logging
 import json
+import time
 from codelicious.tools.registry import ToolRegistry
 from codelicious.llm_client import LLMClient
 from codelicious.context_manager import estimate_tokens
@@ -12,6 +13,15 @@ MAX_HISTORY_TOKENS = 80_000
 
 # Maximum size for LLM JSON responses (5 MB) to prevent DoS via memory exhaustion
 MAX_RESPONSE_BYTES = 5_000_000
+
+# Maximum size for individual tool result content appended to message history (50 KB)
+MAX_TOOL_RESULT_BYTES = 50_000
+
+# Exponential backoff settings for LLM call retries (Finding 55)
+_LLM_MAX_RETRIES: int = 3
+_LLM_BACKOFF_BASE_S: float = 2.0  # seconds; doubles each retry (2, 4, 8)
+# Consecutive LLM errors that trigger a hard abort of the agentic iteration
+_LLM_MAX_CONSECUTIVE_ERRORS: int = _LLM_MAX_RETRIES
 
 
 def parse_json_response(
@@ -85,12 +95,16 @@ def truncate_history(messages: list[dict], max_tokens: int = MAX_HISTORY_TOKENS)
     non_system = messages[1:]
     kept_messages = []
 
-    # Work backwards from most recent to preserve recent context
+    # Work backwards from most recent to preserve recent context.
+    # Use append() + reverse() instead of insert(0, ...) to avoid O(n^2) shifting.
     for msg in reversed(non_system):
         msg_tokens = _estimate_message_tokens(msg)
         if budget_remaining >= msg_tokens:
-            kept_messages.insert(0, msg)
+            kept_messages.append(msg)
             budget_remaining -= msg_tokens
+
+    # Restore chronological order (we iterated in reverse)
+    kept_messages.reverse()
 
     messages_removed = len(non_system) - len(kept_messages)
     tokens_before = total_tokens
@@ -135,6 +149,10 @@ class BuildLoop:
             cache_manager=self.cache_manager,
         )
 
+        # Generate tool schema once — it is static for the lifetime of this
+        # BuildLoop instance and does not need to be regenerated per iteration.
+        self._tool_schema = self.tool_registry.generate_schema()
+
         # Initialize HuggingFace HTTP Driver
         self.llm = LLMClient()
 
@@ -160,8 +178,31 @@ class BuildLoop:
         self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
 
         logger.info("Pinging HuggingFace LLM inference endpoint...")
-        # Use coder model — it handles both planning and code writing via tool calls
-        response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema(), role="coder")
+        # Use coder model — it handles both planning and code writing via tool calls.
+        # Wrap in exponential-backoff retry to handle transient API errors (Finding 55).
+        response = None
+        last_llm_error: Exception | None = None
+        for _attempt in range(_LLM_MAX_RETRIES):
+            try:
+                response = self.llm.chat_completion(self.messages, tools=self._tool_schema, role="coder")
+                last_llm_error = None
+                break
+            except Exception as llm_exc:
+                last_llm_error = llm_exc
+                wait_s = _LLM_BACKOFF_BASE_S * (2**_attempt)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    _attempt + 1,
+                    _LLM_MAX_RETRIES,
+                    llm_exc,
+                    wait_s,
+                )
+                time.sleep(wait_s)
+
+        if last_llm_error is not None:
+            # All retries exhausted — surface the error so the caller can decide
+            logger.error("LLM call failed after %d attempts: %s", _LLM_MAX_RETRIES, last_llm_error)
+            raise last_llm_error
 
         message_obj = response["choices"][0]["message"]
         self.messages.append(message_obj)
@@ -195,13 +236,23 @@ class BuildLoop:
                 # Execute mapped function in python
                 tool_result = self.tool_registry.dispatch(name, args)
 
-                # Append the raw return payload to context
+                # Append the raw return payload to context, capping at MAX_TOOL_RESULT_BYTES
+                # to prevent a single large tool response from exhausting context (Finding 53).
+                tool_content = json.dumps(tool_result)
+                if len(tool_content) > MAX_TOOL_RESULT_BYTES:
+                    tool_content = tool_content[:MAX_TOOL_RESULT_BYTES] + "...<truncated>"
+                    logger.warning(
+                        "Tool result for '%s' truncated to %d bytes (original: %d bytes)",
+                        name,
+                        MAX_TOOL_RESULT_BYTES,
+                        len(json.dumps(tool_result)),
+                    )
                 self.messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
+                        "tool_call_id": tool_call.get("id", ""),
                         "name": name,
-                        "content": json.dumps(tool_result),
+                        "content": tool_content,
                     }
                 )
             except Exception as e:
@@ -209,8 +260,8 @@ class BuildLoop:
                 self.messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": tool_call["function"]["name"],
+                        "tool_call_id": tool_call.get("id", ""),
+                        "name": tool_call.get("function", {}).get("name", "unknown"),
                         "content": json.dumps(
                             {
                                 "success": False,
@@ -232,11 +283,30 @@ class BuildLoop:
         # In a generic loop, we run until completion or a max failure threshold limit
         max_iterations = 50
         completed = False
+        consecutive_errors = 0
 
         for iteration in range(max_iterations):
             logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
 
-            completed = self._execute_agentic_iteration()
+            try:
+                completed = self._execute_agentic_iteration()
+                consecutive_errors = 0  # Reset on success
+            except Exception as iter_exc:
+                consecutive_errors += 1
+                logger.error(
+                    "Agentic iteration %d failed: %s (consecutive errors: %d/%d)",
+                    iteration + 1,
+                    iter_exc,
+                    consecutive_errors,
+                    _LLM_MAX_CONSECUTIVE_ERRORS,
+                )
+                if consecutive_errors >= _LLM_MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Aborting loop after %d consecutive LLM errors.",
+                        consecutive_errors,
+                    )
+                    return False
+                continue
 
             if completed:
                 # Ensure final changes are committed deterministically

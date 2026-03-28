@@ -11,7 +11,6 @@ backoff and retry with a new session context.
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import pathlib
 import re
@@ -31,21 +30,31 @@ _DEFAULT_PARALLEL_WORKERS = 1  # Default: serial execution
 
 # Filename patterns that indicate a spec/task file (case-insensitive match).
 _SPEC_FILENAME_RE = re.compile(
-    r"(^spec[\w\-]*\.md$"    # spec.md, spec-v1.md, spec_foo.md
-    r"|\.spec\.md$"          # foo.spec.md
-    r"|^roadmap\.md$"        # ROADMAP.md
-    r"|^todo\.md$)",         # TODO.md
+    r"(^spec[\w\-]*\.md$"  # spec.md, spec-v1.md, spec_foo.md
+    r"|\.spec\.md$"  # foo.spec.md
+    r"|^roadmap\.md$"  # ROADMAP.md
+    r"|^todo\.md$)",  # TODO.md
     re.IGNORECASE,
 )
 
 # Directories that should never be searched (even if not in .gitignore).
 _SKIP_DIRS: set[str] = {
-    ".git", ".hg", ".svn",
-    "node_modules", "__pycache__",
-    ".venv", "venv", "env",
-    ".tox", ".mypy_cache", ".pytest_cache",
-    "dist", "build", "target",
-    ".next", ".nuxt",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".nuxt",
     ".codelicious",
     ".claude",
 }
@@ -66,11 +75,7 @@ def _git_tracked_files(repo_path: pathlib.Path) -> set[pathlib.Path] | None:
         )
         if result.returncode != 0:
             return None
-        return {
-            (repo_path / f).resolve()
-            for f in result.stdout.split("\0")
-            if f
-        }
+        return {(repo_path / f).resolve() for f in result.stdout.split("\0") if f}
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
 
@@ -95,7 +100,10 @@ def _walk_for_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
     return sorted(matches)
 
 
-def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
+def _discover_incomplete_specs(
+    repo_path: pathlib.Path,
+    all_specs: list[pathlib.Path] | None = None,
+) -> list[pathlib.Path]:
     """Find spec files anywhere in the repo that still need work.
 
     Walks the entire repository (respecting .gitignore via git ls-files)
@@ -105,8 +113,18 @@ def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
     A spec is *incomplete* when it has unchecked ``- [ ]`` checkboxes or
     no checkboxes at all. A spec is *complete* only when every checkbox
     is checked.
+
+    Parameters
+    ----------
+    repo_path:
+        Root of the repository to scan.
+    all_specs:
+        Optional pre-computed list of spec paths from ``_walk_for_specs``.
+        When provided the repository walk is skipped entirely, avoiding a
+        duplicate filesystem traversal on startup.
     """
-    all_specs = _walk_for_specs(repo_path)
+    if all_specs is None:
+        all_specs = _walk_for_specs(repo_path)
     incomplete: list[pathlib.Path] = []
     complete: list[pathlib.Path] = []
 
@@ -128,10 +146,15 @@ def _discover_incomplete_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
     # Log discovery summary
     total = len(all_specs)
     if total:
-        rel = lambda p: p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
+        def rel(p):
+            return p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
         logger.info(
             "Spec discovery: found %d spec file(s) — %d incomplete, %d complete.",
-            total, len(incomplete), len(complete),
+            total,
+            len(incomplete),
+            len(complete),
         )
         for s in incomplete:
             logger.info("  [incomplete] %s", rel(s))
@@ -206,7 +229,7 @@ class ClaudeCodeEngine(BuildEngine):
         build_prompt = render(
             AGENT_BUILD_SPEC,
             project_name=project_name,
-            spec_filter=spec_filter or "",
+            spec_filter=spec_filter or "No specific spec assigned — find the first incomplete spec file in the repo.",
         )
 
         try:
@@ -312,21 +335,20 @@ class ClaudeCodeEngine(BuildEngine):
         else:
             logger.info("Phase 4/6: REFLECT — skipped (--no-reflect)")
 
-        # ── Phase 5: GIT COMMIT ────────────────────────────────────
-        logger.info("Phase 5/6: GIT — committing changes")
+        # ── Phase 5: GIT COMMIT + PUSH ─────────────────────────────
+        logger.info("Phase 5/6: GIT — committing and pushing changes")
         try:
             git_manager.commit_verified_changes(commit_message=f"codelicious: build {project_name} from specs")
-            logger.info("Changes committed successfully.")
+            git_manager.push_to_origin()
+            logger.info("Changes committed and pushed.")
         except Exception as e:
-            logger.warning("Git commit failed: %s", e)
+            logger.warning("Git commit/push failed: %s", e)
 
         # ── Phase 6: PR (ensure exactly one exists) ────────────────
         if push_pr:
             logger.info("Phase 6/6: PR — ensuring draft PR exists for branch")
             try:
-                git_manager.ensure_draft_pr_exists(
-                    spec_summary=f"codelicious: build {project_name}"
-                )
+                git_manager.ensure_draft_pr_exists(spec_summary=f"codelicious: build {project_name}")
                 logger.info("PR ensured.")
             except Exception as e:
                 logger.warning("PR creation failed: %s", e)
@@ -358,64 +380,43 @@ class ClaudeCodeEngine(BuildEngine):
         push_pr: bool,
         max_workers: int,
     ) -> list[BuildResult]:
-        """Discover incomplete specs and run them in parallel.
+        """Discover incomplete specs and run them serially with spec focus.
 
-        Each spec gets its own agent session (no session sharing).
-        Returns a list of BuildResults, one per spec processed.
-        If only one or zero specs are found, falls back to a single
-        serial cycle with no spec filter.
+        Each spec gets its own agent session (no session sharing) and is
+        told to only build tasks from its assigned spec file.
+
+        Note: This method does NOT use worktree isolation (unlike the
+        orchestrator). Running agents in parallel against the same repo
+        causes data races. Specs are run serially to avoid conflicts.
+        Use orchestrate mode for true parallel builds with isolation.
         """
         specs = _discover_incomplete_specs(repo_path)
 
-        if len(specs) <= 1:
-            # Not enough specs for parallelization — run a normal cycle
-            spec_filter = str(specs[0]) if specs else None
+        if not specs:
+            return [BuildResult(success=True, message="No incomplete specs found.")]
+
+        if max_workers > 1 and len(specs) > 1:
+            logger.warning(
+                "PARALLEL mode without orchestrator runs specs serially to avoid "
+                "data races. Use orchestrate=True for parallel builds with worktree isolation."
+            )
+
+        results: list[BuildResult] = []
+        for spec in specs:
+            logger.info("Building spec: %s", spec.name)
             result = self._run_single_cycle(
                 repo_path=repo_path,
                 git_manager=git_manager,
                 project_name=project_name,
                 config=config,
                 session_id="",
-                spec_filter=spec_filter,
+                spec_filter=str(spec),
                 verify_passes=verify_passes,
                 reflect=reflect,
                 push_pr=push_pr,
             )
-            return [result]
-
-        workers = min(max_workers, len(specs))
-        logger.info(
-            "PARALLEL: running %d specs across %d workers: %s",
-            len(specs),
-            workers,
-            [s.name for s in specs],
-        )
-
-        def _worker(spec_path: pathlib.Path) -> BuildResult:
-            return self._run_single_cycle(
-                repo_path=repo_path,
-                git_manager=git_manager,
-                project_name=project_name,
-                config=config,
-                session_id="",
-                spec_filter=str(spec_path),
-                verify_passes=verify_passes,
-                reflect=False,  # Skip reflect in parallel — do one at end
-                push_pr=push_pr,
-            )
-
-        results: list[BuildResult] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_worker, spec): spec for spec in specs}
-            for future in concurrent.futures.as_completed(futures):
-                spec = futures[future]
-                try:
-                    result = future.result()
-                    logger.info("Parallel spec %s: success=%s", spec.name, result.success)
-                    results.append(result)
-                except Exception as e:
-                    logger.error("Parallel spec %s failed with exception: %s", spec.name, e)
-                    results.append(BuildResult(success=False, message=str(e)))
+            logger.info("Spec %s: success=%s", spec.name, result.success)
+            results.append(result)
 
         return results
 
@@ -462,6 +463,8 @@ class ClaudeCodeEngine(BuildEngine):
         build_workers = kwargs.get("build_workers", 3)
         review_workers = kwargs.get("review_workers", 4)
 
+        allow_dangerous = kwargs.get("allow_dangerous", False)
+
         # Build a simple config object for agent_runner
         class _AgentConfig:
             pass
@@ -472,6 +475,7 @@ class ClaudeCodeEngine(BuildEngine):
         config.max_turns = max_turns
         config.agent_timeout_s = agent_timeout_s
         config.dry_run = dry_run
+        config.allow_dangerous = allow_dangerous
 
         project_name = repo_path.name
         session_id = resume_session_id
@@ -503,6 +507,7 @@ class ClaudeCodeEngine(BuildEngine):
                 reviewers=reviewer_roles,
                 max_build_workers=build_workers,
                 max_review_workers=review_workers,
+                max_build_cycles=max_cycles,
                 push_pr=push_pr,
             )
 

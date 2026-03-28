@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
+
+import pytest
 
 from codelicious.scaffolder import (
     _MANAGED_BLOCK,
@@ -85,7 +88,7 @@ def test_dry_run_does_not_modify_existing(tmp_path: pathlib.Path) -> None:
 
 def test_managed_block_contains_git_policy() -> None:
     assert "Git & PR Policy" in _MANAGED_BLOCK
-    assert "You own all git operations" in _MANAGED_BLOCK
+    assert "orchestrator owns all git operations" in _MANAGED_BLOCK
     assert "NEVER push to main" in _MANAGED_BLOCK
 
 
@@ -101,13 +104,65 @@ def test_managed_block_mentions_build_complete() -> None:
     assert "BUILD_COMPLETE" in _MANAGED_BLOCK
 
 
+def test_managed_block_has_sentinels() -> None:
+    """Managed block must begin with the start sentinel and contain the end sentinel."""
+    assert _MANAGED_BLOCK.startswith(_SENTINEL_START)
+    assert _SENTINEL_END in _MANAGED_BLOCK
+
+
+def test_managed_block_contains_codelicious_heading() -> None:
+    """Managed block must include the codelicious section heading."""
+    assert "# codelicious" in _MANAGED_BLOCK
+
+
+def test_managed_block_instructs_read_before_modify() -> None:
+    """Managed block must instruct the agent to read existing files first."""
+    assert "Read existing files before modifying them" in _MANAGED_BLOCK
+
+
+def test_managed_block_references_agents() -> None:
+    """Managed block must reference the builder, tester, and reviewer agents."""
+    assert "builder" in _MANAGED_BLOCK
+    assert "tester" in _MANAGED_BLOCK
+    assert "reviewer" in _MANAGED_BLOCK
+
+
+def test_managed_block_contains_no_force_push_rule() -> None:
+    """Managed block must prohibit force-push and amending published commits."""
+    assert "NEVER force-push" in _MANAGED_BLOCK
+
+
+def test_managed_block_contains_no_git_commands_rule() -> None:
+    """Managed block must instruct the agent not to run git or gh commands."""
+    assert "MUST NOT run git" in _MANAGED_BLOCK
+
+
 # -- path traversal protection -----------------------------------------------
 
 
 def test_rejects_path_traversal(tmp_path: pathlib.Path) -> None:
     """scaffold should reject a project_root that would place CLAUDE.md outside it."""
-    # This tests the resolve() check. A symlink pointing outside is the
-    # realistic scenario but the validation itself just checks startswith.
-    # We verify the check exists by calling with a valid path (passes).
+    # Create a symlink named CLAUDE.md inside tmp_path that points to a file
+    # outside tmp_path (e.g. /tmp itself or a sibling directory).
+    # scaffold() resolves the final path and checks it stays inside project_root.
+    outside_dir = tmp_path.parent / f"outside_{tmp_path.name}"
+    outside_dir.mkdir(exist_ok=True)
+    outside_target = outside_dir / "CLAUDE.md"
+    outside_target.write_text("# Outside\n", encoding="utf-8")
+
+    # Place a symlink at tmp_path/CLAUDE.md → outside_dir/CLAUDE.md
+    symlink_path = tmp_path / "CLAUDE.md"
+    try:
+        os.symlink(str(outside_target), str(symlink_path))
+    except NotImplementedError:
+        pytest.skip("Symlinks not supported on this platform")
+
+    # scaffold() must detect that the resolved path escapes project_root
+    with pytest.raises(ValueError, match="escapes project root"):
+        scaffold(tmp_path)
+
+
+def test_valid_path_does_not_raise(tmp_path: pathlib.Path) -> None:
+    """scaffold with a normal, non-symlinked path should succeed."""
     scaffold(tmp_path)  # should not raise
     assert (tmp_path / "CLAUDE.md").is_file()

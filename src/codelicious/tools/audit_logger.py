@@ -2,6 +2,7 @@ import json
 import logging
 import datetime
 import sys
+import threading
 from enum import Enum
 from pathlib import Path
 
@@ -89,6 +90,9 @@ class AuditLogger:
         # Track current iteration for security event logging
         self._current_iteration: int = 0
         self._current_tool: str = ""
+        # Lock that serialises all file writes so concurrent threads cannot
+        # interleave entries (Finding 51).
+        self._write_lock = threading.Lock()
 
     def set_iteration(self, iteration: int) -> None:
         """Set the current iteration number for security event logging."""
@@ -101,8 +105,9 @@ class AuditLogger:
     def _write_to_file(self, level: str, tag: str, message: str):
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] [{level}] [{tag}] {message}\n")
+            with self._write_lock:
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] [{level}] [{tag}] {message}\n")
         except Exception as e:
             # Fallback if logging fails, at least print to stdout
             print(f"FATAL: Audit log write failed: {e}")
@@ -118,17 +123,13 @@ class AuditLogger:
         full_message = f"{message} ({context})"
         log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
 
-        # Write to audit.log
+        # Write to both logs under a single lock to keep entries atomic
         try:
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(log_line)
-        except Exception as e:
-            print(f"FATAL: Audit log write failed: {e}")
-
-        # Write to security.log (security events only)
-        try:
-            with open(self.security_log_file, "a", encoding="utf-8") as f:
-                f.write(log_line)
+            with self._write_lock:
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(log_line)
+                with open(self.security_log_file, "a", encoding="utf-8") as f:
+                    f.write(log_line)
         except Exception as e:
             print(f"FATAL: Security log write failed: {e}")
 

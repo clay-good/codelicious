@@ -286,7 +286,7 @@ def test_security_check_logs_unreadable_file(
     bad_file = tmp_path / "unreadable.py"
     bad_file.write_text("x = 1\n", encoding="utf-8")
 
-    with patch("pathlib.Path.read_text", side_effect=OSError("permission denied")):
+    with patch("codelicious.verifier.pathlib.Path.read_text", side_effect=OSError("permission denied")):
         with caplog.at_level(logging.WARNING, logger="codelicious.verifier"):
             result = check_security(tmp_path)
 
@@ -330,13 +330,12 @@ def test_truncate_long_output(tmp_path: pathlib.Path) -> None:
 # -- Phase 8: Verifier Completeness ----------------------------------------
 
 
-def test_check_syntax_missing_python_handled(tmp_path: pathlib.Path) -> None:
-    """check_syntax returns passed=False with a clear message when python3 is absent."""
-    (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
-    with patch("subprocess.run", side_effect=FileNotFoundError("python3 not found")):
-        result = check_syntax(tmp_path)
+def test_check_syntax_detects_syntax_error_via_compile(tmp_path: pathlib.Path) -> None:
+    """check_syntax detects syntax errors using in-process compile()."""
+    (tmp_path / "bad.py").write_text("def f(\n", encoding="utf-8")
+    result = check_syntax(tmp_path)
     assert result.passed is False
-    assert "Python interpreter not found" in result.message
+    assert "bad.py" in result.message or "bad.py" in (result.details or "")
 
 
 def test_check_security_skips_indented_comments(tmp_path: pathlib.Path) -> None:
@@ -528,13 +527,14 @@ def test_check_playwright_timeout(tmp_path: pathlib.Path) -> None:
     assert "timed out" in result.message.lower()
 
 
-def test_check_syntax_timeout(tmp_path: pathlib.Path) -> None:
-    """When python compilation times out for a file, it is reported as an error."""
-    (tmp_path / "slow.py").write_text("x = 1\n", encoding="utf-8")
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("python3", 10)):
-        result = check_syntax(tmp_path)
+def test_check_syntax_aggregate_timeout(tmp_path: pathlib.Path) -> None:
+    """When aggregate timeout is exceeded, check_syntax reports the timeout error."""
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("y = 2\n", encoding="utf-8")
+    # Use an aggregate timeout of 0 so it triggers immediately after the first file
+    result = check_syntax(tmp_path, aggregate_timeout=0)
     assert result.passed is False
-    assert "timed out" in result.details.lower()
+    assert "timeout" in result.message.lower() or "timeout" in (result.details or "").lower()
 
 
 def test_verify_with_tools_and_languages(tmp_path: pathlib.Path) -> None:
@@ -741,3 +741,94 @@ def test_legitimate_base64_not_flagged_without_context(tmp_path: pathlib.Path) -
     # This should pass because it's not preceded by password/secret/token
     # and doesn't match other secret patterns
     assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Finding 83: check_syntax — OSError triggers subprocess fallback
+# ---------------------------------------------------------------------------
+
+
+def test_check_syntax_oserror_triggers_subprocess_fallback(tmp_path: pathlib.Path) -> None:
+    """When Path.read_text raises OSError, check_syntax falls back to subprocess py_compile.
+
+    The fallback subprocess call is mocked to succeed (returncode=0), so the
+    overall check should still pass.
+    """
+    import subprocess as _sp
+    import sys
+
+    (tmp_path / "maybe_unreadable.py").write_text("x = 1\n", encoding="utf-8")
+
+    mock_result = _sp.CompletedProcess(
+        args=[sys.executable, "-m", "py_compile", str(tmp_path / "maybe_unreadable.py")],
+        returncode=0,
+        stdout="",
+        stderr="",
+    )
+
+    with patch("codelicious.verifier.pathlib.Path.read_text", side_effect=OSError("permission denied")):
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            result = check_syntax(tmp_path)
+
+    # subprocess.run should have been called as the fallback
+    assert mock_run.call_count >= 1
+    # Because the mock subprocess returns success, the overall check passes
+    assert result.passed is True
+
+
+def test_check_syntax_oserror_subprocess_reports_error(tmp_path: pathlib.Path) -> None:
+    """When Path.read_text raises OSError and subprocess reports a syntax error,
+    check_syntax returns passed=False.
+    """
+    import subprocess as _sp
+    import sys
+
+    (tmp_path / "broken.py").write_text("def f(\n", encoding="utf-8")
+
+    mock_result = _sp.CompletedProcess(
+        args=[sys.executable, "-m", "py_compile", str(tmp_path / "broken.py")],
+        returncode=1,
+        stdout="",
+        stderr="broken.py:1: SyntaxError: unexpected EOF",
+    )
+
+    with patch("codelicious.verifier.pathlib.Path.read_text", side_effect=OSError("permission denied")):
+        with patch("subprocess.run", return_value=mock_result):
+            result = check_syntax(tmp_path)
+
+    assert result.passed is False
+    assert "broken.py" in (result.details or "")
+
+
+# ---------------------------------------------------------------------------
+# Finding 84: _strip_string_literals()
+# ---------------------------------------------------------------------------
+
+
+def test_strip_string_literals_raw_string_eval() -> None:
+    """r\"eval(test)\" — after stripping, eval( must not appear in output."""
+    from codelicious.verifier import _strip_string_literals
+
+    line = 'x = r"eval(test)"'
+    stripped = _strip_string_literals(line)
+    assert "eval(" not in stripped
+
+
+def test_strip_string_literals_triple_quoted_shell_true() -> None:
+    """Triple-quoted string containing shell=True is stripped."""
+    from codelicious.verifier import _strip_string_literals
+
+    line = '"""subprocess.run(cmd, shell=True)"""'
+    stripped = _strip_string_literals(line)
+    assert "shell=True" not in stripped
+
+
+def test_strip_string_literals_preserves_code_outside_strings() -> None:
+    """Code outside string literals is preserved intact."""
+    from codelicious.verifier import _strip_string_literals
+
+    line = "x = 1 + 2  # no string here"
+    stripped = _strip_string_literals(line)
+    # Non-string tokens and comment remain
+    assert "x" in stripped
+    assert "1" in stripped

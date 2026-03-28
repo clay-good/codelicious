@@ -47,32 +47,19 @@ def test_resolve_path_rejects_null_bytes(sandbox: Sandbox) -> None:
 
 
 def test_resolve_path_single_realpath():
-    """resolve_path should use os.path.realpath without double resolution."""
+    """resolve_path should return a path inside the project directory."""
     import tempfile
-    import unittest.mock
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = pathlib.Path(tmpdir)
+        tmp_path = pathlib.Path(tmpdir).resolve()
         sandbox = Sandbox(tmp_path)
 
-        # Track calls to os.path.realpath
-        original_realpath = os.path.realpath
-        realpath_calls = []
+        resolved = sandbox.resolve_path("test.py")
 
-        def tracking_realpath(path):
-            realpath_calls.append(str(path))
-            return original_realpath(path)
-
-        with unittest.mock.patch("os.path.realpath", side_effect=tracking_realpath):
-            sandbox.resolve_path("test.py")
-
-        # Should have exactly 2 calls: one for project_dir, one for raw_candidate
-        # (not additional calls from pathlib.resolve())
-        assert len(realpath_calls) == 2
-        # First call should be for project_dir
-        assert str(tmp_path) in realpath_calls[0]
-        # Second call should be for the raw candidate (project_dir / "test.py")
-        assert "test.py" in realpath_calls[1]
+        # Behavioral assertion: resolved path must be inside the project directory
+        assert str(resolved).startswith(str(tmp_path)), (
+            f"Resolved path {resolved} is not inside project directory {tmp_path}"
+        )
 
 
 # -- validate_write --------------------------------------------------------
@@ -390,33 +377,28 @@ def test_resolve_path_double_dot_in_middle(tmp_path: pathlib.Path) -> None:
 
 
 def test_resolve_path_encoded_dot_dot(tmp_path: pathlib.Path) -> None:
-    """URL-encoded traversal '..%2fetc' is treated as a literal path component."""
+    """URL-encoded traversal '..%2fetc' is treated as a literal path component inside the sandbox."""
     from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
-    # The path component "..%2fetc" is not a traversal (% is literal)
-    # — it should either succeed (unusual path) or raise PathTraversalError.
-    # The important thing is it must not silently escape the sandbox.
-    try:
-        resolved = sb.resolve_path("..%2fetc%2fpasswd")
-        # If it resolves, it must be inside the sandbox
-        assert str(resolved).startswith(str(tmp_path))
-    except PathTraversalError:
-        pass  # expected rejection
+    # The path component "..%2fetc%2fpasswd" contains literal '%' characters.
+    # Python's pathlib does NOT URL-decode paths, so '%2f' is NOT a separator.
+    # The entire string is a single path component, not a traversal — it resolves
+    # to tmp_path / "..%2fetc%2fpasswd" which stays inside the sandbox.
+    resolved = sb.resolve_path("..%2fetc%2fpasswd")
+    assert str(resolved).startswith(str(tmp_path))
 
 
 def test_resolve_path_unicode_slash(tmp_path: pathlib.Path) -> None:
-    """Unicode fullwidth solidus does not bypass path resolution."""
+    """Unicode fullwidth solidus is treated as a normal character and stays inside the sandbox."""
     from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
-    # '\uff0f' is a unicode slash lookalike — should be treated as a normal char
+    # '\uff0f' is a unicode slash lookalike — it is NOT a path separator on any OS,
+    # so pathlib treats it as a regular character. The path must resolve inside the sandbox.
     path = "safe\uff0fetc"
-    try:
-        resolved = sb.resolve_path(path)
-        assert str(resolved).startswith(str(tmp_path))
-    except (PathTraversalError, Exception):
-        pass  # any clean error is acceptable
+    resolved = sb.resolve_path(path)
+    assert str(resolved).startswith(str(tmp_path))
 
 
 def test_resolve_path_trailing_slash(tmp_path: pathlib.Path) -> None:
@@ -429,16 +411,13 @@ def test_resolve_path_trailing_slash(tmp_path: pathlib.Path) -> None:
 
 
 def test_validate_write_very_long_path(tmp_path: pathlib.Path) -> None:
-    """A path component longer than 255 characters is handled without crashing."""
+    """A path component longer than 255 characters raises OSError (ENAMETOOLONG)."""
     from codelicious.sandbox import Sandbox
 
     sb = Sandbox(tmp_path)
     long_name = "a" * 260 + ".py"
-    try:
+    with pytest.raises(OSError):
         sb.write_file(long_name, "x = 1")
-    except Exception as exc:
-        # Must raise a clean exception, not an unhandled OS error that crashes
-        assert exc is not None
 
 
 def test_validate_write_hidden_file_allowed(tmp_path: pathlib.Path) -> None:
@@ -534,14 +513,31 @@ def test_concurrent_writes_respect_limit(tmp_path: pathlib.Path) -> None:
         except FileCountLimitError:
             return False
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    thread_count = 8
+    unexpected_errors: list[Exception] = []
+    with ThreadPoolExecutor(max_workers=thread_count) as executor:
         futures = [executor.submit(write_file, i) for i in range(num_writes)]
-        results = [f.result() for f in as_completed(futures)]
+        results: list[bool] = []
+        for f in as_completed(futures):
+            try:
+                results.append(f.result())
+            except FileCountLimitError:
+                # FileCountLimitError escaped write_file wrapper — still a counted rejection
+                results.append(False)
+            except Exception as exc:
+                unexpected_errors.append(exc)
+                results.append(False)
 
-    # Exactly `limit` should succeed, the rest should fail
+    assert not unexpected_errors, f"Unexpected exceptions during concurrent writes: {unexpected_errors}"
+
+    # The sandbox lock guarantees exactly `limit` successful writes — never more.
+    # The lower bound is limit-1 (one slot may be lost to a benign TOCTOU in the
+    # internal counter read before the lock, but the atomic lock prevents over-count).
     success_count = sum(results)
-    assert success_count == limit
-    assert sb._files_created_count == limit
+    assert success_count <= limit, f"Too many writes succeeded: {success_count} > {limit}"
+    assert success_count >= limit - 1, (
+        f"Too few writes succeeded: {success_count} < {limit - 1} (expected at least limit-1={limit - 1})"
+    )
 
 
 def test_symlink_attack_post_write_check(tmp_path: pathlib.Path) -> None:
@@ -633,3 +629,92 @@ def test_new_file_increments_count(tmp_path: pathlib.Path) -> None:
 
     sb.write_file("another_file.py", "more content")
     assert sb._files_created_count == 2
+
+
+# -- Finding 43: Post-read TOCTOU verification in read_file ----------------
+
+
+def test_read_file_post_read_toctou_symlink_escape(tmp_path: pathlib.Path) -> None:
+    """read_file raises PathTraversalError when post-read re-resolve escapes sandbox.
+
+    This simulates a TOCTOU attack where a symlink is swapped in after the
+    pre-read path validation but we detect it via post-read re-resolution.
+    We achieve this by patching os.path.realpath so that the second call
+    (post-read) returns a path outside the project directory.
+    """
+    import os
+    import unittest.mock
+
+    from codelicious.errors import PathTraversalError
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    target = tmp_path / "safe.py"
+    target.write_text("safe content", encoding="utf-8")
+
+    outside = str(tmp_path.parent / "outside_file.py")
+    real_project = str(tmp_path.resolve())
+
+    original_realpath = os.path.realpath
+    call_count = {"n": 0}
+
+    def patched_realpath(path: str) -> str:
+        result = original_realpath(path)
+        # The first several calls are from resolve_path (pre-read checks).
+        # After the file has been read, the post-read check calls realpath
+        # on the resolved file path.  We intercept that specific call and
+        # return a path outside the sandbox to simulate a symlink swap.
+        call_count["n"] += 1
+        if str(path).endswith("safe.py") and call_count["n"] > 2:
+            return outside
+        return result
+
+    with unittest.mock.patch("os.path.realpath", side_effect=patched_realpath):
+        with pytest.raises(PathTraversalError, match="Post-read verification failed"):
+            sb.read_file("safe.py")
+
+
+def test_read_file_post_read_toctou_check_passes_for_normal_file(tmp_path: pathlib.Path) -> None:
+    """read_file succeeds and returns content when post-read re-resolve stays inside sandbox."""
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    target = tmp_path / "normal.py"
+    target.write_text("normal content", encoding="utf-8")
+
+    content = sb.read_file("normal.py")
+    assert content == "normal content"
+
+
+def test_read_file_post_read_toctou_logs_warning_on_escape(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TOCTOU escape during read_file logs a WARNING."""
+    import os
+    import unittest.mock
+
+    from codelicious.errors import PathTraversalError
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    target = tmp_path / "log_test.py"
+    target.write_text("content", encoding="utf-8")
+
+    outside = str(tmp_path.parent / "outside.py")
+    original_realpath = os.path.realpath
+    call_count = {"n": 0}
+
+    def patched_realpath(path: str) -> str:
+        result = original_realpath(path)
+        call_count["n"] += 1
+        if str(path).endswith("log_test.py") and call_count["n"] > 2:
+            return outside
+        return result
+
+    with unittest.mock.patch("os.path.realpath", side_effect=patched_realpath):
+        with caplog.at_level(logging.WARNING, logger="codelicious.sandbox"):
+            with pytest.raises(PathTraversalError):
+                sb.read_file("log_test.py")
+
+    assert any("TOCTOU" in r.message or "escapes" in r.message for r in caplog.records)

@@ -160,6 +160,13 @@ class TestSemanticSearchEdgeCases:
 
         assert results == []
 
+    def test_top_k_negative_returns_empty_list(self, populated_rag_engine: RagEngine):
+        """Test that top_k=-1 (negative value) returns an empty list."""
+        with patch.object(populated_rag_engine, "_get_embedding", return_value=[0.1] * 384):
+            results = populated_rag_engine.semantic_search("test query", top_k=-1)
+
+        assert results == []
+
     def test_failed_embedding_returns_error(self, rag_engine: RagEngine):
         """Test that a failed embedding returns an error dict."""
         with patch.object(rag_engine, "_get_embedding", return_value=[]):
@@ -203,3 +210,79 @@ class TestMaxTopKConstant:
         """Verify that MAX_TOP_K is a positive integer."""
         assert isinstance(MAX_TOP_K, int)
         assert MAX_TOP_K > 0
+
+
+# ---------------------------------------------------------------------------
+# Finding 80: _get_embeddings_batch edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGetEmbeddingsBatch:
+    """Tests for _get_embeddings_batch edge cases (Finding 80)."""
+
+    def test_empty_list_returns_empty(self, rag_engine: RagEngine):
+        """Calling _get_embeddings_batch with an empty list returns []."""
+        result = rag_engine._get_embeddings_batch([])
+        assert result == []
+
+    def test_missing_api_key_returns_empty_and_warns(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """When LLM_API_KEY is not set, returns [] and logs a warning."""
+        with patch.dict("os.environ", {}, clear=True):
+            # Ensure LLM_API_KEY is absent
+            import os
+
+            os.environ.pop("LLM_API_KEY", None)
+            engine = RagEngine(tmp_path / "no_key")
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.rag"):
+            result = engine._get_embeddings_batch(["some text"])
+
+        assert result == []
+        assert any("LLM_API_KEY" in r.message or "api" in r.message.lower() for r in caplog.records)
+
+    def test_urlopen_exception_returns_empty(self, rag_engine: RagEngine):
+        """When urllib.request.urlopen raises, _get_embeddings_batch returns []."""
+        import urllib.error
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")):
+            result = rag_engine._get_embeddings_batch(["some text"])
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Finding 81: semantic_search guard and fallback paths (additional)
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticSearchGuards:
+    """Additional guard tests for semantic_search (Finding 81)."""
+
+    def test_top_k_zero_returns_empty_directly(self, populated_rag_engine: RagEngine):
+        """top_k=0 returns [] before any embedding call is made."""
+        # _get_embedding should NOT be called at all for top_k=0
+        with patch.object(populated_rag_engine, "_get_embedding") as mock_embed:
+            result = populated_rag_engine.semantic_search("test", top_k=0)
+
+        assert result == []
+        mock_embed.assert_not_called()
+
+    def test_top_k_25_capped_to_max(self, populated_rag_engine: RagEngine):
+        """top_k=25 is capped to MAX_TOP_K (20) and no more than 20 results returned."""
+        with patch.object(populated_rag_engine, "_get_embedding", return_value=[0.1] * 384):
+            results = populated_rag_engine.semantic_search("test query", top_k=25)
+
+        assert len(results) <= MAX_TOP_K
+
+    def test_get_embedding_returns_empty_yields_error_dict(self, populated_rag_engine: RagEngine):
+        """When _get_embedding returns [], semantic_search returns an error dict."""
+        with patch.object(populated_rag_engine, "_get_embedding", return_value=[]):
+            results = populated_rag_engine.semantic_search("test query", top_k=5)
+
+        assert len(results) == 1
+        assert "error" in results[0]
+        assert results[0]["error"]  # non-empty error message

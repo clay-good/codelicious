@@ -4,7 +4,12 @@ These tests verify that the sanitize_message function correctly redacts
 sensitive data including SSH keys, webhook URLs, and various secret formats.
 """
 
-from codelicious.logger import sanitize_message
+import logging
+from unittest.mock import patch
+
+import pytest
+
+from codelicious.logger import SanitizingFilter, sanitize_message
 
 
 class TestSSHKeyRedaction:
@@ -93,6 +98,7 @@ class TestWebhookURLRedaction:
         result = sanitize_message(message)
 
         assert "abc123def456ghi789jkl012mno345" not in result
+        assert "***REDACTED***" in result
 
 
 class TestAPIKeyRedaction:
@@ -292,3 +298,235 @@ class TestNonSensitivePreservation:
         result = sanitize_message(message)
 
         assert "abc123" in result
+
+
+# ---------------------------------------------------------------------------
+# Finding 16: parametrized coverage for each token family
+# ---------------------------------------------------------------------------
+
+# Each entry is (label, secret_value).  The test asserts that sanitize_message
+# returns a string containing '***REDACTED***' and NOT containing the original.
+_TOKEN_FAMILY_CASES = [
+    # Anthropic key
+    ("sk-ant", "sk-ant-api03-" + "A" * 20),
+    # OpenAI / generic sk-xxx key
+    ("sk-openai", "sk-" + "B" * 25),
+    # Hugging Face token
+    ("hf_xxx", "hf_" + "C" * 20),
+    # GitHub PAT
+    ("ghp_xxx", "ghp_" + "D" * 20),
+    # AWS Access Key ID
+    ("AKIA", "AKIA" + "E" * 16),
+    # JWT (three base64url segments)
+    (
+        "jwt",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    ),
+    # Postgres connection string with password
+    ("postgres_dsn", "postgres://alice:s3cr3tpassword@db.example.com/mydb"),
+    # Bearer token
+    ("bearer", "Bearer " + "F" * 25),
+    # Stripe sk_live_ key
+    ("sk_live", "sk_live_" + "G" * 24),
+]
+
+
+@pytest.mark.parametrize("label,secret", _TOKEN_FAMILY_CASES, ids=[c[0] for c in _TOKEN_FAMILY_CASES])
+def test_token_family_is_redacted(label: str, secret: str) -> None:
+    """Each token family must be redacted and the original value must not appear."""
+    message = f"config value: {secret} end"
+    result = sanitize_message(message)
+    assert "***REDACTED***" in result, f"[{label}] Expected REDACTED marker not found in: {result!r}"
+    assert secret not in result, f"[{label}] Original secret still present in: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Finding 17: SanitizingFilter.filter — record.args tuple and dict branches
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizingFilterArgs:
+    """Tests for the args path (tuple and dict forms) in SanitizingFilter.filter."""
+
+    def _make_record(self, msg: str, args: object) -> logging.LogRecord:
+        """Create a minimal LogRecord with the given msg and args."""
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg=msg,
+            args=None,
+            exc_info=None,
+        )
+        # Set args after construction to avoid LogRecord.__init__
+        # validation issues with dict args
+        record.args = args
+        return record
+
+    def test_tuple_args_secret_is_redacted(self) -> None:
+        """Secrets in tuple args are redacted in-place."""
+        secret = "sk-ant-api03-" + "X" * 20
+        record = self._make_record("key=%s", (secret,))
+        f = SanitizingFilter()
+        result = f.filter(record)
+
+        assert result is True
+        assert isinstance(record.args, tuple)
+        assert record.args[0] == "***REDACTED***"
+
+    def test_tuple_args_non_secret_is_preserved(self) -> None:
+        """Non-secret tuple args are left unchanged."""
+        record = self._make_record("count=%s", ("42",))
+        f = SanitizingFilter()
+        f.filter(record)
+
+        assert record.args == ("42",)
+
+    def test_dict_args_secret_value_is_redacted(self) -> None:
+        """Secrets in dict args values are redacted in-place."""
+        secret = "ghp_" + "Y" * 20
+        record = self._make_record("%(key)s", {"key": secret})
+        f = SanitizingFilter()
+        f.filter(record)
+
+        assert isinstance(record.args, dict)
+        assert record.args["key"] == "***REDACTED***"
+
+    def test_dict_args_non_secret_value_is_preserved(self) -> None:
+        """Non-secret dict args values are left unchanged."""
+        record = self._make_record("%(key)s", {"key": "hello"})
+        f = SanitizingFilter()
+        f.filter(record)
+
+        assert record.args["key"] == "hello"
+
+    def test_none_args_is_handled(self) -> None:
+        """None args (no interpolation) is handled without error."""
+        record = self._make_record("plain message", None)
+        f = SanitizingFilter()
+        result = f.filter(record)
+
+        assert result is True
+        assert record.args is None
+
+    def test_msg_secret_is_redacted_regardless_of_args(self) -> None:
+        """Secret baked into msg itself (no args) is still redacted."""
+        secret = "hf_" + "Z" * 20
+        record = self._make_record(f"token={secret}", None)
+        f = SanitizingFilter()
+        f.filter(record)
+
+        assert "***REDACTED***" in record.msg
+        assert secret not in record.msg
+
+
+# ---------------------------------------------------------------------------
+# Finding 85: setup_logging()
+# ---------------------------------------------------------------------------
+
+
+class TestSetupLogging:
+    """Tests for setup_logging() (Finding 85)."""
+
+    def test_verbose_true_sets_debug_handler(self, tmp_path) -> None:
+        """setup_logging with verbose=True adds a DEBUG-level console handler."""
+        from codelicious.logger import setup_logging
+
+        result_logger = setup_logging(tmp_path, verbose=True)
+
+        # At least one handler should have DEBUG level
+        debug_handlers = [h for h in result_logger.handlers if h.level == logging.DEBUG]
+        assert debug_handlers, "Expected at least one DEBUG-level handler when verbose=True"
+
+    def test_verbose_false_sets_info_handler(self, tmp_path) -> None:
+        """setup_logging with verbose=False adds an INFO-level console handler."""
+        from codelicious.logger import setup_logging
+
+        result_logger = setup_logging(tmp_path, verbose=False)
+
+        # The console handler (StreamHandler to stderr) should be INFO level
+        import sys
+
+        stream_handlers = [
+            h
+            for h in result_logger.handlers
+            if isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) is sys.stderr
+        ]
+        assert stream_handlers, "Expected a StreamHandler writing to stderr"
+        assert stream_handlers[0].level == logging.INFO
+
+    def test_read_only_directory_does_not_raise(self, tmp_path) -> None:
+        """setup_logging does not raise when the log directory cannot be created."""
+        from codelicious.logger import setup_logging
+
+        # Patch mkdir to raise OSError to simulate a read-only filesystem
+        with patch("pathlib.Path.mkdir", side_effect=OSError("read-only filesystem")):
+            # Should not raise — falls back to console-only logging
+            result_logger = setup_logging(tmp_path / "readonly_project", verbose=False)
+
+        assert result_logger is not None
+
+    def test_returns_codelicious_logger(self, tmp_path) -> None:
+        """setup_logging always returns the 'codelicious' logger."""
+        from codelicious.logger import setup_logging
+
+        result_logger = setup_logging(tmp_path)
+
+        assert result_logger.name == "codelicious"
+
+
+# ---------------------------------------------------------------------------
+# Finding 86: create_log_callback()
+# ---------------------------------------------------------------------------
+
+
+class TestCreateLogCallback:
+    """Tests for create_log_callback() (Finding 86)."""
+
+    def test_callback_redacts_api_key_in_event_data(self, caplog) -> None:
+        """Callback must not log the raw API key when event_data contains one."""
+        from codelicious.logger import create_log_callback
+
+        # Use a test logger that we can inspect
+        test_logger = logging.getLogger("test_create_log_callback")
+        test_logger.setLevel(logging.DEBUG)
+
+        callback = create_log_callback(test_logger)
+
+        # Construct event data containing a fake API key
+        fake_key = "sk-ant-api03-" + "X" * 20
+        event_data = {"api_key": fake_key, "model": "claude-opus-4"}
+
+        with caplog.at_level(logging.INFO, logger="test_create_log_callback"):
+            callback("llm_call", event_data)
+
+        # The raw key must not appear in any logged message
+        logged_text = " ".join(r.getMessage() for r in caplog.records)
+        assert fake_key not in logged_text, f"Raw API key found in log output: {logged_text!r}"
+
+    def test_callback_logs_event_name(self, caplog) -> None:
+        """Callback logs the event name at INFO level."""
+        from codelicious.logger import create_log_callback
+
+        test_logger = logging.getLogger("test_callback_event_name")
+        test_logger.setLevel(logging.DEBUG)
+        callback = create_log_callback(test_logger)
+
+        with caplog.at_level(logging.INFO, logger="test_callback_event_name"):
+            callback("my_event", {"key": "value"})
+
+        assert any("my_event" in r.getMessage() for r in caplog.records)
+
+    def test_callback_handles_empty_event_data(self, caplog) -> None:
+        """Callback does not raise when event_data is empty."""
+        from codelicious.logger import create_log_callback
+
+        test_logger = logging.getLogger("test_callback_empty")
+        test_logger.setLevel(logging.DEBUG)
+        callback = create_log_callback(test_logger)
+
+        with caplog.at_level(logging.INFO, logger="test_callback_empty"):
+            callback("empty_event", {})  # should not raise
+
+        assert any("empty_event" in r.getMessage() for r in caplog.records)

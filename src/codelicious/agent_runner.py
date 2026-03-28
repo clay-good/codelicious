@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import pathlib
 import queue
 import shutil
@@ -130,8 +131,28 @@ def _build_agent_command(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--dangerously-skip-permissions",
     ]
+
+    # Only include --dangerously-skip-permissions when the user has explicitly
+    # opted in via the --allow-dangerous CLI flag or the
+    # CODELICIOUS_ALLOW_DANGEROUS environment variable.  Without an explicit
+    # opt-in, the agent relies on the scoped .claude/settings.json allow-list
+    # for its permissions, which is the safe default.
+    #
+    # The env var must be set to the exact value 'I-UNDERSTAND-THE-RISKS' (not
+    # '1', 'true', 'yes', or any other truthy string) to prevent a compromised
+    # or attacker-controlled .env file from silently enabling this flag.
+    _env_dangerous = os.environ.get("CODELICIOUS_ALLOW_DANGEROUS", "")
+    _env_activated = _env_dangerous == "I-UNDERSTAND-THE-RISKS"
+    allow_dangerous = getattr(config, "allow_dangerous", False) or _env_activated
+    if allow_dangerous:
+        if _env_activated:
+            logger.warning(
+                "SECURITY WARNING: --dangerously-skip-permissions enabled via "
+                "CODELICIOUS_ALLOW_DANGEROUS env var. All filesystem permission "
+                "checks are bypassed for this agent run."
+            )
+        cmd.append("--dangerously-skip-permissions")
 
     model = getattr(config, "model", "")
     if model:
@@ -387,7 +408,19 @@ def run_agent(
         max_turns,
         int(timeout_s),
     )
-    logger.debug("Full command: %s", " ".join(cmd))
+    # Log command structure without the -p prompt content to avoid leaking prompt text at DEBUG level
+    _safe_cmd: list[str] = []
+    _skip_next = False
+    for _tok in cmd:
+        if _skip_next:
+            _safe_cmd.append("<prompt>")
+            _skip_next = False
+        elif _tok == "-p":
+            _safe_cmd.append(_tok)
+            _skip_next = True
+        else:
+            _safe_cmd.append(_tok)
+    logger.debug("Full command: %s", " ".join(_safe_cmd))
 
     # Launch subprocess
     proc = subprocess.Popen(
@@ -405,15 +438,21 @@ def run_agent(
     # Use queues for non-blocking stream reading with proper timeout
     stdout_queue: queue.Queue[str | None] = queue.Queue()
     stderr_lines: list[str] = []
+    # Lock protecting all accesses to stderr_lines from the drainer thread
+    # and the main loop / _parse_agent_output (Finding 52).
+    _stderr_lock = threading.Lock()
 
     def _drain_stderr() -> None:
         assert proc.stderr is not None
         try:
             for line in proc.stderr:
-                stderr_lines.append(line)
+                with _stderr_lock:
+                    stderr_lines.append(line)
         except (OSError, ValueError):
             pass  # Pipe closed or subprocess terminated
-        logger.debug("stderr drainer: collected %d lines", len(stderr_lines))
+        with _stderr_lock:
+            count = len(stderr_lines)
+        logger.debug("stderr drainer: collected %d lines", count)
 
     def _drain_stdout() -> None:
         assert proc.stdout is not None
@@ -462,15 +501,17 @@ def run_agent(
 
             # Periodic stderr summary
             if (time.monotonic() - _last_stderr_check) >= _STDERR_SUMMARY_INTERVAL_S:
-                new_lines = len(stderr_lines) - _last_stderr_count
+                with _stderr_lock:
+                    _current_count = len(stderr_lines)
+                    _last_line_snap = stderr_lines[-1].strip()[:200] if stderr_lines else ""
+                new_lines = _current_count - _last_stderr_count
                 if new_lines > 0:
-                    last_line = stderr_lines[-1].strip()[:200]
                     logger.info(
                         "Agent stderr summary: %d new lines. Last: %s",
                         new_lines,
-                        last_line,
+                        _last_line_snap,
                     )
-                _last_stderr_count = len(stderr_lines)
+                _last_stderr_count = _current_count
                 _last_stderr_check = time.monotonic()
 
             # Wait for line with short timeout to allow periodic timeout checks

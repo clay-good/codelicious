@@ -1,0 +1,690 @@
+[
+  {
+    "severity": "P1",
+    "file": "src/codelicious/planner.py",
+    "line": 465,
+    "title": "create_plan() has zero test coverage",
+    "description": "The primary entry point for the planning system is entirely untested: intent classification, injection detection, 3-attempt JSON retry loop, all validations, plan file writing, IntentRejectedError (line 478), and PlanningError exhaustion (line 531).",
+    "fix": "Add integration tests with mocked llm_call covering: intent rejection, injection detection, first-attempt success writes plan file, 3 consecutive JSON failures raise PlanningError, InvalidPlanError propagates without retry."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/planner.py",
+    "line": 543,
+    "title": "replan() has zero test coverage",
+    "description": "The recovery path invoked after task failures is entirely untested: 3-attempt retry loop, replan ID conflict detection, final PlanningError exhaustion.",
+    "fix": "Mock llm_call to return valid JSON on first try; assert returned tasks have replan_ prefix IDs. Mock 3 consecutive failures; assert PlanningError. Test with a completed ID conflict; assert InvalidPlanError."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/planner.py",
+    "line": 169,
+    "title": "Task.from_dict validation branches untested for description/validation/status",
+    "description": "Three parallel validation branches are untested: description not being a string (line 169), validation not being a string (line 175), and status not being a string (line 177). An LLM returning a number or null for those fields would bypass validation.",
+    "fix": "Add tests calling Task.from_dict with data['description']=99, data['validation']=None, data['status']=False, each asserting InvalidPlanError."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 280,
+    "title": "_commit_worktree_changes() entirely untested — data loss prevention",
+    "description": "The only mechanism preventing agent work from being silently discarded when a worktree is removed has zero coverage. Untested: staging timeout (287-289), diff-check timeout (299-301), clean worktree return (303-305), GPG signing failure fallback (322-338), unsigned-commit timeout (336-337).",
+    "fix": "Mock all subprocess calls to trace commit commands. Mock GPG failure in stderr; assert fallback to --no-gpg-sign. Mock timeouts; assert False returned (not exception)."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 637,
+    "title": "Data-loss guard path untested: commit fails after successful build",
+    "description": "When build succeeds but commit fails, the worktree should be preserved and result marked as failed. This guard is never tested — if broken, successful agent work is silently discarded.",
+    "fix": "Mock _commit_worktree_changes to return False and agent to succeed; assert returned success is False and _remove_worktree is NOT called."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 202,
+    "title": "_create_worktree() entirely untested",
+    "description": "Core isolation strategy is untested: stale-worktree cleanup (206-215), timeout on git worktree add (226-227), fallback without -b when branch exists (231-240), final failure raise (242).",
+    "fix": "Mock subprocess.run to return non-zero on first call (branch exists) and success on fallback. Mock timeout; assert RuntimeError."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 349,
+    "title": "_abort_merge() entirely untested",
+    "description": "The repo-safety function for merge conflicts is untested. A broken _abort_merge leaves the repository in an unrecoverable mid-merge state. git merge --abort failure logged as critical (line 358) is never exercised.",
+    "fix": "Mock subprocess.run to return non-zero abort result; assert critical log. Mock timeout; assert critical log about dirty state."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 377,
+    "title": "_merge_worktree_branch() entirely untested",
+    "description": "Controls whether agent work enters the main branch. Timeout path (385-388) calling _abort_merge and non-zero returncode path (390-393) are both untested.",
+    "fix": "Mock merge success; assert True. Mock merge conflict; assert _abort_merge called and False returned. Mock timeout; same."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 895,
+    "title": "Orchestrator.run() loop abort and exception swallows untested",
+    "description": "The consecutive-failure abort at 3 cycles (943-946), mid-cycle commit exception swallow (961-963), post-orchestration commit exception swallow (1004-1005), and PR creation exception swallow (1015-1017) are all untested.",
+    "fix": "Mock _phase_build to always return all failures; assert loop aborts after 3 consecutive zero-progress cycles. Mock git_manager.commit_verified_changes to raise; assert run() still returns OrchestratorResult."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 581,
+    "title": "Spec-not-in-worktree fallback paths untested",
+    "description": "When a spec is not relative to repo or not found in worktree, the agent receives a fallback instruction string. These graceful degradation paths (581-585, 593-599) have no test coverage.",
+    "fix": "Pass a spec path not under repo_path; assert logged warning and fallback prompt. Pass a spec whose worktree path doesn't exist; verify fallback."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 168,
+    "title": "_execute_agentic_iteration() entirely untested",
+    "description": "The core agentic execution step has zero coverage: LLM call, tool-call dispatch loop (196-229), ALL_SPECS_COMPLETE detection (183-185), continue-prompt injection (188-193), and generic tool-error handler (215-228).",
+    "fix": "Mock LLMClient.chat_completion to return ALL_SPECS_COMPLETE content; assert True returned. Mock with tool calls that fail dispatch; assert error appended as tool message and False returned."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 238,
+    "title": "run_continuous_cycle() entirely untested",
+    "description": "The 50-iteration cap, completion path calling git_manager.commit_verified_changes (line 251), and exhaustion failure path (254-256) are all untested.",
+    "fix": "Mock _execute_agentic_iteration to return True on first call; assert commit called and True returned. Mock always False; assert False after 50 iterations."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 121,
+    "title": "BuildLoop.__init__() entirely untested",
+    "description": "Config file load (129-133), json.JSONDecodeError swallow on malformed config (133), and LLMClient construction failure propagation are all untested. BuildLoop has no dedicated test file.",
+    "fix": "Instantiate BuildLoop with valid/malformed config.json. Test LLMClient raising RuntimeError (missing API key) propagates."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 215,
+    "title": "Tool call missing 'id' key crashes error handler",
+    "description": "In _execute_agentic_iteration, the except Exception handler accesses tool_call['id'] (line 208) which raises KeyError if the LLM returns a tool call without an id field, escaping the handler and crashing the iteration.",
+    "fix": "Test with a tool call dict missing the 'id' key. Either add defensive .get('id', '') or test that KeyError propagates."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 535,
+    "title": "Continuous mode loop entirely untested",
+    "description": "Lines 534-681 are uncovered: parallel/serial branch selection (551-589), rate-limit backoff with time.sleep (598-606), token-exhaustion backoff and session reset (608-616), dual completion check (621-651), consecutive-failure abort at 5 failures (663-665), exhausted-loop return (673-680).",
+    "fix": "Unit test with mocked _run_single_cycle returning RATE_LIMIT, TOKEN_EXHAUSTED, then success; verify backoff and final success. Test 5-failure abort. Test early exit on agent_done + remaining==0."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 222,
+    "title": "AgentTimeout and token-exhaustion handlers untested",
+    "description": "In _run_single_cycle: AgentTimeout handler (249-256) and token-exhaustion detection in CodeliciousError handler (270-278) using string-match heuristic are uncovered. Token-exhaustion triggers session reset in continuous mode.",
+    "fix": "Mock run_agent to raise AgentTimeout; assert BuildResult(success=False) with timeout message. Mock CodeliciousError('token limit exceeded'); assert TOKEN_EXHAUSTED prefix."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 485,
+    "title": "Orchestrate mode entry point untested",
+    "description": "The orchestrate mode branch in run_build_cycle (484-518) is uncovered: no-specs early return (493-498) and reviewer-string parsing (501-502).",
+    "fix": "Mock _discover_incomplete_specs to return empty; assert success result. Mock with specs and mock Orchestrator.run; assert result passed through."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 202,
+    "title": "_check_agent_errors() error type dispatch untested",
+    "description": "Auth detection raising ClaudeAuthError (202-205), rate-limit detection raising ClaudeRateLimitError (207-227), and generic non-zero-exit CodeliciousError (229-234) are all untested. These drive retry/backoff logic.",
+    "fix": "Test _check_agent_errors(1, [], ['auth failed']) -> ClaudeAuthError. Test with 'rate limit' -> ClaudeRateLimitError(retry_after_s=60). Test generic error -> CodeliciousError."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 87,
+    "title": "push_to_origin() entirely untested",
+    "description": "No-git early return (88), no-unpushed-commits skip (103-106), push failure path (116-118), and broad exception handler (120-121) are all untested.",
+    "fix": "Mock git commands for no unpushed commits; assert True without push. Mock push failure; assert False. Mock exception; assert False."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 237,
+    "title": "commit_verified_changes() critical paths untested",
+    "description": "files_to_stage path (241-247) with per-file RuntimeError warning (247), nothing-to-commit return (258-261), and post-commit-failure git reset HEAD with its own RuntimeError handler (271-273) are all untested.",
+    "fix": "Call with files_to_stage=['foo.py'] and verify git add calls. Mock git status empty; assert no commit. Mock commit failure; assert git reset HEAD called."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 42,
+    "title": "Malformed config.json handler untested",
+    "description": "json.JSONDecodeError handler (lines 43-45) logs error and sets self.config={}. Subsequent calls to config.get('default_reviewers', []) silently return empty. No test exercises this path.",
+    "fix": "Create .codelicious/config.json with invalid JSON; instantiate GitManager; assert config=={} and error logged."
+  },
+  {
+    "severity": "P1",
+    "file": "tests/test_sandbox.py",
+    "line": 498,
+    "title": "Thread-safety test has near-vacuous assertion hiding real races",
+    "description": "test_concurrent_writes_respect_limit accepts as few as 2 successful writes out of 10 (limit-thread_count=10-8=2). This lower bound is so wide it would pass even if the TOCTOU race in the count check is completely broken. The test claims to verify thread safety but masks real concurrency bugs.",
+    "fix": "Tighten lower bound to limit-1 at minimum. Wrap f.result() to distinguish FileCountLimitError from unexpected exceptions."
+  },
+  {
+    "severity": "P1",
+    "file": "tests/test_orchestrator.py",
+    "line": 174,
+    "title": "scan_remaining_tasks_for_spec may be patched at wrong module path",
+    "description": "test_consecutive_failures_abort patches codelicious.prompts.scan_remaining_tasks_for_spec, but run() imports it into orchestrator's namespace. If the import is already resolved, the patch at the definition module has no effect and the test behaves differently than intended.",
+    "fix": "Verify actual import path and patch at codelicious.orchestrator.scan_remaining_tasks_for_spec (where the name is used), not codelicious.prompts."
+  },
+  {
+    "severity": "P1",
+    "file": "tests/test_cli.py",
+    "line": 107,
+    "title": "spec=GitManager mock raises AttributeError if method missing",
+    "description": "MagicMock(spec=GitManager) restricts attributes to those on the real class. transition_pr_to_review.assert_not_called() will raise AttributeError if GitManager doesn't define that method, causing spurious test failure.",
+    "fix": "Verify GitManager has transition_pr_to_review method. If not, remove the assertion or use MagicMock() without spec= for this check."
+  },
+  {
+    "severity": "P1",
+    "file": "tests/test_engines.py",
+    "line": 283,
+    "title": "Tool dispatch error tests only assert isinstance(result, BuildResult)",
+    "description": "test_tool_dispatch_exception_appends_error_message and test_tool_dispatch_json_decode_error_handled (lines 283, 322) only check the return type after security-relevant error paths. Tests would pass even if the engine silently ignored errors and returned BuildResult(success=True).",
+    "fix": "Add assert result.success is True (confirming recovery) AND verify the error was appended to message history or that the loop continued (e.g., call_count==2)."
+  },
+  {
+    "severity": "P1",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 68,
+    "title": "_git_tracked_files error paths untested",
+    "description": "Non-zero returncode returning None (line 77) and except (FileNotFoundError, TimeoutExpired, OSError) returning None (79-80) are untested. Spec discovery silently falls back to non-filtered file walk when git unavailable.",
+    "fix": "Mock subprocess.run to return non-zero; assert returns None. Mock subprocess to raise FileNotFoundError; assert returns None."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 217,
+    "title": "classify_intent() entirely untested including all error branches",
+    "description": "Large-spec sampling (232-237), ALLOW/REJECT logic (245-249), five LLM error handlers (250-260) failing closed, OSError/ConnectionError fail-closed (265), and non-network fail-open (268-269) are all uncovered.",
+    "fix": "Test with mock llm_call: spec under 8000 chars returns ALLOW, each of five LLM errors returns False, OSError returns False, ValueError returns True."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 277,
+    "title": "Plan validation functions uncovered: task count, unique IDs, dependency refs",
+    "description": "_validate_task_count, _validate_unique_task_ids, _validate_dependency_references (lines 277-299) prevent malformed LLM output from crashing the build loop.",
+    "fix": "Build task lists violating each constraint (101 tasks, duplicate IDs, dangling dependency) and assert InvalidPlanError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 304,
+    "title": "Circular dependency detection entirely untested",
+    "description": "_validate_no_circular_dependencies DFS cycle detection, stack construction, and human-readable error message (316-318) are all uncovered.",
+    "fix": "Create two-task cycle (A->B->A) and three-task chain (A->B->C->A); assert InvalidPlanError with cycle path. Test valid chain; assert no error."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 433,
+    "title": "_parse_json_response() entirely untested",
+    "description": "Markdown fence stripping (436-443), non-list rejection (446-447), successful JSON parse (445) are all uncovered. This is a direct LLM output parser and common failure point.",
+    "fix": "Test: bare JSON array, JSON in ```json fence, valid JSON object (not array) raises ValueError, malformed JSON raises JSONDecodeError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 142,
+    "title": "Task.to_dict() entirely untested",
+    "description": "Serialization path used before writing plan.json. A bug silently corrupts the persisted plan.",
+    "fix": "Call task.to_dict() on a known Task; assert all seven keys present with correct values."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 615,
+    "title": "load_plan() error paths untested",
+    "description": "Missing file (617), invalid JSON (621-622), and non-array data (624-625) all raise PlanningError but none are tested.",
+    "fix": "Test with non-existent path, malformed JSON, and JSON object {} — all should raise PlanningError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/planner.py",
+    "line": 684,
+    "title": "analyze_spec_drift() entirely untested",
+    "description": "Empty-summaries early return (686), LLM call and stripped response (692-693), and exception fallback to original spec (694-696) are uncovered.",
+    "fix": "Test empty summaries returns original spec. Mock llm_call returns revised spec. Mock llm_call raises exception; assert original spec returned."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 85,
+    "title": "_walk_for_specs filesystem traversal untested",
+    "description": "Directory pruning (line 90, skipping _SKIP_DIRS and dotfiles) and git-filter integration (95-97) are untested.",
+    "fix": "Create tmp dir with specs in allowed and skipped locations (.git/, node_modules/, docs/specs/); assert only allowed specs returned."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 126,
+    "title": "Incomplete spec detection logic untested",
+    "description": "_discover_incomplete_specs: pre-computed all_specs shortcut (126), spec completeness logic distinguishing checked/unchecked/no boxes (134-143), OSError swallow on unreadable files (143-144) are uncovered.",
+    "fix": "Create specs with unchecked boxes, fully checked boxes, no boxes, and an unreadable file; verify categorization."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 283,
+    "title": "VERIFY phase multi-pass loop untested",
+    "description": "Multi-pass verify failure triggering fix agent (296-311), ImportError skip for missing verifier (312-313), and catch-all exception break (315-317) are uncovered.",
+    "fix": "Mock verify to fail then pass; assert fix agent called once. Mock ImportError; assert phase skipped."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 321,
+    "title": "REFLECT and PR phases untested with silently swallowed exceptions",
+    "description": "REFLECT (320-336) and PR (347-356) phases catch and swallow exceptions. Untested swallowed exceptions hide real problems.",
+    "fix": "Instantiate engine with reflect=True and push_pr=True; mock agents to raise; assert overall cycle result still returned."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/claude_engine.py",
+    "line": 393,
+    "title": "_run_parallel_cycle() entirely untested",
+    "description": "No-specs early return (396), max_workers>1 warning (398-403), and serial iteration over specs (404-419) are uncovered.",
+    "fix": "Mock _discover_incomplete_specs empty; assert single success with 'No incomplete specs'. Mock two specs; assert two single-cycle calls."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 670,
+    "title": "_phase_build parallel path untested",
+    "description": "ThreadPoolExecutor path, future exception handler (714-724), and _log_spec_progress are uncovered.",
+    "fix": "Mock _build_spec_in_worktree to raise for one spec; assert caught, logged, and (branch, False) returned."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 737,
+    "title": "_phase_merge entirely untested",
+    "description": "No-successful-builds warning return (738-740), successful merge calling _delete_branch (747), merge-conflict skip-and-warn (750-753) are uncovered.",
+    "fix": "Test all failures returns 0. Mock merge success; assert _delete_branch called. Mock conflict; assert warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 788,
+    "title": "_phase_review parallel path untested",
+    "description": "Parallel reviewer execution (804-812) and per-reviewer exception handler (812) are uncovered.",
+    "fix": "Run with max_workers=2 and two roles; mock one to raise; assert caught and remaining findings collected."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 837,
+    "title": "_phase_fix entirely untested",
+    "description": "No P1/P2 findings early return (837-839), fix agent exception handler (851-853), and check_build_complete return (855) are uncovered.",
+    "fix": "Test with only P3 findings; assert True without calling agent. Test P1 findings with agent raising; assert False."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 141,
+    "title": "allow_dangerous flag and resume_session_id command flags untested",
+    "description": "allow_dangerous appends --dangerously-skip-permissions (security-sensitive) and resume_session_id appends --resume. Neither path is tested in _build_agent_command.",
+    "fix": "Build command with allow_dangerous=True; assert flag present. Build with resume_session_id='abc'; assert '--resume abc' present."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 237,
+    "title": "_parse_agent_output session extraction untested",
+    "description": "Session ID extraction from stream-json events (272-281), missing session ID case, and error re-raise delegation to _check_agent_errors (268) are untested.",
+    "fix": "Pass stdout with session_id event; assert AgentResult.session_id matches. Pass empty stdout; assert success with empty session ID."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 358,
+    "title": "run_agent project_root validation untested",
+    "description": "run_agent raises CodeliciousError when project_root doesn't exist or isn't a directory. Dry-run test always passes Path('.') which is valid.",
+    "fix": "Call run_agent with non-existent path; assert CodeliciousError raised with path in message."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 75,
+    "title": "_run_cmd timeout and check paths untested",
+    "description": "subprocess.TimeoutExpired handler (75-76) raising GitOperationError and check=True non-zero exit raising RuntimeError (78) are untested edge cases.",
+    "fix": "Mock subprocess.run to raise TimeoutExpired; assert GitOperationError. Mock non-zero return; assert RuntimeError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 200,
+    "title": "Sensitive-file check RuntimeError silently passes (security)",
+    "description": "_check_staged_files_for_sensitive_patterns catches RuntimeError and passes (200-201). If git diff fails (e.g., detached HEAD), sensitive-file check is silently skipped.",
+    "fix": "Mock _run_cmd to raise RuntimeError; assert empty list returned without propagation."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 260,
+    "title": "ensure_draft_pr_exists timeout/error paths untested",
+    "description": "gh --version timeout (294-296), forbidden_branches guard (302-303), gh pr list timeout (327-329), JSON decode failure (343), gh pr create timeout (358-360), and creation failure (365) are uncovered.",
+    "fix": "Mock gh --version timeout; assert no PR created. Mock current_branch='unknown'; assert skipped. Mock pr create timeout; assert warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 372,
+    "title": "transition_pr_to_review() entirely untested",
+    "description": "gh --version timeout (381-383), reviewer request call (397-406), and reviewer assignment timeout (405-406) are untested.",
+    "fix": "Call with reviewers in config; mock gh pr ready and gh pr edit; assert both called. Mock timeout; assert warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/config.py",
+    "line": 103,
+    "title": "PolicyConfig negative/invalid budget fallback untested",
+    "description": "Negative daily budget (108-113) logs warning and uses default. Invalid float (116-121) does same. Neither path tested.",
+    "fix": "Set CODELICIOUS_POLICY_DAILY_BUDGET='-5' and 'not-a-number'; assert budget defaults to 50.0 with warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/config.py",
+    "line": 221,
+    "title": "Unknown provider ValueError untested",
+    "description": "A misconfigured CODELICIOUS_BUILD_PROVIDER reaches production unchecked.",
+    "fix": "Set cli_args.provider='unknown_provider'; call build_config; assert ValueError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 62,
+    "title": "_get_embeddings_batch edge cases untested",
+    "description": "Empty-input return (72), no-API-key return (74-76), single-embedding normalization (100-101), and broad exception returning empty list (102-104) are untested.",
+    "fix": "Call with empty list; assert []. Call with missing API key; assert [] and warning. Mock urlopen exception; assert [] returned."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 187,
+    "title": "semantic_search guard and fallback paths untested",
+    "description": "top_k>MAX_TOP_K cap (194-196), top_k<=0 early return (199-200), failed-embedding error return (204), stored_norm==0 fallback (227-228), and JSONDecodeError on corrupt DB row (234-235) are untested.",
+    "fix": "Assert top_k=0 returns []. Assert top_k=25 capped to 20. Mock _get_embedding returning []; assert error dict. Insert corrupt vector JSON row; assert skipped."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/rag_engine.py",
+    "line": 219,
+    "title": "NULL stored_norm causes TypeError crash in semantic_search",
+    "description": "If stored_norm is None (NULL in SQLite), Python's 'stored_norm > 0.0' raises TypeError. The try/except only catches json.JSONDecodeError, so TypeError propagates and crashes semantic_search.",
+    "fix": "Insert row with vector_norm=NULL; call semantic_search; assert completes without raising. Fix production code to handle None."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/verifier.py",
+    "line": 488,
+    "title": "check_syntax aggregate timeout and OSError fallback untested",
+    "description": "Aggregate-timeout stopping check (519-522) and OSError fallback to subprocess py_compile (529-553, including FileNotFoundError and TimeoutExpired handlers) are untested.",
+    "fix": "Mock Path.read_text to raise OSError; assert subprocess fallback called. Patch time.monotonic for timeout; assert timeout message."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/verifier.py",
+    "line": 631,
+    "title": "_strip_string_literals() entirely untested",
+    "description": "Used by check_security to prevent false positives. Incorrect implementation causes false positives or false negatives in security scanning.",
+    "fix": "Input 'x = r\"eval(test)\"'; assert no eval( in output. Input triple-quoted string with shell=True; assert stripped."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/logger.py",
+    "line": 219,
+    "title": "setup_logging() entirely untested",
+    "description": "verbose parameter (229), rotating file handler (240-249), os.chmod (252), and OSError fallback to console-only (253-255) are untested.",
+    "fix": "Call setup_logging(tmp_path, verbose=True); assert DEBUG-level handler. Call with read-only directory; assert no exception and warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/logger.py",
+    "line": 265,
+    "title": "create_log_callback() untested",
+    "description": "The callback sanitizes event data before logging. No test verifies sanitize_message is called on event_data.",
+    "fix": "Obtain callback; call with event data containing fake API key 'sk-test-abc123...'; assert logged message does not contain raw key."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/llm_client.py",
+    "line": 189,
+    "title": "Malformed 200 response body handling untested",
+    "description": "json.JSONDecodeError from a malformed 200 response falls into the broad 'except Exception' and becomes RuntimeError('LLM Connection Error') — misleading. No test covers 200-with-bad-JSON.",
+    "fix": "Mock urlopen to return 200 with non-JSON body; assert RuntimeError raised."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/executor.py",
+    "line": 110,
+    "title": "Response truncation boundary untested",
+    "description": "parse_llm_response truncates at _MAX_RESPONSE_LENGTH (2MB) silently. No test for exactly MAX+1 bytes verifying truncation and correct parsing.",
+    "fix": "Construct strict-format response 1 byte over limit; assert returns results and logs warning."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/executor.py",
+    "line": 75,
+    "title": "Path traversal from parse_llm_response untested",
+    "description": "_normalize_file_path raises SandboxViolationError on '..' segments but no test exercises this through parse_llm_response with a malicious file path header.",
+    "fix": "Call parse_llm_response('--- FILE: ../../etc/passwd ---\\ncontent\\n--- END FILE ---\\n'); assert SandboxViolationError."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/build_logger.py",
+    "line": 86,
+    "title": "cleanup_old_builds shutil.rmtree failure untested",
+    "description": "Inner except Exception for rmtree failure (line 86) is never tested. If removal fails (permission denied), the function logs warning but this is unverified.",
+    "fix": "Mock shutil.rmtree to raise OSError; assert warning logged and removed_count is 0."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/build_logger.py",
+    "line": 127,
+    "title": "BuildSession.__init__ os.chmod failure untested",
+    "description": "If mkdir succeeds but chmod fails (read-only filesystem), OSError propagates from __init__ with partially initialized state.",
+    "fix": "Mock os.chmod to raise OSError; assert clean propagation without leaked handles."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_command_runner.py",
+    "line": 233,
+    "title": "Assertion checks key existence not value",
+    "description": "test_failed_command_execution asserts '\"success\" in result' (key existence) instead of 'result[\"success\"] is False'. Test passes even if success=True.",
+    "fix": "Change to assert result['success'] is False."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_loop_controller.py",
+    "line": 44,
+    "title": "Truncation tests use lower-bound checks that don't verify behavior",
+    "description": "Multiple tests (lines 44, 63, 81, 177) use assert len(result)>1 or >=1. A broken implementation keeping all messages passes these bounds.",
+    "fix": "Assert len(result) < len(messages) AND most recent messages present. Assert len(result)==1 for budget-smaller-than-any-message test."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_executor.py",
+    "line": 333,
+    "title": "Large input parse test doesn't verify content",
+    "description": "test_parse_response_extremely_large ends with assert len(result[0][1])>0 — even a single byte passes. Doesn't verify the 1MB content was actually parsed.",
+    "fix": "Assert content length is close to source content length."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_verifier.py",
+    "line": 441,
+    "title": "Invalid package.json test is type-check only",
+    "description": "test_detect_languages_invalid_package_json asserts isinstance(result, set) but never checks the set contents or that the invalid JSON was handled.",
+    "fix": "Assert result == set() or assert specific expected languages detected from other files."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_build_logger.py",
+    "line": 295,
+    "title": "Cleanup tests use unfrozen clock — timing-sensitive",
+    "description": "Six cleanup tests compute timestamps from time.time() without freezing the clock. Timezone discrepancies between timestamp generation and comparison can cause intermittent failures.",
+    "fix": "Freeze time.time with unittest.mock.patch or freezegun so both directory creation and cleanup use the same wall-clock."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_executor.py",
+    "line": 466,
+    "title": "Wall-clock performance tests flaky under CI load",
+    "description": "Eight tests (lines 466-721) use time.perf_counter() with hard 1s/2s/5s cutoffs. GC pauses or CPU contention in CI cause intermittent failures.",
+    "fix": "Mark with @pytest.mark.slow and exclude from default CI run, or use 10x generous time budgets."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_integration_v11.py",
+    "line": 11,
+    "title": "Hard dependency on fixture files with no skip guard",
+    "description": "Tests depend on tests/fixtures/sample_spec_v11.md and sample_plan_v11.json. Missing files cause FileNotFoundError rather than useful skip. Content assertion ('hello.py' in titles) breaks on any fixture edit.",
+    "fix": "Add pytest.skip guard for missing fixtures. Use inline fixture data for fragile content assertions."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_sandbox.py",
+    "line": 260,
+    "title": "Directory permission assertion assumes umask=0o022",
+    "description": "test_write_file_creates_parents_with_correct_permissions asserts mode==0o755 but containers/CI with umask 0o027/0o077 will have different modes.",
+    "fix": "Set umask explicitly in test with cleanup, or assert os.access() instead of exact mode."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_engines.py",
+    "line": 34,
+    "title": "Double-patching os.environ corrupts global env for callees",
+    "description": "test_huggingface_engine_no_tokens_raises uses mock.patch.dict clear=True then mock.patch('os.environ.get', return_value=None). The second patch makes all env var lookups return None, breaking any callee checking PATH, HOME, etc.",
+    "fix": "Remove inner mock.patch('os.environ.get'). The mock.patch.dict with clear=True is sufficient."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_engines.py",
+    "line": 120,
+    "title": "parse_tool_calls side_effect list may exhaust and raise StopIteration",
+    "description": "Tests using side_effect=[] for parse_tool_calls will raise StopIteration if more iterations occur than expected, converting to an obscure test failure.",
+    "fix": "Use return_value=[] instead of side_effect for parse_tool_calls in tests where tool dispatch is irrelevant."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_cli.py",
+    "line": 161,
+    "title": "call_args.kwargs access breaks if CLI ever uses positional args",
+    "description": "test_model_and_timeout_flags accesses call_args.kwargs['model'] which will KeyError if run_build_cycle is called with positional arguments.",
+    "fix": "Use call_args.kwargs.get('model') with a not-None assertion, or check call_args shape."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_scaffolder_v9.py",
+    "line": 53,
+    "title": "File count assertions use lower bound instead of exact count",
+    "description": "test_scaffold_claude_dir_idempotent and _dry_run assert len(files)>=11 while sibling test pins exact count to 11. Extra unintended files would pass undetected.",
+    "fix": "Use assert len(files)==11 consistent with exact-count test."
+  },
+  {
+    "severity": "P2",
+    "file": "tests/test_build_logger.py",
+    "line": 71,
+    "title": "Event emission count uses lower bound",
+    "description": "test_emit_writes_json_line asserts len(lines)>=1 instead of ==1. Side-effect extra lines pass undetected.",
+    "fix": "Change to assert len(lines)==1."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/context/cache_engine.py",
+    "line": 51,
+    "title": "load_cache/load_state OSError path untested",
+    "description": "Both catch bare except Exception, including OSError (permission denied, file disappears). Only JSON parse failure is tested.",
+    "fix": "Patch Path.read_text to raise OSError; verify load_cache returns {} and load_state returns {'memory_ledger': []}."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 54,
+    "title": "current_branch exception fallback untested",
+    "description": "except Exception returning 'unknown' (54-55) is untested. ensure_draft_pr_exists depends on this to skip PR creation.",
+    "fix": "Mock _run_cmd to raise; assert current_branch returns 'unknown'."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 210,
+    "title": "_unstage_sensitive_files error path untested",
+    "description": "RuntimeError handler (217-218) logs error when git reset HEAD fails. Sensitive file may remain staged.",
+    "fix": "Mock _run_cmd to raise RuntimeError for reset; assert error logged, no exception propagated."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/logger.py",
+    "line": 276,
+    "title": "TimingContext and log_call_details untested",
+    "description": "TimingContext __enter__/__exit__ (success and exception branches) and log_call_details are untested.",
+    "fix": "Use TimingContext with mock logger; assert started/completed/failed logged. Test log_call_details logs function name."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/logger.py",
+    "line": 199,
+    "title": "Non-string msg coercion in SanitizingFilter untested",
+    "description": "When record.msg is not a string (e.g., integer), the filter coerces it to string. This path is never exercised.",
+    "fix": "Create LogRecord with msg=42; apply filter; assert record.msg == '42'."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/planner.py",
+    "line": 342,
+    "title": "Topological order warning untested",
+    "description": "_validate_topological_order log-warning behavior (350-354) and misordered-tuple construction are untested.",
+    "fix": "Pass tasks where dependent comes before dependency; assert warning logged. Pass valid order; assert no warning."
+  },
+  {
+    "severity": "P3",
+    "file": "tests/test_parser.py",
+    "line": 119,
+    "title": "Boundary size test doesn't verify content",
+    "description": "test_file_exactly_at_max_size_does_not_raise uses isinstance(sections, list) and len>=1 but doesn't check parsed content.",
+    "fix": "Add assert sections[0].title == 'Title'."
+  },
+  {
+    "severity": "P3",
+    "file": "tests/test_context_manager.py",
+    "line": 214,
+    "title": "Trivially true assertion: prose_tokens >= 0",
+    "description": "test_estimate_tokens_code_vs_prose asserts prose_tokens>=0 which is always true. Substantive check is on line 220.",
+    "fix": "Remove the assert prose_tokens >= 0 line."
+  },
+  {
+    "severity": "P3",
+    "file": "tests/test_security_audit.py",
+    "line": 400,
+    "title": "Overly permissive case-insensitive assertion",
+    "description": "test_formatter_unknown_level_unchanged uses 'or debug in formatted.lower()' which accepts wrong capitalization from the formatter.",
+    "fix": "Change to assert 'DEBUG' in formatted since logging.getLevelName always returns uppercase."
+  },
+  {
+    "severity": "P3",
+    "file": "tests/test_engines.py",
+    "line": 198,
+    "title": "Retry abort test doesn't verify retry count",
+    "description": "test_consecutive_errors_abort_after_max_retries only asserts result.success is False, not that retries were actually attempted.",
+    "fix": "Add assert mock_chat.call_count > 1 to prove retries occurred."
+  }
+]

@@ -6,7 +6,7 @@ import json
 import pathlib
 import threading
 
-from codelicious.progress import ProgressReporter
+from codelicious.progress import ProgressReporter, _MAX_PROGRESS_BYTES
 
 # -- None path is a no-op ---------------------------------------------------
 
@@ -200,3 +200,42 @@ def test_emit_after_close_is_noop(tmp_path: pathlib.Path) -> None:
     events = [json.loads(line)["event"] for line in lines]
     assert "before_close" in events
     assert "after_close" not in events
+
+
+# -- log rotation -----------------------------------------------------------
+
+
+def test_log_rotation_creates_backup_and_new_file(tmp_path: pathlib.Path) -> None:
+    """When progress.jsonl exceeds _MAX_PROGRESS_BYTES the file is rotated.
+
+    Expected behaviour:
+    - The oversized original is renamed to progress.jsonl.1
+    - A new progress.jsonl is created containing only the latest event
+    """
+    log_path = tmp_path / "progress.jsonl"
+    backup_path = log_path.with_suffix(".jsonl.1")
+
+    # Pre-create a file that exceeds the rotation threshold.
+    # Write in chunks to avoid allocating the full 10 MB in one shot.
+    chunk = b"x" * (1024 * 1024)  # 1 MB per chunk
+    chunks_needed = _MAX_PROGRESS_BYTES // len(chunk) + 1
+    with log_path.open("wb") as fh:
+        for _ in range(chunks_needed):
+            fh.write(chunk)
+
+    assert log_path.stat().st_size > _MAX_PROGRESS_BYTES
+
+    reporter = ProgressReporter(log_path=log_path)
+    reporter.emit("after_rotation", marker="rotated")
+    reporter.close()
+
+    # Backup must exist (the oversized original was renamed)
+    assert backup_path.is_file(), "Expected .jsonl.1 backup to exist after rotation"
+
+    # The new log file must exist and contain only the single latest event
+    assert log_path.is_file(), "Expected new progress.jsonl to be created after rotation"
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1, f"Expected exactly 1 line in rotated file, got {len(lines)}"
+    event = json.loads(lines[0])
+    assert event["event"] == "after_rotation"
+    assert event["marker"] == "rotated"

@@ -222,9 +222,10 @@ class Sandbox:
                 path=relative_path,
             )
 
-        # Check file count limit with thread safety
-        # Capture is_new and increment count atomically inside the lock
-        # to prevent race conditions (P1-4, P1-5 fix)
+        # Check file count limit with thread safety.
+        # The lock protects only the is_new check and _files_created_count
+        # increment — mkdir is idempotent (exist_ok=True) so it does not
+        # need to be inside the lock and holding it during I/O is wasteful.
         with self._lock:
             is_new = not resolved.exists()
             logger.debug("File count: %d/%d (is_new=%s)", self._files_created_count, self.max_file_count, is_new)
@@ -237,10 +238,11 @@ class Sandbox:
             # Reserve the slot atomically with the check to prevent concurrent races
             if is_new:
                 self._files_created_count += 1
-            # Create parent directories inside the lock so count check
-            # and directory creation are atomic (P2-6 fix)
-            parent = resolved.parent
-            parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+
+        # Create parent directories outside the lock — mkdir with exist_ok=True
+        # is safe to call concurrently and I/O should not block other threads.
+        parent = resolved.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=0o755)
 
         return resolved, is_new
 
@@ -355,11 +357,26 @@ class Sandbox:
                 not str(final_resolved).startswith(str(resolved_project) + os.sep)
                 and final_resolved != resolved_project
             ):
-                # Attempt to remove the escaped file
+                # Attempt to remove the symlink at the expected path
                 try:
                     os.unlink(str(resolved))
                 except OSError:
                     pass
+                # Also attempt to unlink the actual destination of the symlink so
+                # that content written outside the sandbox is cleaned up (Finding 41)
+                if final_resolved != resolved:
+                    try:
+                        os.unlink(str(final_resolved))
+                        logger.warning(
+                            "Removed escaped file at symlink destination: %s",
+                            final_resolved,
+                        )
+                    except OSError as unlink_exc:
+                        logger.error(
+                            "Failed to remove escaped file at symlink destination %s: %s",
+                            final_resolved,
+                            unlink_exc,
+                        )
                 raise PathTraversalError(
                     "Post-write verification failed: file escapes project directory",
                     path=relative_path,
@@ -390,14 +407,44 @@ class Sandbox:
         return resolved
 
     def read_file(self, relative_path: str) -> str:
-        """Read a file within the project directory."""
+        """Read a file within the project directory.
+
+        A post-read TOCTOU check re-resolves the path after reading and discards
+        the content if the file has since escaped the sandbox (e.g. via a symlink
+        race).  This closes the window between the pre-read resolve_path check and
+        the actual read that ``pathlib.Path.read_text`` performs.
+        """
         logger.debug("Reading file: %s", relative_path)
         resolved = self.resolve_path(relative_path)
 
         if not resolved.is_file():
             raise FileNotFoundError(f"File not found: {relative_path}")
 
-        return resolved.read_text(encoding="utf-8")
+        content = resolved.read_text(encoding="utf-8")
+
+        # Post-read verification: re-resolve and confirm the path is still inside
+        # the project directory.  A symlink could have been swapped in between the
+        # pre-read check above and the read_text call, so we discard the content
+        # and raise if the path has escaped.
+        resolved_project = pathlib.Path(os.path.realpath(self.project_dir))
+        post_read_resolved = pathlib.Path(os.path.realpath(str(resolved)))
+        if (
+            not str(post_read_resolved).startswith(str(resolved_project) + os.sep)
+            and post_read_resolved != resolved_project
+        ):
+            logger.warning(
+                "Post-read TOCTOU violation: path %s resolved to %s which escapes project directory %s",
+                relative_path,
+                post_read_resolved,
+                resolved_project,
+            )
+            raise PathTraversalError(
+                "Post-read verification failed: path escapes project directory",
+                path=relative_path,
+            )
+
+        logger.debug("TOCTOU: post-read verification passed for %s", relative_path)
+        return content
 
     def list_files(self, relative_path: str = ".") -> list[str]:
         """List files in a directory, excluding denied patterns."""

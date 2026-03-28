@@ -40,6 +40,7 @@ __all__ = [
     "PatienceExhaustedError",
     "PlanningError",
     "PolicyViolationError",
+    "PromptInjectionError",
     "PromptInjectionWarning",
     "CodeliciousError",
     "ReplanningError",
@@ -298,5 +299,17 @@ class CICheckError(CodeliciousError):
 # ---------------------------------------------------------------------------
 
 
+class PromptInjectionError(CodeliciousError):
+    """Raised when prompt injection patterns are detected in a spec.
+
+    The injection guard is blocking — the build must not proceed when
+    adversarial patterns like 'IGNORE PREVIOUS INSTRUCTIONS' or 'SYSTEM:'
+    are found in the spec text.
+    """
+
+
 class PromptInjectionWarning(UserWarning):
-    """Warning issued when potential prompt injection is detected."""
+    """Warning issued when potential prompt injection is detected.
+
+    .. deprecated:: Use PromptInjectionError instead. Kept for backward compat.
+    """

@@ -31,21 +31,24 @@ def test_path_traversal_write_blocked(fs_tooling: FSTooling, tmp_path: pathlib.P
     """Path traversal via '../../../etc/passwd' is blocked for writes."""
     response = fs_tooling.native_write_file("../../../etc/passwd", "malicious")
     assert response["success"] is False
-    assert "traversal" in response["stderr"].lower() or ".." in response["stderr"]
+    # Sandbox raises PathTraversalError("Path traversal via '..' is not allowed")
+    assert "traversal via '..'" in response["stderr"].lower() or "not allowed" in response["stderr"].lower()
 
 
 def test_path_traversal_read_blocked(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
     """Path traversal via '../../../etc/passwd' is blocked for reads."""
     response = fs_tooling.native_read_file("../../../etc/passwd")
     assert response["success"] is False
-    assert "traversal" in response["stderr"].lower() or ".." in response["stderr"]
+    # Sandbox raises PathTraversalError("Path traversal via '..' is not allowed")
+    assert "traversal via '..'" in response["stderr"].lower() or "not allowed" in response["stderr"].lower()
 
 
 def test_path_traversal_list_blocked(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
     """Path traversal via '../' is blocked for directory listing."""
     response = fs_tooling.native_list_directory("../")
     assert response["success"] is False
-    assert "traversal" in response["stderr"].lower() or ".." in response["stderr"]
+    # Sandbox raises PathTraversalError("Path traversal via '..' is not allowed")
+    assert "traversal via '..'" in response["stderr"].lower() or "not allowed" in response["stderr"].lower()
 
 
 # -- Denied Path Tests --
@@ -55,14 +58,16 @@ def test_write_env_blocked(fs_tooling: FSTooling) -> None:
     """Writing to .env is blocked by sandbox denied patterns."""
     response = fs_tooling.native_write_file(".env", "SECRET=password123")
     assert response["success"] is False
-    assert "denied" in response["stderr"].lower() or ".env" in response["stderr"]
+    # Sandbox raises DeniedPathError("Writing to denied path: .env")
+    assert "writing to denied path" in response["stderr"].lower()
 
 
 def test_write_env_local_blocked(fs_tooling: FSTooling) -> None:
     """Writing to .env.local is blocked by sandbox denied patterns."""
     response = fs_tooling.native_write_file(".env.local", "SECRET=password123")
     assert response["success"] is False
-    assert "denied" in response["stderr"].lower() or ".env" in response["stderr"]
+    # Sandbox raises DeniedPathError("Writing to denied path: .env.local")
+    assert "writing to denied path" in response["stderr"].lower()
 
 
 def test_write_env_production_blocked(fs_tooling: FSTooling) -> None:
@@ -78,7 +83,8 @@ def test_write_exe_blocked(fs_tooling: FSTooling) -> None:
     """Writing a .exe file is blocked (extension not allowed)."""
     response = fs_tooling.native_write_file("malware.exe", "MZ\x00\x00")
     assert response["success"] is False
-    assert "extension" in response["stderr"].lower() or ".exe" in response["stderr"]
+    # Sandbox raises DisallowedExtensionError("File extension '.exe' is not allowed")
+    assert "file extension '.exe' is not allowed" in response["stderr"].lower()
 
 
 def test_write_dll_blocked(fs_tooling: FSTooling) -> None:
@@ -101,7 +107,8 @@ def test_write_codelicious_config_blocked(fs_tooling: FSTooling) -> None:
     """Writing to .codelicious/config.json is blocked."""
     response = fs_tooling.native_write_file(".codelicious/config.json", '{"malicious": true}')
     assert response["success"] is False
-    assert "denied" in response["stderr"].lower() or ".codelicious" in response["stderr"]
+    # Sandbox raises DeniedPathError("Writing to denied path: .codelicious")
+    assert "writing to denied path" in response["stderr"].lower()
 
 
 # -- Valid Write Tests --
@@ -161,21 +168,24 @@ def test_read_nonexistent_file_returns_error(fs_tooling: FSTooling) -> None:
     """Reading a file that doesn't exist returns an error."""
     response = fs_tooling.native_read_file("nonexistent.py")
     assert response["success"] is False
-    assert "not a valid file" in response["stderr"] or "not found" in response["stderr"].lower()
+    # FSTooling returns "Error: '<rel_path>' is not a valid file."
+    assert "not a valid file" in response["stderr"]
 
 
 def test_read_file_outside_sandbox_blocked(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
     """Reading a file outside the sandbox is blocked."""
     response = fs_tooling.native_read_file("../../../etc/passwd")
     assert response["success"] is False
-    assert "traversal" in response["stderr"].lower() or ".." in response["stderr"]
+    # Sandbox raises PathTraversalError("Path traversal via '..' is not allowed")
+    assert "traversal via '..'" in response["stderr"].lower()
 
 
 def test_read_absolute_path_blocked(fs_tooling: FSTooling) -> None:
     """Reading with an absolute path is blocked."""
     response = fs_tooling.native_read_file("/etc/passwd")
     assert response["success"] is False
-    assert "absolute" in response["stderr"].lower() or "traversal" in response["stderr"].lower()
+    # Sandbox raises PathTraversalError("Absolute paths are not allowed")
+    assert "absolute paths are not allowed" in response["stderr"].lower()
 
 
 # -- List Directory Tests --
@@ -218,14 +228,16 @@ def test_list_directory_traversal_blocked(fs_tooling: FSTooling) -> None:
     """Listing a directory outside the sandbox is blocked."""
     response = fs_tooling.native_list_directory("../")
     assert response["success"] is False
-    assert "traversal" in response["stderr"].lower() or ".." in response["stderr"]
+    # Sandbox raises PathTraversalError("Path traversal via '..' is not allowed")
+    assert "traversal via '..'" in response["stderr"].lower()
 
 
 def test_list_nonexistent_directory_returns_error(fs_tooling: FSTooling) -> None:
     """Listing a directory that doesn't exist returns an error."""
     response = fs_tooling.native_list_directory("nonexistent_dir")
     assert response["success"] is False
-    assert "not a directory" in response["stderr"] or "not found" in response["stderr"].lower()
+    # FSTooling returns "not a directory" when the resolved path is not a directory
+    assert "not a directory" in response["stderr"]
 
 
 # -- Edge Cases --
@@ -286,7 +298,8 @@ def test_null_bytes_in_path_blocked(fs_tooling: FSTooling) -> None:
     """Null bytes in paths are blocked."""
     response = fs_tooling.native_write_file("file\x00.py", "malicious")
     assert response["success"] is False
-    assert "null" in response["stderr"].lower() or "traversal" in response["stderr"].lower()
+    # Sandbox raises PathTraversalError("Null bytes are not allowed in paths")
+    assert "null bytes are not allowed" in response["stderr"].lower()
 
 
 # -- Directory Listing DoS Protection Tests (P2-5) --
@@ -341,6 +354,7 @@ def test_directory_listing_entry_limited(fs_tooling: FSTooling, tmp_path: pathli
     # Should be 1000 entries + 1 truncation marker = 1001
     # But the directory "flat/" counts as 1 entry too
     # So it's: flat/ (1) + some files (up to 999) + truncation (1) = 1001 max
+    assert len(lines) >= 500
     assert len(lines) <= 1001
 
 

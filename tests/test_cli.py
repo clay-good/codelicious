@@ -97,15 +97,70 @@ class TestSingleCommand:
         # Engine auto-detected
         mock_select.assert_called_once_with("auto")
 
-        # Build cycle called with everything ON
+        # Build cycle called with orchestrate mode ON
         call_kwargs = mock_successful_engine.run_build_cycle.call_args
-        assert call_kwargs.kwargs["auto_mode"] is True
         assert call_kwargs.kwargs["orchestrate"] is True
         assert call_kwargs.kwargs["push_pr"] is True
         assert call_kwargs.kwargs["reflect"] is True
 
         # PR lifecycle is handled by git_orchestrator, not cli.py
         mock_git_manager.transition_pr_to_review.assert_not_called()
+
+    def test_engine_flag_passed_to_select_engine(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
+        """Test that --engine flag is forwarded to select_engine."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine) as mock_select:
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--engine", "claude"]):
+                            main()
+
+        mock_select.assert_called_once_with("claude")
+
+    def test_engine_env_var_fallback(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
+        """Test that CODELICIOUS_ENGINE env var is used when --engine is not passed."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine) as mock_select:
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.dict("os.environ", {"CODELICIOUS_ENGINE": "huggingface"}):
+                            with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                                main()
+
+        mock_select.assert_called_once_with("huggingface")
+
+    def test_model_and_timeout_flags(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
+        """Test that --model and --agent-timeout are passed to run_build_cycle."""
+        spec_file = mock_repo / "spec.md"
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(
+                            sys,
+                            "argv",
+                            [
+                                "codelicious",
+                                str(mock_repo),
+                                "--model",
+                                "claude-sonnet-4-20250514",
+                                "--agent-timeout",
+                                "600",
+                            ],
+                        ):
+                            main()
+
+        call_kwargs = mock_successful_engine.run_build_cycle.call_args.kwargs
+        assert call_kwargs["model"] == "claude-sonnet-4-20250514"
+        assert call_kwargs["agent_timeout_s"] == 600
 
 
 class TestErrorHandling:
@@ -196,3 +251,25 @@ class TestKeyboardInterrupt:
                             with pytest.raises(SystemExit) as exc_info:
                                 main()
                             assert exc_info.value.code == 130
+
+
+class TestNoIncompleteSpecsEarlyExit:
+    """Test the early-exit path when all specs are already complete (Finding 48)."""
+
+    def test_no_incomplete_specs_exits_zero_without_build(
+        self, mock_repo: Path, mock_successful_engine, mock_git_manager
+    ):
+        """When _discover_incomplete_specs returns [], main() exits 0 without running engine.run_build_cycle."""
+        # Patch both _walk_for_specs (for the banner) and _discover_incomplete_specs (for the guard)
+        # to return empty lists, simulating a fully-complete repo.
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with mock.patch("codelicious.cli._walk_for_specs", return_value=[]):
+                        with mock.patch("codelicious.cli._discover_incomplete_specs", return_value=[]):
+                            with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
+                                with pytest.raises(SystemExit) as exc_info:
+                                    main()
+
+        assert exc_info.value.code == 0
+        mock_successful_engine.run_build_cycle.assert_not_called()

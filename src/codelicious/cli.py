@@ -41,7 +41,10 @@ def _print_banner(repo_path: Path, engine_name: str, branch: str, all_specs, inc
     print(f"  Progress: [{bar}] {pct:.0f}%")
     print()
     if incomplete_specs:
-        rel = lambda p: p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
+        def rel(p):
+            return p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
         print("  Specs to build:")
         for i, s in enumerate(incomplete_specs, 1):
             print(f"    {i}. {rel(s)}")
@@ -52,7 +55,7 @@ def _print_banner(repo_path: Path, engine_name: str, branch: str, all_specs, inc
 
 def _print_result(repo_path: Path, result, elapsed: float, initial_incomplete: int):
     """Print a verbose completion summary."""
-    # Re-scan to see what's left
+    # Re-scan to see what's left using the same logic as _discover_incomplete_specs
     all_specs = _walk_for_specs(repo_path)
     remaining = []
     completed_now = []
@@ -70,7 +73,8 @@ def _print_result(repo_path: Path, result, elapsed: float, initial_incomplete: i
 
     total = len(all_specs)
     complete = len(completed_now)
-    built_this_run = initial_incomplete - len(remaining)
+    # Clamp to avoid negative numbers if new specs were added during the build
+    built_this_run = max(0, initial_incomplete - len(remaining))
 
     bar_width = 30
     filled = int(bar_width * complete / total) if total else bar_width
@@ -94,7 +98,10 @@ def _print_result(repo_path: Path, result, elapsed: float, initial_incomplete: i
     print(f"  Progress: [{bar}] {pct:.0f}%")
     print()
     if remaining:
-        rel = lambda p: p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
+        def rel(p):
+            return p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
+
         print("  Remaining specs:")
         for i, s in enumerate(remaining, 1):
             print(f"    {i}. {rel(s)}")
@@ -106,27 +113,117 @@ def _print_result(repo_path: Path, result, elapsed: float, initial_incomplete: i
     print()
 
 
+def _parse_args(argv: list[str]) -> dict:
+    """Parse CLI arguments into a config dict.
+
+    Supports:
+        codelicious <repo_path> [options]
+
+    Options:
+        --engine claude|huggingface|auto
+        --model MODEL_NAME
+        --agent-timeout SECONDS
+        --resume SESSION_ID
+    """
+    import os
+
+    _USAGE = (
+        "Usage: codelicious <repo_path> [--engine ENGINE] [--model MODEL]\n"
+        "                              [--agent-timeout SECS] [--resume SESSION_ID]\n"
+        "                              [--allow-dangerous]"
+    )
+
+    args = argv[1:]
+    opts: dict = {
+        "repo_path": "",
+        "engine": "",
+        "model": "",
+        "agent_timeout_s": 1800,
+        "resume_session_id": "",
+        "allow_dangerous": False,
+    }
+
+    # Flags that take a value
+    _VALUE_FLAGS = {
+        "--engine": "engine",
+        "--model": "model",
+        "--agent-timeout": "agent_timeout_s",
+        "--resume": "resume_session_id",
+    }
+
+    # Boolean flags that take no value
+    _BOOL_FLAGS = {
+        "--allow-dangerous": "allow_dangerous",
+    }
+
+    i = 0
+    while i < len(args):
+        if args[i] in ("-h", "--help"):
+            print(_USAGE)
+            print()
+            print("Point codelicious at a repo and it builds every spec to completion.")
+            print("Auto-loops, parallel builds in worktrees, parallel reviewers,")
+            print("pushes commits, creates PR. One command. That's it.")
+            print()
+            print("Options:")
+            print("  --engine ENGINE        Force engine: claude, huggingface, auto (default: auto)")
+            print("  --model MODEL          Model name (e.g. claude-sonnet-4-20250514)")
+            print("  --agent-timeout SECS   Max seconds per agent run (default: 1800)")
+            print("  --resume SESSION_ID    Resume a previous Claude session")
+            print("  --allow-dangerous      Pass --dangerously-skip-permissions to the claude CLI")
+            print()
+            print("Environment variables:")
+            print("  CODELICIOUS_ENGINE           Same as --engine (CLI flag takes precedence)")
+            print("  CODELICIOUS_ALLOW_DANGEROUS  Same as --allow-dangerous (set to 1/true/yes)")
+            sys.exit(0)
+        elif args[i] in _BOOL_FLAGS:
+            opts[_BOOL_FLAGS[args[i]]] = True
+            i += 1
+        elif args[i] in _VALUE_FLAGS and i + 1 < len(args):
+            key = _VALUE_FLAGS[args[i]]
+            value = args[i + 1]
+            if key == "agent_timeout_s":
+                try:
+                    value = int(value)
+                except ValueError:
+                    print(f"Error: --agent-timeout requires an integer, got '{value}'")
+                    sys.exit(2)
+            opts[key] = value
+            i += 2
+        elif not args[i].startswith("-") and not opts["repo_path"]:
+            opts["repo_path"] = args[i]
+            i += 1
+        else:
+            print(f"Unknown argument: {args[i]}")
+            print(_USAGE)
+            sys.exit(2)
+
+    if not opts["repo_path"]:
+        print(_USAGE)
+        sys.exit(2)
+
+    # Env var fallback for engine
+    if not opts["engine"]:
+        opts["engine"] = os.environ.get("CODELICIOUS_ENGINE", "auto")
+
+    return opts
+
+
 def main():
     logger = setup_logger()
 
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("Usage: codelicious <repo_path>")
-        print()
-        print("Point codelicious at a repo and it builds every spec to completion.")
-        print("Auto-loops, parallel builds in worktrees, parallel reviewers,")
-        print("pushes commits, creates PR. One command. That's it.")
-        sys.exit(0 if sys.argv[1:] == ["--help"] or sys.argv[1:] == ["-h"] else 2)
+    opts = _parse_args(sys.argv)
 
-    repo_path = Path(sys.argv[1]).resolve()
+    repo_path = Path(opts["repo_path"]).resolve()
     if not repo_path.is_dir():
         logger.error("Repository path %s does not exist or is not a directory.", repo_path)
         sys.exit(1)
 
     logger.info("Starting Codelicious workflow in %s", repo_path)
 
-    # 1. Select build engine (auto-detect)
+    # 1. Select build engine
     try:
-        engine = select_engine("auto")
+        engine = select_engine(opts["engine"])
     except RuntimeError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -140,8 +237,10 @@ def main():
     cache_manager.load_cache()
 
     # 4. Discover specs and print startup banner
+    # Walk the repo tree once and reuse the result so _discover_incomplete_specs
+    # does not repeat the filesystem traversal (Finding 25).
     all_specs = _walk_for_specs(repo_path)
-    incomplete_specs = _discover_incomplete_specs(repo_path)
+    incomplete_specs = _discover_incomplete_specs(repo_path, all_specs=all_specs)
 
     _print_banner(repo_path, engine.name, git_manager.current_branch, all_specs, incomplete_specs)
 
@@ -159,29 +258,30 @@ def main():
     build_start = time.monotonic()
 
     try:
-        # 5. Run the build cycle — everything ON by default
+        # 5. Run the build cycle — orchestrate mode handles looping,
+        #    worktree isolation, and review/fix internally.
         result = engine.run_build_cycle(
             repo_path=repo_path,
             git_manager=git_manager,
             cache_manager=cache_manager,
             spec_filter=None,
-            model="",
-            agent_timeout_s=1800,
+            model=opts["model"],
+            agent_timeout_s=opts["agent_timeout_s"],
             verify_passes=3,
             reflect=True,
             push_pr=True,
-            resume_session_id="",
+            resume_session_id=opts["resume_session_id"],
             dry_run=False,
             effort="",
             max_turns=0,
-            auto_mode=True,
+            auto_mode=False,  # orchestrate mode handles its own looping
             max_cycles=50,
-            parallel=3,
+            parallel=1,  # orchestrate mode uses build_workers for parallelism
             orchestrate=True,
             reviewers="",
             build_workers=3,
             review_workers=4,
-            max_iterations=50,
+            allow_dangerous=opts["allow_dangerous"],
         )
 
         elapsed = time.monotonic() - build_start

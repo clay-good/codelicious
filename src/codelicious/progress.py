@@ -73,9 +73,11 @@ class ProgressReporter:
                 handle = open(self._log_path, "a", encoding="utf-8", buffering=1)
                 try:
                     os.chmod(str(self._log_path), 0o600)
-                except OSError:
-                    handle.close()
-                    raise
+                except OSError as exc:
+                    # Permissions are a hardening measure; a chmod failure must
+                    # not prevent progress reporting from working. Log the error
+                    # and continue with the file handle open.
+                    logger.warning("Failed to set permissions on progress.jsonl: %s", exc)
                 self._handle = handle
             self._handle.write(line)
             self._handle.flush()
