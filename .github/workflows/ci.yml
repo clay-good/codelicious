@@ -68,7 +68,7 @@ jobs:
           key: pip-${{ runner.os }}-3.12-${{ hashFiles('pyproject.toml') }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install ".[dev]"
 
       - name: Security scan (bandit)
         # B101: assert used (test code pattern)
@@ -83,4 +83,4 @@ jobs:
         # Audit runtime dependencies only (skip self since we're not on PyPI)
         # --strict: fail on warnings in addition to errors
         # CVE-2026-4539: pygments <=2.19.2 ReDoS in AdlLexer — no fix released yet, local-only attack vector
-        run: pip-audit --strict --desc --ignore-vuln CVE-2026-4539 --exclude codelicious
+        run: pip-audit --strict --desc --ignore-vuln CVE-2026-4539
