@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import os
 import pathlib
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import List
 
@@ -14,6 +16,7 @@ __all__ = [
     "Config",
     "PROVIDER_DEFAULTS",
     "PolicyConfig",
+    "_validate_endpoint_url",
     "build_config",
 ]
 
@@ -77,6 +80,48 @@ def _parse_env_bool(var_name: str, default: bool) -> bool:
     return raw.lower() in ("1", "true", "yes", "on")
 
 
+def _validate_endpoint_url(url: str, var_name: str = "endpoint") -> None:
+    """Validate an endpoint URL to prevent SSRF via user-supplied configuration.
+
+    Rules:
+    - Only HTTPS is accepted, except for localhost/127.0.0.1/::1 which may use
+      plain HTTP for local development proxies.
+    - Any other scheme (http to a remote host, ftp, file, …) is rejected.
+    - An empty string is allowed (feature may be disabled).
+
+    Args:
+        url: The URL string to validate.
+        var_name: The environment variable name to include in the error message.
+
+    Raises:
+        ValueError: If the URL fails validation.
+    """
+    if not url:
+        return
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as exc:
+        raise ValueError(f"Unparseable URL in {var_name}: {url!r}") from exc
+
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+
+    is_localhost = hostname in ("localhost", "127.0.0.1", "::1")
+
+    if scheme == "https":
+        return
+
+    if scheme == "http" and is_localhost:
+        # Plain HTTP is allowed only for local development endpoints.
+        return
+
+    raise ValueError(
+        f"Insecure or disallowed URL in {var_name}: {url!r}. "
+        "Only HTTPS URLs are permitted (or HTTP to localhost for development)."
+    )
+
+
 @dataclass
 class PolicyConfig:
     """Optional policybind token integration configuration."""
@@ -121,6 +166,7 @@ class PolicyConfig:
                 )
 
         endpoint = os.environ.get("CODELICIOUS_POLICYBIND_ENDPOINT", "").strip()
+        _validate_endpoint_url(endpoint, var_name="CODELICIOUS_POLICYBIND_ENDPOINT")
         org_id = os.environ.get("CODELICIOUS_POLICY_ORG_ID", "").strip()
         logger.debug(
             "PolicyConfig: enabled=%s, endpoint=%s, org_id=%s, budget=$%.2f, models=%s",
@@ -175,6 +221,7 @@ class Config:
 
     # Agent-mode fields
     agent_timeout_s: int = 7200  # 2 hours per invocation (big specs need time)
+    allow_dangerous: bool = False  # Pass --dangerously-skip-permissions to the claude CLI
     effort: str = ""  # "", "low", "medium", "high", "max"
     max_turns: int = 0  # 0 = unlimited
     max_iterations: int = 10  # Max build→reflect cycles (legacy, kept for compat)
@@ -183,9 +230,19 @@ class Config:
     push_pr: bool = False  # Push changes and create PR after successful build
     pr_base_branch: str = ""  # Base branch for PR (default: repo default branch)
     ci_fix_passes: int = 3  # Max CI fix attempts (0 = skip CI monitoring)
-    auto_mode: bool = False  # Continuous build loop (one task per commit)
+    auto_mode: bool = False  # Continuous build loop (cycles until all specs complete)
     spec_path: str = ""  # Path to spec file for auto mode
     log_dir: pathlib.Path = field(default_factory=lambda: pathlib.Path.home() / ".codelicious" / "builds")
+
+    def __repr__(self) -> str:
+        """Mask api_key in repr output to prevent accidental exposure (spec-22 Phase 7)."""
+        fields = []
+        for f in dataclasses.fields(self):
+            val = getattr(self, f.name)
+            if f.name == "api_key" and val:
+                val = "****"
+            fields.append(f"{f.name}={val!r}")
+        return f"Config({', '.join(fields)})"
 
     def get_effective_model(self) -> str:
         """Return the model name, falling back to the provider default."""
@@ -258,7 +315,10 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}")
 
     if config.max_context_tokens < 1000:
-        raise ValueError(f"max_context_tokens must be >= 1000, got {config.max_context_tokens}")
+        raise ValueError(
+            f"max_context_tokens must be >= 1000 (recommended: 4000-8000 for most models), "
+            f"got {config.max_context_tokens}"
+        )
 
     # Verify command
     env_verify = os.environ.get("CODELICIOUS_BUILD_VERIFY_COMMAND")

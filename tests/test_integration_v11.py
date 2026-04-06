@@ -142,3 +142,18 @@ class TestVerifierOnFixtures:
 
         result = check_security(tmp_path)
         assert result.passed
+
+    def test_verifier_on_empty_directory(self, tmp_path):
+        """check_syntax on a directory with no Python files returns a passing result.
+
+        When no .py files are found, the verifier should return a passed CheckResult
+        with the message 'No Python files found' rather than raising or returning an error.
+        """
+        from codelicious.verifier import check_syntax
+
+        # tmp_path has no files at all — verify check_syntax handles this gracefully
+        result = check_syntax(tmp_path)
+
+        assert result.passed is True
+        assert result.name == "syntax"
+        assert "no python files found" in result.message.lower()

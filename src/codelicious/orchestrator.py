@@ -23,8 +23,10 @@ import concurrent.futures
 import json
 import logging
 import pathlib
+import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -77,7 +79,6 @@ Write ALL findings as JSON to `.codelicious/review_security.json`:
 [{"severity": "P1", "file": "src/foo.py", "line": 42, "title": "...", "description": "...", "fix": "..."}]
 ```
 
-Then write "DONE" to .codelicious/BUILD_COMPLETE
 """,
     "qa": """\
 You are a **QA engineer** reviewing {{project_name}}.
@@ -99,7 +100,6 @@ Write ALL findings as JSON to `.codelicious/review_qa.json`:
 [{"severity": "P2", "file": "tests/test_foo.py", "line": 10, "title": "...", "description": "...", "fix": "..."}]
 ```
 
-Then write "DONE" to .codelicious/BUILD_COMPLETE
 """,
     "performance": """\
 You are a **performance engineer** reviewing {{project_name}}.
@@ -122,7 +122,6 @@ Write ALL findings as JSON to `.codelicious/review_performance.json`:
 [{"severity": "P2", "file": "src/foo.py", "line": 99, "title": "...", "description": "...", "fix": "..."}]
 ```
 
-Then write "DONE" to .codelicious/BUILD_COMPLETE
 """,
     "reliability": """\
 You are a **reliability engineer** reviewing {{project_name}}.
@@ -145,7 +144,6 @@ Write ALL findings as JSON to `.codelicious/review_reliability.json`:
 [{"severity": "P1", "file": "src/foo.py", "line": 55, "title": "...", "description": "...", "fix": "..."}]
 ```
 
-Then write "DONE" to .codelicious/BUILD_COMPLETE
 """,
 }
 
@@ -194,38 +192,60 @@ class OrchestratorResult:
 # Worktree helpers
 # ---------------------------------------------------------------------------
 
+_WORKTREE_TIMEOUT_S: int = 120  # Max seconds for worktree subprocess operations
+_MERGE_ABORT_TIMEOUT_S: int = 30  # Max seconds for git merge --abort
+
 
 def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
     """Create a git worktree for isolated building.
 
     Returns the path to the new worktree directory.
     """
-    worktree_dir = repo_path / ".codelicious" / "worktrees" / branch_name
+    # Sanitize branch_name to prevent path traversal (Finding 30)
+    safe_branch = re.sub(r"[^a-zA-Z0-9_\-/]", "_", branch_name)
+    safe_branch = safe_branch.replace("..", "_")
+    worktree_dir = repo_path / ".codelicious" / "worktrees" / safe_branch
+    worktrees_root = (repo_path / ".codelicious" / "worktrees").resolve()
+    if not worktree_dir.resolve().is_relative_to(worktrees_root):
+        raise RuntimeError(f"Worktree path escapes allowed directory: {branch_name}")
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Clean up stale worktree if it exists
     if worktree_dir.exists():
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree_dir)],
-            cwd=str(repo_path),
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=str(repo_path),
+                capture_output=True,
+                timeout=_WORKTREE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("Timed out removing stale worktree %s; proceeding anyway.", worktree_dir)
 
     # Create the worktree with a new branch
-    result = subprocess.run(
-        ["git", "worktree", "add", "-b", branch_name, str(worktree_dir)],
-        cwd=str(repo_path),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        # Branch might already exist — try without -b
+    try:
         result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_dir), branch_name],
+            ["git", "worktree", "add", "-b", safe_branch, str(worktree_dir)],
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            timeout=_WORKTREE_TIMEOUT_S,
         )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Timed out creating worktree for branch {branch_name}")
+
+    if result.returncode != 0:
+        # Branch might already exist — try without -b
+        try:
+            result = subprocess.run(
+                ["git", "worktree", "add", str(worktree_dir), safe_branch],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=_WORKTREE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Timed out creating worktree (fallback) for branch {branch_name}")
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create worktree: {result.stderr}")
 
@@ -235,29 +255,150 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
 
 def _remove_worktree(repo_path: pathlib.Path, worktree_dir: pathlib.Path) -> None:
     """Remove a git worktree."""
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(worktree_dir)],
-        cwd=str(repo_path),
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree_dir)],
+            cwd=str(repo_path),
+            capture_output=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out removing worktree %s; it may need manual cleanup.", worktree_dir)
+        return
     logger.info("Removed worktree: %s", worktree_dir)
+
+
+def _commit_worktree_changes(worktree_dir: pathlib.Path, spec_name: str) -> bool:
+    """Stage and commit all changes in a worktree.
+
+    The build agent is forbidden from running git commands, so the
+    orchestrator must commit changes on the agent's behalf before the
+    worktree is removed.  Without this commit, changes would be lost.
+
+    Excludes ``.codelicious/`` from the commit to prevent merge conflicts
+    when multiple worktrees modify STATE.md or BUILD_COMPLETE.
+
+    Attempts a GPG-signed commit first. Falls back to ``--no-gpg-sign``
+    only when GPG-related errors are detected in stderr (e.g. no GPG agent
+    is available in the worktree environment).
+
+    Returns True if a commit was created, False if the worktree was clean.
+    """
+    # Stage everything EXCEPT .codelicious/ (which causes merge conflicts)
+    try:
+        subprocess.run(
+            ["git", "add", "--all", "--", ".", ":!.codelicious/"],
+            cwd=str(worktree_dir),
+            capture_output=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out staging changes in worktree %s.", worktree_dir)
+        return False
+
+    # Check if there's anything staged
+    try:
+        status = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=str(worktree_dir),
+            capture_output=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out checking staged diff in worktree %s.", worktree_dir)
+        return False
+
+    if status.returncode == 0:
+        logger.debug("Worktree %s has no staged changes — nothing to commit.", worktree_dir)
+        return False
+
+    # Try a signed commit first (Finding 42: honour GPG signing policy)
+    try:
+        result = subprocess.run(
+            ["git", "commit", "-m", f"codelicious: build {spec_name}"],
+            cwd=str(worktree_dir),
+            capture_output=True,
+            text=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out committing worktree changes for %s.", spec_name)
+        return False
+
+    if result.returncode != 0:
+        stderr_lower = result.stderr.lower()
+        gpg_related = any(kw in stderr_lower for kw in ("gpg", "signing", "sign", "secret key"))
+        if gpg_related:
+            logger.warning(
+                "GPG signing unavailable in worktree (no GPG agent); falling back to unsigned commit. stderr: %s",
+                result.stderr.strip(),
+            )
+            try:
+                result = subprocess.run(
+                    ["git", "commit", "--no-gpg-sign", "-m", f"codelicious: build {spec_name}"],
+                    cwd=str(worktree_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=_WORKTREE_TIMEOUT_S,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("Timed out committing (unsigned) worktree changes for %s.", spec_name)
+                return False
+        if result.returncode != 0:
+            logger.warning("Failed to commit worktree changes: %s", result.stderr.strip())
+            return False
+
+    logger.info("Committed agent changes in worktree for %s", spec_name)
+    return True
+
+
+def _abort_merge(repo_path: pathlib.Path) -> None:
+    """Abort an in-progress git merge, with timeout and error handling."""
+    try:
+        abort_result = subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_MERGE_ABORT_TIMEOUT_S,
+        )
+        if abort_result.returncode != 0:
+            logger.critical(
+                "git merge --abort failed (exit %d): %s",
+                abort_result.returncode,
+                abort_result.stderr.strip(),
+            )
+        else:
+            logger.info("Merge aborted successfully.")
+    except subprocess.TimeoutExpired:
+        logger.critical(
+            "git merge --abort timed out after %ds — repository may be in a dirty state.",
+            _MERGE_ABORT_TIMEOUT_S,
+        )
 
 
 def _merge_worktree_branch(repo_path: pathlib.Path, branch_name: str) -> bool:
     """Merge a worktree branch back into the current branch.
 
-    Returns True on success, False on merge conflict.
+    Returns True on success, False on merge conflict or timeout.
     """
-    result = subprocess.run(
-        ["git", "merge", "--no-ff", "-m", f"codelicious: merge {branch_name}", branch_name],
-        cwd=str(repo_path),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "merge", "--no-ff", "-m", f"codelicious: merge {branch_name}", branch_name],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("Timed out merging branch %s; attempting abort.", branch_name)
+        _abort_merge(repo_path)
+        return False
+
     if result.returncode != 0:
         logger.error("Merge conflict for branch %s: %s", branch_name, result.stderr)
         # Abort the merge to leave repo in clean state
-        subprocess.run(["git", "merge", "--abort"], cwd=str(repo_path), capture_output=True)
+        _abort_merge(repo_path)
         return False
 
     logger.info("Merged branch %s successfully.", branch_name)
@@ -266,11 +407,19 @@ def _merge_worktree_branch(repo_path: pathlib.Path, branch_name: str) -> bool:
 
 def _delete_branch(repo_path: pathlib.Path, branch_name: str) -> None:
     """Delete a local branch after merge."""
-    subprocess.run(
-        ["git", "branch", "-d", branch_name],
-        cwd=str(repo_path),
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-d", branch_name],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_WORKTREE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out deleting branch %s.", branch_name)
+        return
+    if result.returncode != 0:
+        logger.warning("Failed to delete branch %s: %s", branch_name, result.stderr.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +479,12 @@ def _triage_findings(findings: list[Finding]) -> list[Finding]:
 _FIX_PROMPT_TEMPLATE: str = """\
 You are fixing issues in {{project_name}} identified by automated review.
 
+## CRITICAL: Do NOT run git or gh commands
+
+The codelicious orchestrator manages all git and GitHub operations.
+You MUST NOT run git add, git commit, git push, gh pr create, or any
+other git/gh commands. The orchestrator will commit your changes.
+
 ## Triaged Findings (ordered by severity)
 
 {{findings_text}}
@@ -343,7 +498,6 @@ For each fix:
 3. Run tests after each fix to ensure no regressions
 
 When all fixable findings are addressed, run /verify-all.
-Commit the fixes with a descriptive message.
 Then write "DONE" to .codelicious/BUILD_COMPLETE
 """
 
@@ -413,31 +567,93 @@ class Orchestrator:
     def _build_spec_in_worktree(self, spec_path: pathlib.Path) -> tuple[str, bool]:
         """Build a single spec in an isolated git worktree.
 
+        The agent is instructed to build ALL unchecked tasks in the
+        assigned spec file, not just one.
+
         Returns (branch_name, success).
         """
         from codelicious.prompts import AGENT_BUILD_SPEC, render
 
-        from codelicious.git.git_orchestrator import GitManager
+        from codelicious.git.git_orchestrator import spec_branch_name
 
-        branch_name = GitManager.branch_for_spec(spec_path.name)
+        branch_name = spec_branch_name(spec_path.name)
         worktree_dir: pathlib.Path | None = None
 
         try:
             worktree_dir = _create_worktree(self.repo_path, branch_name)
 
+            # Resolve spec_path relative to the worktree so the agent
+            # sees the correct file path in its working directory.
+            try:
+                rel = spec_path.relative_to(self.repo_path)
+            except ValueError:
+                # spec_path is not under repo_path — use just the filename
+                # to avoid joining an absolute path (which discards the left operand)
+                rel = pathlib.Path(spec_path.name)
+                logger.warning(
+                    "Spec %s is not under repo %s — using filename only.",
+                    spec_path,
+                    self.repo_path,
+                )
+            spec_in_worktree = worktree_dir / rel
+
+            if not spec_in_worktree.is_file():
+                logger.warning(
+                    "Spec file %s not found in worktree %s. Agent will search for specs automatically.",
+                    spec_in_worktree,
+                    worktree_dir,
+                )
+                # Fall back to telling the agent to find the spec itself
+                spec_filter_str = (
+                    f"File not found at {spec_in_worktree}. Look for a spec file named '{spec_path.name}' in the repo."
+                )
+            else:
+                spec_filter_str = str(spec_in_worktree)
+
             build_prompt = render(
                 AGENT_BUILD_SPEC,
                 project_name=self.project_name,
-                spec_filter=str(spec_path),
+                spec_filter=spec_filter_str,
             )
 
             result = self._run_agent(build_prompt, worktree_dir)
+
+            # Don't trust result.success alone — it only reflects subprocess
+            # exit code (0 = success).  Check BUILD_COMPLETE in the worktree
+            # to verify the agent actually finished building.
+            from codelicious.prompts import check_build_complete
+
+            agent_done = check_build_complete(worktree_dir)
+            success = result.success and agent_done
+
             logger.info(
-                "Build for %s complete: success=%s",
+                "Build for %s complete: process_ok=%s, build_complete=%s",
                 spec_path.name,
                 result.success,
+                agent_done,
             )
-            return branch_name, result.success
+
+            # Commit the agent's changes in the worktree so they survive
+            # worktree removal and can be merged back.  Agents are forbidden
+            # from running git commands — the orchestrator owns all git ops.
+            commit_ok = _commit_worktree_changes(worktree_dir, spec_path.name)
+
+            # If the build succeeded but we couldn't commit its changes, mark the
+            # overall result as failed and preserve the worktree so the changes are
+            # not silently discarded.  The caller will see success=False and can
+            # investigate the worktree directory for manual recovery.
+            if not commit_ok and success:
+                logger.error(
+                    "Build for %s succeeded but committing worktree changes failed. "
+                    "Preserving worktree at %s to prevent data loss.",
+                    spec_path.name,
+                    worktree_dir,
+                )
+                success = False
+                # Signal the finally block to skip removal by clearing worktree_dir
+                worktree_dir = None
+
+            return branch_name, success
 
         except Exception as e:
             logger.error("Build for %s failed: %s", spec_path.name, e)
@@ -459,6 +675,8 @@ class Orchestrator:
 
         Returns list of (branch_name, success) tuples.
         """
+        from codelicious.git.git_orchestrator import spec_branch_name
+
         if not specs:
             return []
 
@@ -471,14 +689,21 @@ class Orchestrator:
 
         results: list[tuple[str, bool]] = []
         completed_count = 0
+        count_lock = threading.Lock()
 
         def _log_spec_progress(spec: pathlib.Path, branch: str, ok: bool) -> None:
             nonlocal completed_count
-            completed_count += 1
+            with count_lock:
+                completed_count += 1
+                count = completed_count
             status = "OK" if ok else "FAILED"
             logger.info(
                 "  [%d/%d] %s — %s (branch: %s)",
-                completed_count, len(specs), spec.name, status, branch,
+                count,
+                len(specs),
+                spec.name,
+                status,
+                branch,
             )
 
         if workers <= 1:
@@ -493,20 +718,32 @@ class Orchestrator:
                 futures = {pool.submit(self._build_spec_in_worktree, spec): spec for spec in specs}
                 for spec in specs:
                     logger.info("  Queued spec: %s", spec.name)
-                for future in concurrent.futures.as_completed(futures):
-                    spec = futures[future]
-                    try:
-                        branch, ok = future.result()
-                        _log_spec_progress(spec, branch, ok)
-                        results.append((branch, ok))
-                    except Exception as e:
-                        branch = f"codelicious/build-{spec.stem}"
-                        completed_count += 1
-                        logger.error(
-                            "  [%d/%d] %s — ERROR: %s",
-                            completed_count, len(specs), spec.name, e,
-                        )
-                        results.append((branch, False))
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        spec = futures[future]
+                        try:
+                            branch, ok = future.result()
+                            _log_spec_progress(spec, branch, ok)
+                            results.append((branch, ok))
+                        except Exception as e:
+                            branch = spec_branch_name(spec.name)
+                            with count_lock:
+                                completed_count += 1
+                                count = completed_count
+                            logger.error(
+                                "  [%d/%d] %s — ERROR: %s",
+                                count,
+                                len(specs),
+                                spec.name,
+                                e,
+                            )
+                            results.append((branch, False))
+                except KeyboardInterrupt:
+                    logger.warning("KeyboardInterrupt received — cancelling pending build futures.")
+                    for f in futures:
+                        f.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
 
         return results
 
@@ -545,14 +782,13 @@ class Orchestrator:
 
     def _run_reviewer(self, role: str) -> list[Finding]:
         """Run a single reviewer agent (read-only) and collect findings."""
-        from codelicious.prompts import render, clear_build_complete
+        from codelicious.prompts import render
 
         prompt_template = REVIEWER_PROMPTS.get(role)
         if not prompt_template:
             logger.warning("Unknown reviewer role: %s", role)
             return []
 
-        clear_build_complete(self.repo_path)
         prompt = render(prompt_template, project_name=self.project_name)
 
         try:
@@ -590,12 +826,19 @@ class Orchestrator:
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {pool.submit(self._run_reviewer, role): role for role in roles}
-                for future in concurrent.futures.as_completed(futures):
-                    role = futures[future]
-                    try:
-                        all_findings.extend(future.result())
-                    except Exception as e:
-                        logger.error("Reviewer %s raised: %s", role, e)
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        role = futures[future]
+                        try:
+                            all_findings.extend(future.result())
+                        except Exception as e:
+                            logger.error("Reviewer %s raised: %s", role, e)
+                except KeyboardInterrupt:
+                    logger.warning("KeyboardInterrupt received — cancelling pending review futures.")
+                    for f in futures:
+                        f.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
 
         triaged = _triage_findings(all_findings)
         logger.info(
@@ -650,9 +893,15 @@ class Orchestrator:
         reviewers: list[str] | None = None,
         max_build_workers: int = 3,
         max_review_workers: int = 4,
+        max_build_cycles: int = 10,
         push_pr: bool = False,
+        max_wall_clock_s: float = 7200,
     ) -> OrchestratorResult:
-        """Run the full 4-phase orchestrated pipeline.
+        """Run the full orchestrated pipeline.
+
+        Build→merge cycles repeat until all specs are complete (no
+        unchecked ``- [ ]`` items remain) or the cycle cap is reached.
+        Review and fix run once at the end, after building is done.
 
         Parameters
         ----------
@@ -665,52 +914,133 @@ class Orchestrator:
             Max concurrent builder agents.
         max_review_workers:
             Max concurrent reviewer agents.
+        max_build_cycles:
+            Max build→merge iterations before giving up.
         push_pr:
             Whether to push and create/update PR after completion.
+        max_wall_clock_s:
+            Hard wall-clock limit in seconds for the entire run (Finding 22).
+            Defaults to 7200 (2 hours). The build loop is aborted if this
+            limit is reached before all cycles complete.
         """
+        from codelicious.prompts import scan_remaining_tasks_for_spec
+
         if reviewers is None:
             reviewers = list(REVIEWER_PROMPTS.keys())
 
+        # Normalize all spec paths to absolute so comparisons are reliable
+        specs = [s.resolve() if not s.is_absolute() else s for s in specs]
+
         start = time.monotonic()
+        total_builds = 0
+        total_merged = 0
+        cycles = 0
+
         logger.info(
-            "ORCHESTRATOR: %d specs, %d reviewers, build_workers=%d, review_workers=%d",
+            "ORCHESTRATOR: %d specs, %d reviewers, build_workers=%d, review_workers=%d, max_build_cycles=%d",
             len(specs),
             len(reviewers),
             max_build_workers,
             max_review_workers,
+            max_build_cycles,
         )
 
-        # ── Phase 1: BUILD ─────────────────────────────────────────
-        logger.info("")
-        logger.info("---- Phase 1/4: BUILD ----")
-        build_results = self._phase_build(specs, max_build_workers)
-        successful_builds = sum(1 for _, ok in build_results if ok)
-        logger.info("Phase 1 complete: %d/%d specs built successfully.", successful_builds, len(specs))
+        # ── BUILD LOOP: repeat build→merge until all specs complete ──
+        incomplete_specs = list(specs)
+        consecutive_failures = 0
 
-        if successful_builds == 0 and specs:
-            return OrchestratorResult(
-                success=False,
-                message="All builds failed.",
-                elapsed_s=time.monotonic() - start,
+        for cycle in range(1, max_build_cycles + 1):
+            # Wall-clock timeout guard (Finding 22)
+            elapsed_so_far = time.monotonic() - start
+            if elapsed_so_far >= max_wall_clock_s:
+                logger.error(
+                    "Wall-clock timeout reached after %.1fs (limit=%ss). Aborting build loop.",
+                    elapsed_so_far,
+                    max_wall_clock_s,
+                )
+                break
+
+            # Cache scan_remaining_tasks_for_spec results keyed by spec path so
+            # each spec is queried at most once per cycle (Finding 26).
+            remaining_cache: dict[pathlib.Path, int] = {s: scan_remaining_tasks_for_spec(s) for s in incomplete_specs}
+            # Check which specs still have unchecked tasks
+            still_incomplete = [s for s, n in remaining_cache.items() if n > 0]
+            if not still_incomplete:
+                logger.info("All %d specs are complete after %d build cycle(s).", len(specs), cycles)
+                break
+
+            cycles = cycle
+            logger.info("")
+            logger.info(
+                "══════ Build cycle %d/%d (%d specs remaining) ══════", cycle, max_build_cycles, len(still_incomplete)
             )
 
-        # ── Phase 2: MERGE ─────────────────────────────────────────
-        logger.info("")
-        logger.info("---- Phase 2/4: MERGE ----")
-        merged = self._phase_merge(build_results)
-        logger.info("Phase 2 complete: %d branches merged.", merged)
+            # ── Phase 1: BUILD ────────────────────────────────────
+            logger.info("---- BUILD ----")
+            build_results = self._phase_build(still_incomplete, max_build_workers)
+            successful = sum(1 for _, ok in build_results if ok)
+            total_builds += successful
+            logger.info("Build: %d/%d specs built successfully.", successful, len(still_incomplete))
 
-        # ── Phase 3: REVIEW ────────────────────────────────────────
+            if successful == 0:
+                consecutive_failures += 1
+                logger.warning("No specs built in cycle %d (%d consecutive failures).", cycle, consecutive_failures)
+                if consecutive_failures >= 3:
+                    logger.error("Aborting: %d consecutive build cycles with zero progress.", consecutive_failures)
+                    break
+                continue
+            else:
+                consecutive_failures = 0
+
+            # ── Phase 2: MERGE ────────────────────────────────────
+            logger.info("---- MERGE ----")
+            merged = self._phase_merge(build_results)
+            total_merged += merged
+            logger.info("Merge: %d branches merged.", merged)
+
+            # Commit merged work and push before next cycle
+            try:
+                self.git_manager.commit_verified_changes(
+                    commit_message=f"codelicious: build cycle {cycle} of {self.project_name}"
+                )
+            except Exception as e:
+                logger.warning("Mid-cycle commit failed: %s", e)
+
+            # Push even if commit_verified_changes found nothing new to
+            # commit — merge commits need to be pushed too.
+            self.git_manager.push_to_origin()
+
+            # Update incomplete list for next iteration
+            incomplete_specs = still_incomplete
+
+        # ── Check final completion status ─────────────────────────
+        # Cache results to avoid calling scan_remaining_tasks_for_spec twice
+        # for the same spec (Finding 26).
+        final_remaining_cache: dict[pathlib.Path, int] = {s: scan_remaining_tasks_for_spec(s) for s in specs}
+        final_incomplete = [s for s, n in final_remaining_cache.items() if n > 0]
+        all_complete = len(final_incomplete) == 0
+
+        if all_complete:
+            logger.info("All specs complete. Proceeding to review phase.")
+        else:
+            remaining_tasks = sum(final_remaining_cache[s] for s in final_incomplete)
+            logger.warning(
+                "%d spec(s) still incomplete (%d unchecked tasks). Proceeding to review.",
+                len(final_incomplete),
+                remaining_tasks,
+            )
+
+        # ── REVIEW (once, after all building is done) ─────────────
         logger.info("")
-        logger.info("---- Phase 3/4: REVIEW ----")
+        logger.info("---- REVIEW ----")
         findings = self._phase_review(reviewers, max_review_workers)
 
-        # ── Phase 4: FIX ──────────────────────────────────────────
+        # ── FIX (once, after review) ──────────────────────────────
         logger.info("")
-        logger.info("---- Phase 4/4: FIX ----")
+        logger.info("---- FIX ----")
         fix_ok = self._phase_fix(findings)
 
-        # ── Commit & PR ────────────────────────────────────────────
+        # ── Final commit, push & PR ───────────────────────────────
         try:
             self.git_manager.commit_verified_changes(
                 commit_message=f"codelicious: orchestrated build of {self.project_name}"
@@ -718,24 +1048,33 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Post-orchestration commit failed: %s", e)
 
+        # Always push — commit_verified_changes skips push when working
+        # tree is clean, but merge commits still need to be pushed.
+        self.git_manager.push_to_origin()
+
         if push_pr:
-            try:
-                self.git_manager.ensure_draft_pr_exists(
-                    f"Orchestrated build: {len(specs)} specs, {len(findings)} findings"
-                )
-            except Exception as e:
-                logger.warning("PR creation failed: %s", e)
+            # Create/reuse one PR per successfully built spec (spec-22 Phase 4)
+            for spec in specs:
+                _m = re.match(r"^(\d+)", spec.stem)
+                _sid = _m.group(1) if _m else spec.stem
+                try:
+                    self.git_manager.ensure_draft_pr_exists(
+                        spec_id=_sid,
+                        spec_summary=f"build {self.project_name}",
+                    )
+                except Exception as e:
+                    logger.warning("PR creation for spec-%s failed: %s", _sid, e)
 
         elapsed = time.monotonic() - start
         return OrchestratorResult(
-            success=fix_ok,
+            success=all_complete and fix_ok,
             message=(
-                f"Orchestrated: {successful_builds}/{len(specs)} specs built, "
-                f"{merged} merged, {len(findings)} findings, "
-                f"fix={'OK' if fix_ok else 'FAILED'} "
+                f"Orchestrated: {total_builds} builds across {cycles} cycle(s), "
+                f"{total_merged} merged, {len(final_incomplete)}/{len(specs)} specs still incomplete, "
+                f"{len(findings)} findings, fix={'OK' if fix_ok else 'FAILED'} "
                 f"in {elapsed:.1f}s"
             ),
             findings=findings,
             elapsed_s=elapsed,
-            cycles_completed=1,
+            cycles_completed=cycles,
         )

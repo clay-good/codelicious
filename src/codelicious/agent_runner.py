@@ -10,6 +10,7 @@ assistant output.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import pathlib
@@ -26,9 +27,20 @@ from codelicious.errors import (
     ClaudeAuthError,
     ClaudeRateLimitError,
     CodeliciousError,
+    PolicyViolationError,
 )
+from codelicious.logger import sanitize_message
 
-__all__ = ["AgentResult", "run_agent", "_sanitize_prompt", "_MAX_PROMPT_LENGTH", "_POLL_INTERVAL_S"]
+__all__ = [
+    "AgentResult",
+    "FORBIDDEN_CLI_FLAGS",
+    "run_agent",
+    "_sanitize_prompt",
+    "_process_stream_event",
+    "_validate_command_flags",
+    "_MAX_PROMPT_LENGTH",
+    "_POLL_INTERVAL_S",
+]
 
 # Timeout constants
 _SIGTERM_GRACE_S: int = 5  # Seconds to wait after SIGTERM before SIGKILL
@@ -40,7 +52,23 @@ _POLL_INTERVAL_S: float = 0.1  # Polling interval for main loop (reduced from 1.
 # Prompt sanitization constants
 _MAX_PROMPT_LENGTH: int = 100_000  # Maximum prompt length in characters
 
+# CLI flags that must never appear in any agent subprocess command (S20-P1-3).
+# The agent relies on the scoped .claude/settings.json allowlist for permissions
+# rather than bypassing all permission guardrails.
+FORBIDDEN_CLI_FLAGS: frozenset[str] = frozenset(["--dangerously-skip-permissions"])
+
 logger = logging.getLogger("codelicious.agent_runner")
+
+
+def _validate_command_flags(cmd: list[str]) -> None:
+    """Validate that no forbidden CLI flags are present in the command.
+
+    Raises:
+        PolicyViolationError: If a forbidden flag is found (S20-P1-3).
+    """
+    for flag in FORBIDDEN_CLI_FLAGS:
+        if flag in cmd:
+            raise PolicyViolationError(f"Forbidden CLI flag in agent command: {flag}")
 
 
 def _sanitize_prompt(prompt: str) -> str:
@@ -130,8 +158,11 @@ def _build_agent_command(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--dangerously-skip-permissions",
     ]
+
+    # S20-P1-3: --dangerously-skip-permissions is no longer added under any
+    # circumstance.  The agent relies on the scoped .claude/settings.json
+    # allow-list scaffolded by scaffold_claude_dir() for its permissions.
 
     model = getattr(config, "model", "")
     if model:
@@ -188,6 +219,9 @@ def _check_agent_errors(
     stdout_text = "".join(stdout_lines)
     combined_lower = stderr_lower + stdout_text.lower()
 
+    # Sanitize stderr before logging or embedding in exceptions (Finding 39)
+    safe_stderr = sanitize_message(stderr_text[:500])
+
     if "auth" in stderr_lower:
         raise ClaudeAuthError(
             f"Claude CLI authentication failed. Run 'claude' interactively to log in. (exit code {returncode})"
@@ -208,19 +242,20 @@ def _check_agent_errors(
         logger.warning(
             "Agent failed: exit_code=%d, stderr=%.500s",
             returncode,
-            stderr_text[:500],
+            safe_stderr,
         )
+        safe_combined = sanitize_message((stderr_text + stdout_text)[-500:])
         raise ClaudeRateLimitError(
-            f"Claude CLI rate limited (exit code {returncode}): {(stderr_text + stdout_text)[-500:]}",
+            f"Claude CLI rate limited (exit code {returncode}): {safe_combined}",
             retry_after_s=60.0,
         )
 
     logger.warning(
         "Agent failed: exit_code=%d, stderr=%.500s",
         returncode,
-        stderr_text[:500],
+        safe_stderr,
     )
-    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {stderr_text[-500:]}")
+    raise CodeliciousError(f"Claude CLI exited with code {returncode}: {sanitize_message(stderr_text[-500:])}")
 
 
 def _parse_agent_output(
@@ -387,7 +422,22 @@ def run_agent(
         max_turns,
         int(timeout_s),
     )
-    logger.debug("Full command: %s", " ".join(cmd))
+    # Log command structure without the -p prompt content to avoid leaking prompt text at DEBUG level
+    _safe_cmd: list[str] = []
+    _skip_next = False
+    for _tok in cmd:
+        if _skip_next:
+            _safe_cmd.append("<prompt>")
+            _skip_next = False
+        elif _tok == "-p":
+            _safe_cmd.append(_tok)
+            _skip_next = True
+        else:
+            _safe_cmd.append(_tok)
+    logger.debug("Full command: %s", " ".join(_safe_cmd))
+
+    # Pre-dispatch validation: ensure no forbidden flags (S20-P1-3)
+    _validate_command_flags(cmd)
 
     # Launch subprocess
     proc = subprocess.Popen(
@@ -405,18 +455,28 @@ def run_agent(
     # Use queues for non-blocking stream reading with proper timeout
     stdout_queue: queue.Queue[str | None] = queue.Queue()
     stderr_lines: list[str] = []
+    # Lock protecting all accesses to stderr_lines from the drainer thread
+    # and the main loop / _parse_agent_output (Finding 52).
+    _stderr_lock = threading.Lock()
 
     def _drain_stderr() -> None:
-        assert proc.stderr is not None
+        if proc.stderr is None:
+            logger.warning("stderr stream is None, skipping drain")
+            return
         try:
             for line in proc.stderr:
-                stderr_lines.append(line)
+                with _stderr_lock:
+                    stderr_lines.append(line)
         except (OSError, ValueError):
             pass  # Pipe closed or subprocess terminated
-        logger.debug("stderr drainer: collected %d lines", len(stderr_lines))
+        with _stderr_lock:
+            count = len(stderr_lines)
+        logger.debug("stderr drainer: collected %d lines", count)
 
     def _drain_stdout() -> None:
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            logger.warning("stdout stream is None, skipping drain")
+            return
         try:
             for line in proc.stdout:
                 stdout_queue.put(line)
@@ -430,7 +490,7 @@ def run_agent(
     stderr_thread.start()
     stdout_thread.start()
 
-    output_lines: list[str] = []
+    output_lines: collections.deque[str] = collections.deque(maxlen=5000)
     session_id = ""
     start = time.monotonic()
 
@@ -462,15 +522,17 @@ def run_agent(
 
             # Periodic stderr summary
             if (time.monotonic() - _last_stderr_check) >= _STDERR_SUMMARY_INTERVAL_S:
-                new_lines = len(stderr_lines) - _last_stderr_count
+                with _stderr_lock:
+                    _current_count = len(stderr_lines)
+                    _last_line_snap = stderr_lines[-1].strip()[:200] if stderr_lines else ""
+                new_lines = _current_count - _last_stderr_count
                 if new_lines > 0:
-                    last_line = stderr_lines[-1].strip()[:200]
                     logger.info(
                         "Agent stderr summary: %d new lines. Last: %s",
                         new_lines,
-                        last_line,
+                        _last_line_snap,
                     )
-                _last_stderr_count = len(stderr_lines)
+                _last_stderr_count = _current_count
                 _last_stderr_check = time.monotonic()
 
             # Wait for line with short timeout to allow periodic timeout checks
@@ -535,11 +597,7 @@ def run_agent(
         _timed_out.set()
         # Wait for threads to finish with timeout
         stderr_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
-        if stderr_thread.is_alive():
-            logger.warning("stderr drainer thread did not exit within 10s (daemon, will be cleaned up)")
         stdout_thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
-        if stdout_thread.is_alive():
-            logger.warning("stdout drainer thread did not exit within 10s (daemon, will be cleaned up)")
 
     try:
         proc.wait(timeout=_FINAL_WAIT_TIMEOUT_S)
@@ -557,8 +615,21 @@ def run_agent(
         len(output_lines),
     )
 
+    # Snapshot stderr_lines under the lock to prevent race with still-alive drainer (Finding 24)
+    with _stderr_lock:
+        stderr_snapshot = list(stderr_lines)
+
+    # If the process was killed by the watchdog timeout, raise AgentTimeout
+    # directly instead of letting _parse_agent_output see a non-zero exit code
+    # and raise CodeliciousError (Finding 16: wrong exception type on timeout race).
+    if elapsed_s >= timeout_s:
+        raise AgentTimeout(
+            f"Agent timed out after {elapsed_s:.1f}s (limit: {timeout_s}s)",
+            elapsed_s=elapsed_s,
+        )
+
     # Parse output and check for errors using helper
-    result = _parse_agent_output(output_lines, stderr_lines, proc.returncode)
+    result = _parse_agent_output(output_lines, stderr_snapshot, proc.returncode)
     result.elapsed_s = elapsed_s
 
     # session_id is already extracted by _parse_agent_output, but we may have

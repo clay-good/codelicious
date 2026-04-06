@@ -1,0 +1,11 @@
+I'll create the main module for you.
+
+```python src/main.py
+def main():
+    print("Hello from codelicious!")
+
+if __name__ == "__main__":
+    main()
+```
+
+This creates a simple entry point for the application.

@@ -41,10 +41,8 @@ the current task list and progress.
 - Use TodoWrite to track sub-steps within complex tasks.
 
 ## Git & PR Policy
-- You own all git operations: add, commit, push, branch creation.
-- Write clear, descriptive commit messages that explain what changed and why.
-- One commit per logical unit of work (e.g. one task, one fix).
-- Create PRs with meaningful titles and descriptions summarizing actual changes.
+- The codelicious orchestrator owns all git operations: add, commit, push, branch creation.
+- You MUST NOT run git or gh commands. The orchestrator handles them.
 - NEVER push to main/master/develop/release branches directly.
 - NEVER force-push or amend published commits.
 
@@ -102,7 +100,7 @@ def scaffold(project_root: pathlib.Path, dry_run: bool = False) -> None:
                 return
 
             logger.info("Updating managed block in CLAUDE.md")
-            atomic_write_text(claude_md, updated)
+            atomic_write_text(claude_md, updated, project_root=project_root)
             return
 
         if dry_run:
@@ -110,14 +108,14 @@ def scaffold(project_root: pathlib.Path, dry_run: bool = False) -> None:
             return
 
         logger.info("Appending managed block to existing CLAUDE.md")
-        atomic_write_text(claude_md, existing + "\n\n" + _MANAGED_BLOCK)
+        atomic_write_text(claude_md, existing + "\n\n" + _MANAGED_BLOCK, project_root=project_root)
     else:
         if dry_run:
             logger.info("[dry-run] Would create CLAUDE.md with managed block")
             return
 
         logger.info("Creating CLAUDE.md with managed block")
-        atomic_write_text(claude_md, _MANAGED_BLOCK)
+        atomic_write_text(claude_md, _MANAGED_BLOCK, project_root=project_root)
 
 
 # ---------------------------------------------------------------------------
@@ -414,8 +412,10 @@ def _build_permissions(
 ) -> dict[str, list[str]]:
     """Build allow/deny permission lists.
 
-    Claude Code gets broad permissions. Only truly dangerous
-    operations are denied.
+    Claude Code receives an explicit allowlist of safe Bash commands rather than
+    the broad ``Bash(*)`` wildcard.  Dangerous operations are also enumerated in
+    the deny list so that any future widening of the allowlist cannot accidentally
+    re-enable them.
     """
     allow: list[str] = [
         "Read",
@@ -423,20 +423,58 @@ def _build_permissions(
         "Write",
         "Glob",
         "Grep",
-        "Bash(*)",
         "Agent",
         "TodoWrite",
+        # Safe read-only / inspection commands
+        "Bash(cat *)",
+        "Bash(ls *)",
+        "Bash(find *)",
+        "Bash(head *)",
+        "Bash(tail *)",
+        "Bash(wc *)",
+        "Bash(diff *)",
+        "Bash(grep *)",
+        "Bash(sort *)",
+        "Bash(echo *)",
+        # Safe filesystem mutation commands
+        "Bash(mkdir *)",
+        "Bash(cp *)",
+        "Bash(mv *)",
+        "Bash(touch *)",
+        # Test runners
+        "Bash(pytest *)",
+        "Bash(python -m pytest *)",
+        # Linters / formatters
+        "Bash(ruff *)",
+        "Bash(black *)",
+        # JavaScript / TypeScript tooling
+        "Bash(npm test *)",
+        "Bash(npm run *)",
+        "Bash(npx tsc *)",
+        # Package installation
+        "Bash(pip install *)",
+        "Bash(pip3 install *)",
+        "Bash(npm install *)",
     ]
 
     deny: list[str] = [
+        # Prevent force-pushes and pushes to protected branches
         "Bash(git push --force*)",
         "Bash(git push -f *)",
         "Bash(git checkout main*)",
         "Bash(git checkout master*)",
         "Bash(git push * main*)",
         "Bash(git push * master*)",
+        # Prevent destructive filesystem operations
         "Bash(rm -rf /*)",
+        "Bash(rm -rf .)",
+        "Bash(rm -rf ~*)",
         "Bash(sudo *)",
+        # Prevent data exfiltration / network access
+        "Bash(curl *)",
+        "Bash(wget *)",
+        "Bash(nc *)",
+        "Bash(dd *)",
     ]
 
     return {"allow": allow, "deny": deny}
@@ -508,7 +546,9 @@ def scaffold_claude_dir(
         # Ensure parent directories exist.
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        atomic_write_text(target, content)
+        # Use restrictive permissions for settings.json (S20-P2-10)
+        file_mode = 0o600 if rel_path.endswith("settings.json") else 0o644
+        atomic_write_text(target, content, mode=file_mode, project_root=project_root)
         logger.info("Wrote %s", rel_path)
         written.append(rel_path)
 

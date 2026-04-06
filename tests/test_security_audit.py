@@ -48,9 +48,15 @@ class TestAuditLoggerSecurityLogging:
             yield repo_path
 
     @pytest.fixture
-    def audit_logger(self, temp_repo):
-        """Create an AuditLogger instance for testing."""
-        return AuditLogger(temp_repo)
+    def audit_logger(self, temp_repo, request):
+        """Create an AuditLogger instance for testing.
+
+        Registers a finalizer to close the file handles so that the temporary
+        directory can be cleaned up on all platforms (Finding 57).
+        """
+        logger = AuditLogger(temp_repo)
+        request.addfinalizer(logger.close)
+        return logger
 
     def test_security_log_file_created(self, temp_repo, audit_logger):
         """Verify security.log file is created on initialization."""
@@ -207,7 +213,12 @@ class TestAuditLoggerSecurityLogging:
         assert "Generic sandbox violation" not in security_content
 
     def test_security_log_only_contains_security_events(self, temp_repo, audit_logger):
-        """Verify security.log only contains security events, not tool intents/outcomes."""
+        """Verify security.log only contains security events, not tool intents/outcomes.
+
+        Finding 58: the negative assertion 'read_file' not in security_content is only
+        meaningful if the file is non-empty and the expected security event IS present.
+        Positive assertions are checked first to ensure the file has real content.
+        """
         audit_logger.log_tool_intent("read_file", {"path": "test.txt"})
         audit_logger.log_tool_outcome("read_file", {"success": True, "stdout": "content"})
         audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Blocked command")
@@ -218,26 +229,52 @@ class TestAuditLoggerSecurityLogging:
         security_content = security_log.read_text()
         audit_content = audit_log.read_text()
 
-        # Security log should only have security event
-        assert "COMMAND_DENIED" in security_content
-        assert "read_file" not in security_content  # Tool intent/outcome not in security log
+        # Positive assertions first: security.log is non-empty and contains the expected event
+        assert len(security_content) > 0, "security.log must not be empty after logging a security event"
+        assert "COMMAND_DENIED" in security_content, "Expected COMMAND_DENIED in security.log"
+        assert "Blocked command" in security_content, "Expected event message in security.log"
+
+        # Negative assertion is now meaningful because the file is confirmed non-empty
+        assert "read_file" not in security_content, "Tool intent/outcome must not appear in security.log"
 
         # Audit log should have everything
         assert "COMMAND_DENIED" in audit_content
         assert "read_file" in audit_content
 
     def test_timestamp_format(self, temp_repo, audit_logger):
-        """Verify timestamp format is ISO 8601."""
-        import re
+        """Verify timestamp format is ISO 8601 (YYYY-MM-DDThh:mm:ssZ).
 
-        audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Test message")
+        Finding 59: the original test relied on wall-clock time, making it fragile
+        under time zone changes or slow CI. We now use a fixed datetime mock so the
+        expected timestamp is fully deterministic, and we validate the exact value
+        rather than just the regex match.
+        """
+        import re
+        import datetime
+        from unittest.mock import patch, MagicMock
+
+        fixed_dt = datetime.datetime(2026, 3, 15, 15, 6, 23, tzinfo=datetime.timezone.utc)
+
+        # Build a mock that replaces the datetime module used inside audit_logger.
+        # We need datetime.datetime.now() to return fixed_dt, and the returned
+        # object must have a working strftime() so the format string is applied.
+        mock_datetime_module = MagicMock()
+        mock_datetime_module.datetime.now.return_value = fixed_dt
+        mock_datetime_module.timezone = datetime.timezone
+
+        with patch("codelicious.tools.audit_logger.datetime", mock_datetime_module):
+            audit_logger.log_security_event(SecurityEvent.COMMAND_DENIED, "Test message")
 
         security_log = temp_repo / ".codelicious" / "security.log"
         content = security_log.read_text()
 
-        # Should match format: 2026-03-15T15:06:23Z
+        # Verify the exact fixed timestamp appears in the log
+        assert "2026-03-15T15:06:23Z" in content, f"Expected fixed timestamp in log, got: {content!r}"
+
+        # Also validate the general ISO 8601 pattern so the format is not
+        # accidentally changed in a later refactor without this test catching it.
         iso_pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
-        assert re.search(iso_pattern, content), "Timestamp should be ISO 8601 format"
+        assert re.search(iso_pattern, content), "Timestamp should be ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)"
 
 
 class TestAuditFormatter:
@@ -248,22 +285,40 @@ class TestAuditFormatter:
 
         This is the key fix: previously, module-level calls to logging.addLevelName()
         would inject ANSI escape codes into ALL loggers in the entire process.
+
+        Uses importlib.reload() to re-import the module in a clean state so the test
+        is not order-dependent on other tests that may have already imported the module.
         """
-        # Get the standard level names (before any mutation)
-        # After our fix, these should remain as Python defaults
-        info_name = logging.getLevelName(logging.INFO)
-        warning_name = logging.getLevelName(logging.WARNING)
-        error_name = logging.getLevelName(logging.ERROR)
+        import importlib
 
-        # These should be the standard Python names, not our custom colored names
-        assert info_name == "INFO", f"Expected 'INFO', got '{info_name}'"
-        assert warning_name == "WARNING", f"Expected 'WARNING', got '{warning_name}'"
-        assert error_name == "ERROR", f"Expected 'ERROR', got '{error_name}'"
+        import codelicious.tools.audit_logger as audit_logger_module
 
-        # Verify no ANSI escape codes in global level names
-        assert "\033" not in info_name, "INFO level name should not contain ANSI codes"
-        assert "\033" not in warning_name, "WARNING level name should not contain ANSI codes"
-        assert "\033" not in error_name, "ERROR level name should not contain ANSI codes"
+        # Snapshot global level names before reload
+        info_before = logging.getLevelName(logging.INFO)
+        warning_before = logging.getLevelName(logging.WARNING)
+        error_before = logging.getLevelName(logging.ERROR)
+
+        # Reload the module — this re-executes all module-level code
+        importlib.reload(audit_logger_module)
+
+        # After reload, global level names must remain unchanged
+        info_after = logging.getLevelName(logging.INFO)
+        warning_after = logging.getLevelName(logging.WARNING)
+        error_after = logging.getLevelName(logging.ERROR)
+
+        assert info_after == info_before, f"INFO changed after reload: '{info_before}' -> '{info_after}'"
+        assert warning_after == warning_before, f"WARNING changed after reload: '{warning_before}' -> '{warning_after}'"
+        assert error_after == error_before, f"ERROR changed after reload: '{error_before}' -> '{error_after}'"
+
+        # The standard Python level names must not contain ANSI escape codes
+        assert "\033" not in info_after, "INFO level name should not contain ANSI codes"
+        assert "\033" not in warning_after, "WARNING level name should not contain ANSI codes"
+        assert "\033" not in error_after, "ERROR level name should not contain ANSI codes"
+
+        # Verify the actual values are the expected Python defaults
+        assert info_after == "INFO", f"Expected 'INFO', got '{info_after}'"
+        assert warning_after == "WARNING", f"Expected 'WARNING', got '{warning_after}'"
+        assert error_after == "ERROR", f"Expected 'ERROR', got '{error_after}'"
 
     def test_formatter_with_color_enabled(self):
         """Verify AuditFormatter includes ANSI codes when use_color=True."""
@@ -381,3 +436,173 @@ class TestAuditFormatter:
         # Should use standard DEBUG level name
         assert "DEBUG" in formatted or "debug" in formatted.lower()
         assert "Debug message" in formatted
+
+
+# ---------------------------------------------------------------------------
+# spec-22 Phase 6: AuditFormatter preserves original levelname
+# ---------------------------------------------------------------------------
+
+
+class TestAuditFormatterLevelnameRestore:
+    """AuditFormatter must not permanently mutate record.levelname (spec-22 Phase 6)."""
+
+    def test_levelname_restored_after_format_with_color(self):
+        """After format(), the record's levelname must be the original value."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=True)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test message",
+            args=(),
+            exc_info=None,
+        )
+        original = record.levelname
+        formatter.format(record)
+        assert record.levelname == original, "levelname must be restored after format()"
+
+    def test_levelname_restored_after_format_without_color(self):
+        """Plain (no color) mode also must restore levelname."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        formatter = AuditFormatter("%(levelname)s %(message)s", use_color=False)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.WARNING,
+            pathname="",
+            lineno=0,
+            msg="warn msg",
+            args=(),
+            exc_info=None,
+        )
+        original = record.levelname
+        formatter.format(record)
+        assert record.levelname == original
+
+    def test_two_formatters_do_not_corrupt_each_other(self):
+        """When two formatters process the same record, neither corrupts the other."""
+        from codelicious.tools.audit_logger import AuditFormatter
+
+        color_fmt = AuditFormatter("%(levelname)s", use_color=True)
+        plain_fmt = AuditFormatter("%(levelname)s", use_color=False)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="err",
+            args=(),
+            exc_info=None,
+        )
+        original = record.levelname
+        color_fmt.format(record)
+        assert record.levelname == original
+        plain_fmt.format(record)
+        assert record.levelname == original
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 9: AuditLogger thread safety tests (S20-P2-11)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLoggerThreadSafety:
+    """Tests for S20-P2-11: AuditLogger thread-safe writes."""
+
+    def test_audit_logger_lock_exists(self, tmp_path: Path) -> None:
+        """AuditLogger must have a threading.Lock instance."""
+        import threading
+
+        audit = AuditLogger(tmp_path)
+        assert hasattr(audit, "_write_lock")
+        assert isinstance(audit._write_lock, type(threading.Lock()))
+        audit.close()
+
+    def test_audit_logger_thread_safe_write(self, tmp_path: Path) -> None:
+        """10 threads x 50 writes must produce exactly 500 lines in audit.log."""
+        import concurrent.futures
+
+        audit = AuditLogger(tmp_path)
+
+        def writer(thread_id: int):
+            for i in range(50):
+                audit.log_tool_intent(f"tool_{thread_id}", {"i": i})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(writer, tid) for tid in range(10)]
+            for f in futures:
+                f.result()
+
+        audit.close()
+        lines = audit.log_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 500, f"Expected 500 lines, got {len(lines)}"
+
+    def test_audit_logger_no_interleaved_output(self, tmp_path: Path) -> None:
+        """Each line in audit.log must be a complete log entry (no partial lines)."""
+        import concurrent.futures
+
+        audit = AuditLogger(tmp_path)
+
+        def writer(thread_id: int):
+            for i in range(20):
+                audit.log_tool_intent(f"thread_{thread_id}_tool", {"idx": i})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(writer, tid) for tid in range(5)]
+            for f in futures:
+                f.result()
+
+        audit.close()
+        lines = audit.log_file.read_text(encoding="utf-8").strip().splitlines()
+        for line in lines:
+            # Each line must start with a timestamp bracket and contain TOOL_DISPATCH
+            assert line.startswith("["), f"Incomplete line: {line[:80]}"
+            assert "TOOL_DISPATCH" in line, f"Missing tag: {line[:80]}"
+
+    def test_audit_logger_concurrent_write_ordering(self, tmp_path: Path) -> None:
+        """All entries from each thread must appear in audit.log (no drops)."""
+        import concurrent.futures
+
+        audit = AuditLogger(tmp_path)
+
+        def writer(thread_id: int):
+            for i in range(10):
+                audit.log_tool_intent(f"t{thread_id}", {"seq": i})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(writer, tid) for tid in range(8)]
+            for f in futures:
+                f.result()
+
+        audit.close()
+        content = audit.log_file.read_text(encoding="utf-8")
+        # 8 threads x 10 entries = 80 lines
+        lines = content.strip().splitlines()
+        assert len(lines) == 80
+
+    def test_audit_logger_large_entry_atomicity(self, tmp_path: Path) -> None:
+        """A large tool intent entry must be written atomically (not split across lines)."""
+        import concurrent.futures
+
+        audit = AuditLogger(tmp_path)
+        large_args = {"data": "x" * 5000}
+
+        def writer():
+            for _ in range(5):
+                audit.log_tool_intent("large_tool", large_args)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(writer) for _ in range(4)]
+            for f in futures:
+                f.result()
+
+        audit.close()
+        lines = audit.log_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 20
+        for line in lines:
+            assert "large_tool" in line
+            assert line.startswith("[")

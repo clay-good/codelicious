@@ -1,0 +1,21 @@
+[
+  ".env",
+  ".env.local",
+  "server.pem",
+  "server.key",
+  "keystore.p12",
+  "cert.pfx",
+  ".netrc",
+  "aws/credentials",
+  "id_rsa",
+  "id_ed25519",
+  ".npmrc",
+  ".pypirc",
+  "kubeconfig.yaml",
+  "service-account.json",
+  "aws-credentials",
+  "docker-config.json",
+  "db_password.txt",
+  "api_token.json",
+  "private_key.pem"
+]

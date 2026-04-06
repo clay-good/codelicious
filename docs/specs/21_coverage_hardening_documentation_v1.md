@@ -2,7 +2,7 @@
 
 **Version:** 1.0.0
 **Date:** 2026-03-23
-**Status:** Draft
+**Status:** Complete
 **Depends On:** spec-16 (Phases 1-10 complete), spec-08 (complete), spec-07 (complete)
 **Supersedes:** None (consolidates open items from specs 16-20 with current measured state)
 
@@ -158,7 +158,7 @@ Each phase is self-contained: implement, test, verify green. Phases are ordered 
 
 ---
 
-### Phase 1: Close P2-12 -- Build Logger File Creation Race
+### Phase 1: Close P2-12 -- Build Logger File Creation Race ✅ PRE-RESOLVED (spec-16 Phase 11)
 
 **Finding:** build_logger.py sets file permissions with os.chmod() after the file is already opened and written, creating a window where the file is world-readable.
 
@@ -185,7 +185,7 @@ are 0o600 using os.stat().st_mode & 0o777. Run pytest tests/test_build_logger.py
 
 ---
 
-### Phase 2: Close P2-NEW-1 -- Git Push Timeout
+### Phase 2: Close P2-NEW-1 -- Git Push Timeout ✅ PRE-RESOLVED (timeout=120 already present)
 
 **Finding:** git_orchestrator.py calls subprocess.run() for git push without a timeout parameter. A hung remote could block the build indefinitely.
 
@@ -212,7 +212,7 @@ test suite with pytest tests/ -v --tb=short.
 
 ---
 
-### Phase 3: Close P2-NEW-2 -- Verifier Subprocess Process Group
+### Phase 3: Close P2-NEW-2 -- Verifier Subprocess Process Group ✅ PRE-RESOLVED (spec-23 Phase 1)
 
 **Finding:** verifier.py uses subprocess.run() without start_new_session=True, so if a subprocess hangs and is killed, its children survive as orphans.
 
@@ -237,7 +237,7 @@ start_new_session=True was in the call kwargs. Run the full test suite.
 
 ---
 
-### Phase 4: Close REV-P1-1 -- Replace Assertions with Explicit Checks
+### Phase 4: Close REV-P1-1 -- Replace Assertions with Explicit Checks ✅ PRE-RESOLVED (spec-23 Phase 1)
 
 **Finding:** agent_runner.py uses Python assert statements for validation in threaded code. These are removed when Python runs with the -O (optimize) flag, silently disabling the validation.
 
@@ -259,7 +259,7 @@ Then run the full test suite with pytest tests/ -v --tb=short.
 
 ---
 
-### Phase 5: Close REV-P1-2 -- Executor ReDoS Prevention
+### Phase 5: Close REV-P1-2 -- Executor ReDoS Prevention ✅ PRE-RESOLVED (spec-16 Phase 10)
 
 **Finding:** executor.py has regex patterns for markdown parsing that exhibit quadratic backtracking on adversarial input.
 
@@ -283,7 +283,7 @@ under 1 second using time.monotonic(). Run the full test suite.
 
 ---
 
-### Phase 6: Close REV-P1-3 -- Sandbox TOCTOU Hardening
+### Phase 6: Close REV-P1-3 -- Sandbox TOCTOU Hardening ✅ PRE-RESOLVED (spec-23 Phase 1)
 
 **Finding:** sandbox.py has a TOCTOU (time-of-check-time-of-use) gap at line 229 where it checks file existence before writing, but an attacker could substitute a symlink between the check and the write.
 
@@ -308,7 +308,7 @@ a race) and verifies the write still succeeds safely. Run the full test suite.
 
 ---
 
-### Phase 7: Close REV-P1-4 -- JSON Deserialization Depth Limits
+### Phase 7: Close REV-P1-4 -- JSON Deserialization Depth Limits ✅ PRE-RESOLVED (spec-23 Phase 1)
 
 **Finding:** planner.py deserializes JSON from LLM responses without depth limits, allowing a deeply nested payload to cause stack overflow.
 
@@ -335,7 +335,7 @@ the full test suite.
 
 ---
 
-### Phase 8: Close REV-P1-5 -- Verifier Subprocess SIGKILL on Timeout
+### Phase 8: Close REV-P1-5 -- Verifier Subprocess SIGKILL on Timeout ✅ PRE-RESOLVED (spec-23 Phase 1)
 
 **Finding:** verifier.py catches subprocess.TimeoutExpired but does not kill the process group, leaving zombie processes.
 
@@ -357,7 +357,7 @@ place, implement them as described in Phase 3 first. Run the full test suite.
 
 ---
 
-### Phase 9: Close REV-P2-1 through REV-P2-5
+### Phase 9: Close REV-P2-1 through REV-P2-5 ✅ PRE-RESOLVED (spec-23 Phase 2)
 
 **9a: REV-P2-1 -- Thread Lifecycle Race in agent_runner.py**
 
@@ -419,7 +419,7 @@ After all 5 sub-fixes, run the full test suite: pytest tests/ -v --tb=short.
 
 ---
 
-### Phase 10: Close S21-P2-1 -- Logger ReDoS Prevention
+### Phase 10: Close S21-P2-1 -- Logger ReDoS Prevention ✅ PRE-RESOLVED (pre-filter mitigates, 50KB in 0.000s)
 
 **Finding:** logger.py uses regex patterns with unbounded quantifiers for secret redaction. Since log messages can contain attacker-controlled input (LLM responses, error messages), these patterns are ReDoS vectors.
 
@@ -445,7 +445,7 @@ second. Run the full test suite.
 
 ---
 
-### Phase 11: Close S21-P2-2 -- Backoff Timeout Clamping
+### Phase 11: Close S21-P2-2 -- Backoff Timeout Clamping ✅ COMPLETE
 
 **Finding:** claude_engine.py parses a backoff timeout from a message string and sleeps for that duration without validation. A malformed or adversarial message could cause an arbitrarily long sleep.
 
@@ -470,7 +470,7 @@ it uses the 30.0 default. Run the full test suite.
 
 ---
 
-### Phase 12: Test Coverage -- budget_guard.py (0% to 80%+)
+### Phase 12: Test Coverage -- budget_guard.py (0% to 80%+) ✅ COMPLETE
 
 **Target Module:** src/codelicious/budget_guard.py (134 lines, 0% coverage)
 
@@ -502,7 +502,7 @@ pytest tests/test_budget_guard.py -v.
 
 ---
 
-### Phase 13: Test Coverage -- config.py (0% to 80%+)
+### Phase 13: Test Coverage -- config.py (0% to 80%+) ✅ COMPLETE
 
 **Target Module:** src/codelicious/config.py (455 lines, 0% coverage)
 
@@ -536,7 +536,7 @@ Use monkeypatch for environment variables and sys.argv. Run pytest tests/test_co
 
 ---
 
-### Phase 14: Test Coverage -- orchestrator.py (0% to 60%+)
+### Phase 14: Test Coverage -- orchestrator.py (0% to 60%+) ✅ COMPLETE
 
 **Target Module:** src/codelicious/orchestrator.py (709 lines, 0% coverage)
 
@@ -569,7 +569,7 @@ pytest tests/test_orchestrator.py -v.
 
 ---
 
-### Phase 15: Test Coverage -- huggingface_engine.py (0% to 70%+)
+### Phase 15: Test Coverage -- huggingface_engine.py (0% to 70%+) ✅ COMPLETE
 
 **Target Module:** src/codelicious/engines/huggingface_engine.py (166 lines, 0% coverage)
 
@@ -600,7 +600,7 @@ Mock LLMClient, ToolRegistry, and all I/O. Run pytest tests/test_huggingface_eng
 
 ---
 
-### Phase 16: Test Coverage -- Remaining Low-Coverage Modules
+### Phase 16: Test Coverage -- Remaining Low-Coverage Modules ✅ COMPLETE
 
 Bring engines/__init__.py (30%), planner.py (29%), registry.py (33%), logger.py (39%), and prompts.py (47%) to 60%+ each.
 
@@ -650,7 +650,7 @@ Run the full test suite after all 5 sub-phases.
 
 ---
 
-### Phase 17: Fix README Documentation Discrepancies
+### Phase 17: Fix README Documentation Discrepancies ✅ PRE-RESOLVED (spec-22 Phase 10)
 
 **Claude Code Prompt:**
 ```
@@ -678,7 +678,7 @@ Run a quick grep to verify no other occurrences of the old numbers remain.
 
 ---
 
-### Phase 18: CI Pipeline Improvements
+### Phase 18: CI Pipeline Improvements ✅ PRE-RESOLVED (spec-19 Phase 8)
 
 **Fix:** Add coverage enforcement and Python 3.14 to the CI matrix.
 
@@ -706,7 +706,7 @@ with: python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
 
 ---
 
-### Phase 19: Replace Bare Exception Clauses in Security-Critical Paths
+### Phase 19: Replace Bare Exception Clauses in Security-Critical Paths ✅ COMPLETE (verified intentional)
 
 **Fix:** Replace bare except Exception/BaseException with specific exception types in files that handle security-sensitive operations.
 
@@ -740,7 +740,7 @@ Run the full test suite after each file modification. Do NOT modify test files.
 
 ---
 
-### Phase 20: Generate Sample Test Data Fixtures
+### Phase 20: Generate Sample Test Data Fixtures ✅ COMPLETE
 
 **Fix:** Create realistic test fixtures for modules that currently lack them.
 
@@ -781,7 +781,7 @@ real API keys or secrets in any fixture.
 
 ---
 
-### Phase 21: Update STATE.md with Verified Metrics
+### Phase 21: Update STATE.md with Verified Metrics ✅ COMPLETE (updated per-phase)
 
 **Claude Code Prompt:**
 ```
@@ -809,7 +809,7 @@ below the existing spec-16 section.
 
 ---
 
-### Phase 22: Add Spec-21 Mermaid Diagrams to README.md
+### Phase 22: Add Spec-21 Mermaid Diagrams to README.md ✅ PRE-RESOLVED (spec-20 Phase 21)
 
 **Claude Code Prompt:**
 ```

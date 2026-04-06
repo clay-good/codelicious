@@ -1,5 +1,6 @@
 import logging
 import json
+import time
 from codelicious.tools.registry import ToolRegistry
 from codelicious.llm_client import LLMClient
 from codelicious.context_manager import estimate_tokens
@@ -10,8 +11,20 @@ logger = logging.getLogger("codelicious.loop")
 # Maximum token budget for message history to prevent OOM and API rejection
 MAX_HISTORY_TOKENS = 80_000
 
+# Maximum number of messages before auto-truncation safety net (spec-18 Phase 9: DP-3)
+_MAX_HISTORY_MESSAGES = 200
+
 # Maximum size for LLM JSON responses (5 MB) to prevent DoS via memory exhaustion
 MAX_RESPONSE_BYTES = 5_000_000
+
+# Maximum size for individual tool result content appended to message history (50 KB)
+MAX_TOOL_RESULT_BYTES = 50_000
+
+# Exponential backoff settings for LLM call retries (Finding 55)
+_LLM_MAX_RETRIES: int = 3
+_LLM_BACKOFF_BASE_S: float = 2.0  # seconds; doubles each retry (2, 4, 8)
+# Consecutive LLM errors that trigger a hard abort of the agentic iteration
+_LLM_MAX_CONSECUTIVE_ERRORS: int = _LLM_MAX_RETRIES
 
 
 def parse_json_response(
@@ -70,31 +83,38 @@ def truncate_history(messages: list[dict], max_tokens: int = MAX_HISTORY_TOKENS)
                 content += tc["function"].get("arguments", "")
         return estimate_tokens(str(content))
 
-    # Calculate total tokens
-    total_tokens = sum(_estimate_message_tokens(m) for m in messages)
+    # Pre-compute per-message token counts in a single pass (Finding 11)
+    msg_tokens = [_estimate_message_tokens(m) for m in messages]
+    total_tokens = sum(msg_tokens)
 
     if total_tokens <= max_tokens:
         return messages
 
     # Keep system message (index 0) always
     result = [messages[0]] if messages else []
-    system_tokens = _estimate_message_tokens(messages[0]) if messages else 0
+    system_tokens = msg_tokens[0] if messages else 0
     budget_remaining = max_tokens - system_tokens
 
     # Collect non-system messages and count from the end (most recent)
     non_system = messages[1:]
     kept_messages = []
+    kept_token_sum = 0
 
-    # Work backwards from most recent to preserve recent context
-    for msg in reversed(non_system):
-        msg_tokens = _estimate_message_tokens(msg)
-        if budget_remaining >= msg_tokens:
-            kept_messages.insert(0, msg)
-            budget_remaining -= msg_tokens
+    # Work backwards from most recent to preserve recent context.
+    # Use append() + reverse() instead of insert(0, ...) to avoid O(n^2) shifting.
+    for i in range(len(non_system) - 1, -1, -1):
+        tokens = msg_tokens[i + 1]  # +1 because msg_tokens includes system msg at index 0
+        if budget_remaining >= tokens:
+            kept_messages.append(non_system[i])
+            budget_remaining -= tokens
+            kept_token_sum += tokens
+
+    # Restore chronological order (we iterated in reverse)
+    kept_messages.reverse()
 
     messages_removed = len(non_system) - len(kept_messages)
     tokens_before = total_tokens
-    tokens_after = system_tokens + sum(_estimate_message_tokens(m) for m in kept_messages)
+    tokens_after = system_tokens + kept_token_sum
 
     if messages_removed > 0:
         logger.warning(
@@ -121,12 +141,41 @@ class BuildLoop:
         # Load configs
         config_path = self.repo_path / ".codelicious" / "config.json"
 
-        self.config = {"allowlisted_commands": ["pytest", "npm", "ruff", "black"]}
+        # Allowed config keys — must match git_orchestrator._ALLOWED_CONFIG_KEYS (Finding 12)
+        # S20-P3-4: allowlisted_commands is still accepted for backwards compat
+        # (triggers a deprecation warning) but is not used.
+        _allowed_keys = frozenset(
+            {"allowlisted_commands", "default_reviewers", "max_calls_per_iteration", "verify_command"}
+        )
+        _config_max_bytes = 100_000
+
+        defaults: dict = {}
         if config_path.exists():
             try:
-                self.config = json.loads(config_path.read_text())
-            except json.JSONDecodeError:
+                config_size = config_path.stat().st_size
+                if config_size > _config_max_bytes:
+                    logger.error("config.json too large (%d bytes); skipping.", config_size)
+                else:
+                    loaded = json.loads(config_path.read_text())
+                    if isinstance(loaded, dict):
+                        # Filter to allowed keys only (Finding 12: prevent config injection)
+                        filtered = {k: v for k, v in loaded.items() if k in _allowed_keys}
+                        defaults.update(filtered)
+                        # S20-P3-4: Deprecation warning for allowlisted_commands
+                        if "allowlisted_commands" in defaults:
+                            logger.warning(
+                                "Config key 'allowlisted_commands' is deprecated and ignored. "
+                                "Command restrictions are hardcoded in security_constants.py."
+                            )
+                            del defaults["allowlisted_commands"]
+                        # Clamp max_calls_per_iteration to safe range
+                        if "max_calls_per_iteration" in defaults:
+                            defaults["max_calls_per_iteration"] = max(
+                                10, min(100, int(defaults["max_calls_per_iteration"]))
+                            )
+            except (json.JSONDecodeError, ValueError):
                 pass
+        self.config = defaults
 
         # Initialize Sandboxed Tooling Hub
         self.tool_registry = ToolRegistry(
@@ -134,6 +183,10 @@ class BuildLoop:
             config=self.config,
             cache_manager=self.cache_manager,
         )
+
+        # Generate tool schema once — it is static for the lifetime of this
+        # BuildLoop instance and does not need to be regenerated per iteration.
+        self._tool_schema = self.tool_registry.generate_schema()
 
         # Initialize HuggingFace HTTP Driver
         self.llm = LLMClient()
@@ -156,14 +209,47 @@ class BuildLoop:
         Executes a singular probabilistic dialogue cycle with the LLM, passing tool definitions
         and capturing JSON payloads for the deterministic ToolRegistry execution.
         """
+        # Safety net: auto-truncate if message count exceeds limit (spec-18 Phase 9: DP-3)
+        if len(self.messages) > _MAX_HISTORY_MESSAGES:
+            logger.warning("Message history exceeded %d messages, auto-truncating", _MAX_HISTORY_MESSAGES)
+            self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
+
         # Truncate message history to prevent OOM and API rejection from large payloads
         self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
 
         logger.info("Pinging HuggingFace LLM inference endpoint...")
-        # Use coder model — it handles both planning and code writing via tool calls
-        response = self.llm.chat_completion(self.messages, tools=self.tool_registry.generate_schema(), role="coder")
+        # Use coder model — it handles both planning and code writing via tool calls.
+        # Wrap in exponential-backoff retry to handle transient API errors (Finding 55).
+        response = None
+        last_llm_error: Exception | None = None
+        for _attempt in range(_LLM_MAX_RETRIES):
+            try:
+                response = self.llm.chat_completion(self.messages, tools=self._tool_schema, role="coder")
+                last_llm_error = None
+                break
+            except Exception as llm_exc:
+                last_llm_error = llm_exc
+                wait_s = _LLM_BACKOFF_BASE_S * (2**_attempt)
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    _attempt + 1,
+                    _LLM_MAX_RETRIES,
+                    llm_exc,
+                    wait_s,
+                )
+                time.sleep(wait_s)
 
-        message_obj = response["choices"][0]["message"]
+        if last_llm_error is not None:
+            # All retries exhausted — surface the error so the caller can decide
+            logger.error("LLM call failed after %d attempts: %s", _LLM_MAX_RETRIES, last_llm_error)
+            raise last_llm_error
+
+        choices = response.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            raise RuntimeError("Malformed LLM response: missing or empty choices")
+        message_obj = choices[0].get("message")
+        if not isinstance(message_obj, dict) or "role" not in message_obj:
+            raise RuntimeError("Malformed LLM response: invalid message object")
         self.messages.append(message_obj)
 
         # Handle explicitly requested Tool Calls (e.g. read_file, run_command)
@@ -195,22 +281,34 @@ class BuildLoop:
                 # Execute mapped function in python
                 tool_result = self.tool_registry.dispatch(name, args)
 
-                # Append the raw return payload to context
+                # Append the raw return payload to context, capping at MAX_TOOL_RESULT_BYTES
+                # to prevent a single large tool response from exhausting context (Finding 53).
+                tool_content = json.dumps(tool_result)
+                if len(tool_content) > MAX_TOOL_RESULT_BYTES:
+                    tool_content = tool_content[:MAX_TOOL_RESULT_BYTES] + "...<truncated>"
+                    logger.warning(
+                        "Tool result for '%s' truncated to %d bytes (original: %d bytes)",
+                        name,
+                        MAX_TOOL_RESULT_BYTES,
+                        len(json.dumps(tool_result)),
+                    )
                 self.messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
+                        "tool_call_id": tool_call.get("id", ""),
                         "name": name,
-                        "content": json.dumps(tool_result),
+                        "content": tool_content,
                     }
                 )
             except Exception as e:
-                logger.error("Failed to process tool call %s: %s", tool_call, e)
+                # Log only tool name, not full arguments which may contain secrets (Finding 40)
+                tool_name = tool_call.get("function", {}).get("name", "unknown")
+                logger.error("Failed to process tool call %s: %s", tool_name, type(e).__name__)
                 self.messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": tool_call["function"]["name"],
+                        "tool_call_id": tool_call.get("id", ""),
+                        "name": tool_call.get("function", {}).get("name", "unknown"),
                         "content": json.dumps(
                             {
                                 "success": False,
@@ -232,16 +330,39 @@ class BuildLoop:
         # In a generic loop, we run until completion or a max failure threshold limit
         max_iterations = 50
         completed = False
+        consecutive_errors = 0
 
         for iteration in range(max_iterations):
             logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
+            self.tool_registry.reset_call_count()
 
-            completed = self._execute_agentic_iteration()
+            try:
+                completed = self._execute_agentic_iteration()
+                consecutive_errors = 0  # Reset on success
+            except Exception as iter_exc:
+                consecutive_errors += 1
+                logger.error(
+                    "Agentic iteration %d failed: %s (consecutive errors: %d/%d)",
+                    iteration + 1,
+                    iter_exc,
+                    consecutive_errors,
+                    _LLM_MAX_CONSECUTIVE_ERRORS,
+                )
+                if consecutive_errors >= _LLM_MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Aborting loop after %d consecutive LLM errors.",
+                        consecutive_errors,
+                    )
+                    return False
+                continue
 
             if completed:
                 # Ensure final changes are committed deterministically
                 self.git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
                 break
+
+        # Close tool registry to release file handles (Finding 1: AuditLogger leak)
+        self.tool_registry.close()
 
         if not completed:
             logger.error("Build cycle exhausted maximum iteration patience threshold.")

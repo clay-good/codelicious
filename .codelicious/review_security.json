@@ -1,0 +1,154 @@
+[
+  {
+    "severity": "P2",
+    "file": "src/codelicious/engines/huggingface_engine.py",
+    "line": 57,
+    "title": "Config loaded from untrusted repo merges ALL keys without allowlist filtering",
+    "description": "config.update(loaded) at line 57 merges every key from the agent-writable .codelicious/config.json into the config dict. Only max_calls_per_iteration is clamped (lines 59-60), but all other keys are accepted verbatim. This is inconsistent with git_orchestrator.py which now properly filters to _ALLOWED_CONFIG_KEYS. An LLM agent could write arbitrary config keys that flow into ToolRegistry and downstream components.",
+    "fix": "Filter loaded config to _ALLOWED_CONFIG_KEYS (from git_orchestrator.py) before merging. Apply the same size limit and schema validation used in GitManager.__init__."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/loop_controller.py",
+    "line": 147,
+    "title": "BuildLoop config loading duplicates the unfiltered config merge vulnerability",
+    "description": "BuildLoop.__init__ at line 147 does defaults.update(loaded) with the same unvalidated merge from .codelicious/config.json. Same issue as huggingface_engine.py — all keys accepted, only max_calls_per_iteration clamped. This is a second instance of the inconsistency with git_orchestrator.py's strict key allowlist.",
+    "fix": "Extract the config loading logic from GitManager into a shared utility function that enforces _ALLOWED_CONFIG_KEYS, size limits, and value constraints. Use it in all three locations."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/tools/registry.py",
+    "line": 92,
+    "title": "LLM-controlled kwargs passed to tool functions without schema validation — timeout/limit override",
+    "description": "dispatch() calls func(**kwargs) where kwargs is LLM-generated JSON parsed without schema validation. The LLM can pass unexpected keyword arguments that override safety defaults. For example: passing timeout=999999 to run_command (CommandRunner.safe_run accepts timeout kwarg, default 120s), or max_depth=9999 and max_entries=9999999 to native_list_directory, bypassing the DoS protection limits (DEFAULT_MAX_DEPTH=3, DEFAULT_MAX_ENTRIES=1000).",
+    "fix": "Validate kwargs against the tool schema before calling. Strip any keys not declared in generate_schema(). Alternatively, add **kwargs guards in each tool function to reject unexpected arguments, or use a whitelist of accepted parameter names per tool."
+  },
+  {
+    "severity": "P2",
+    "file": "src/codelicious/tools/audit_logger.py",
+    "line": 100,
+    "title": "Unbounded audit.log and security.log growth — filesystem DoS",
+    "description": "audit.log and security.log are opened in append mode (lines 100-101) with no size cap or rotation. An LLM agent triggering many tool calls grows these files without bound. In a long-running build or repeated builds, this can fill the filesystem. The codelicious.log file uses RotatingFileHandler (logger.py:256) and progress.jsonl has rotation (progress.py:64), but audit logs have neither.",
+    "fix": "Use RotatingFileHandler with maxBytes (e.g., 50 MB) and backupCount=2, matching the pattern in logger.py. Or implement manual rotation like progress.py does."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/agent_runner.py",
+    "line": 167,
+    "title": "model, effort, and resume_session_id injected into subprocess args without format validation",
+    "description": "model (line 168), effort (line 171), and resume_session_id (line 179) from config/CLI args are passed to the claude subprocess command list without character validation. A corrupted session ID or model name with shell metacharacters or control characters could cause unexpected behavior in the claude binary's argument parser. While shell=False prevents shell injection, the claude binary's own parser could be tricked.",
+    "fix": "Validate model against ^[a-zA-Z0-9._\\-:@/]{1,200}$. Validate resume_session_id against ^[a-f0-9\\-]{36}$ or empty. Validate effort against the known enum set {'', 'low', 'medium', 'high', 'max'}."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/tools/fs_tools.py",
+    "line": 45,
+    "title": "Raw Python exception messages returned to LLM — information disclosure",
+    "description": "native_read_file (line 45-46), native_write_file (line 68-69), and native_list_directory (line 165-166) catch generic Exception and return str(e) in the stderr field to the LLM. Internal exceptions (PermissionError, OSError, UnicodeDecodeError) reveal filesystem layout, device names, mount points, and OS-level path details to the AI model, which may incorporate them in generated code or logs.",
+    "fix": "Log the full exception internally at WARNING level. Return a generic 'An internal error occurred' message to the LLM caller for unrecognized exception types."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/llm_client.py",
+    "line": 43,
+    "title": "SSRF validation allows HTTP to any port on localhost — internal service exposure",
+    "description": "_validate_endpoint_url() allows http://localhost (or 127.0.0.1) without port restriction. In CI/CD or containerized environments, http://127.0.0.1:6379 (Redis), :2375 (Docker daemon API), :8200 (HashiCorp Vault), :9200 (Elasticsearch) are all accepted. If an attacker controls LLM_ENDPOINT via a compromised .env file, the API key (HF_TOKEN) is sent to these internal services via the Authorization header.",
+    "fix": "Restrict allowed localhost ports to a configurable set (e.g., 8000-9999) or require a CODELICIOUS_DEV_MODE=true env var for plain HTTP. Alternatively, allow only ports > 1023."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/llm_client.py",
+    "line": 109,
+    "title": "Full endpoint URL logged at INFO level — may expose query-string API keys",
+    "description": "If an operator configures a custom endpoint with an API key in the URL query string (e.g., https://api.example.com/v1?key=secret_key), the full URL including the secret appears in the log file at INFO level. The SanitizingFilter does not strip generic ?key= or ?token= query parameters from URLs.",
+    "fix": "Parse the URL with urllib.parse.urlparse and log only scheme://netloc/path, stripping query strings and fragments entirely."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/executor.py",
+    "line": 84,
+    "title": "Path traversal check in _normalize_file_path is weaker than sandbox's check",
+    "description": "if '..' in path.split('/') only catches the exact '..' component after splitting on forward slashes. It would miss '..\\\\' on Windows-style paths or edge cases with multiple consecutive separators. The sandbox's resolve_path (sandbox.py:128-131) correctly checks both POSIX and native path parts. The executor's defense-in-depth check is incomplete compared to the sandbox.",
+    "fix": "Use pathlib.PurePosixPath(path).parts to check for '..' (consistent with sandbox.py:128-131), or remove the redundant check and rely solely on the sandbox."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/tools/command_runner.py",
+    "line": 77,
+    "title": "Extension stripping loop only removes one layer — double-extension bypass",
+    "description": "The for-loop strips only the last matching extension per binary name. A binary named 'rm.sh.sh' has '.sh' stripped to produce 'rm.sh', which does not match the denylist entry 'rm'. The fix requires a while-loop to iteratively strip extensions until no more match.",
+    "fix": "Replace the for-loop with a while-loop: while any(base_binary.endswith(ext) for ext in extensions): strip the matching extension. Or use pathlib.PurePath(parts[0]).stem repeatedly."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/git/git_orchestrator.py",
+    "line": 495,
+    "title": "default_reviewers type not enforced — string iteration produces invalid reviewer requests",
+    "description": "If default_reviewers in config.json is a string (e.g., 'john') instead of a list, 'for r in reviewers' iterates individual characters. Each single character is a valid string and matches the regex ^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$, so the code would attempt to add reviewers 'j', 'o', 'h', 'n' via gh pr edit --reviewer. This wastes API calls and could trigger rate limits.",
+    "fix": "Add an explicit type check before the loop: if not isinstance(reviewers, list): logger.warning('default_reviewers must be a list, got %s', type(reviewers).__name__); return."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/verifier.py",
+    "line": 81,
+    "title": "Symlink traversal in _find_py_files — agent can trigger out-of-sandbox file reads",
+    "description": "_find_py_files() uses os.walk() with followlinks=False (default), which prevents following symlinked directories. However, individual .py files that are symlinks pointing outside the project directory are still included. These files are then read and compiled by check_syntax() and scanned by check_security(), potentially processing sensitive files outside the project.",
+    "fix": "After constructing each py_file path, check os.path.islink(str(py_file)) and verify py_file.resolve().is_relative_to(project_dir.resolve()) before including it in the result."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/budget_guard.py",
+    "line": 103,
+    "title": "BudgetGuard.record() and check() are not thread-safe — budget ceiling can be exceeded",
+    "description": "BudgetGuard._calls_made and _estimated_cost_usd are modified in record() (line 103) and read in check() (line 89) without synchronization. In multi-threaded builds (e.g., parallel worktree builds), concurrent calls to record() could race on the counter increment, allowing the budget ceiling to be exceeded before check() detects it.",
+    "fix": "Add a threading.Lock() and hold it in both check() and record(). Or document that BudgetGuard is not thread-safe and must not be shared across threads."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/planner.py",
+    "line": 560,
+    "title": "Failure summary from build errors injected into replan prompt without injection check",
+    "description": "In replan(), failure_summary (derived from build error output including test failures and exception messages) is appended directly to the LLM prompt at line 560 without passing through _check_injection(). If test output or error messages contain text matching injection patterns (e.g., 'SYSTEM:', 'IGNORE PREVIOUS'), they would pass into the replan prompt unchecked.",
+    "fix": "Apply _check_injection() to failure_summary, or truncate to 2000 chars and strip lines matching injection patterns before including in the prompt."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/progress.py",
+    "line": 62,
+    "title": "TOCTOU race in progress file rotation",
+    "description": "The check-then-act pattern between stat().st_size > threshold (line 63-64) and os.replace() (line 66) can race with another codelicious process writing to the same progress file concurrently. Both processes could see the file as over-threshold and attempt to rotate simultaneously, potentially losing events.",
+    "fix": "Use fcntl.flock() for file-level locking around the rotation check, or use per-process unique progress file names (e.g., include PID in filename)."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/logger.py",
+    "line": 106,
+    "title": "Mailchimp API key redaction pattern has high false-positive rate on hex strings",
+    "description": "The pattern re.compile(r'[a-f0-9]{32}-us[0-9]{1,2}') matches any 32-char lowercase hex substring followed by '-us' and 1-2 digits. This causes false-positive redaction on git commit SHA fragments, file hashes, and UUID-like strings that happen to be followed by '-us'. For example, a git log entry containing a commit SHA near the text '-us1' would be incorrectly redacted.",
+    "fix": "Anchor with non-hex boundaries: re.compile(r'(?<![a-f0-9])[a-f0-9]{32}-us[0-9]{1,2}(?![a-f0-9])') to require the hex portion to be exactly 32 chars, not part of a longer hex string."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/build_logger.py",
+    "line": 75,
+    "title": "Case-sensitive session-ID suffix check — fragile to format changes",
+    "description": "cleanup_old_builds uses session_id.endswith('z') (lowercase) at line 75 to identify timestamp-based directories. The session ID format uses lowercase 'z' (line 120: strftime '%Y%m%dT%H%M%Sz'), but ISO 8601 standard uses uppercase 'Z'. If the format constant is ever changed to uppercase, cleanup silently stops working and old builds accumulate forever.",
+    "fix": "Use case-insensitive comparison: session_id.lower().endswith('z'). Or define the format suffix as a module-level constant and derive both the strftime format and the endswith check from it."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 399,
+    "title": "Git merge stderr logged without sanitization — potential secret leakage",
+    "description": "When a merge conflict occurs, result.stderr from the git merge command is logged directly at ERROR level (line 399) without passing through sanitize_message(). Merge conflict output could contain file contents, including secrets or credentials that appear in conflicting hunks.",
+    "fix": "Apply sanitize_message() to result.stderr before logging: logger.error('Merge conflict for branch %s: %s', branch_name, sanitize_message(result.stderr))."
+  },
+  {
+    "severity": "P3",
+    "file": "src/codelicious/orchestrator.py",
+    "line": 510,
+    "title": "Review findings data used unsanitized in fix agent prompt — cross-agent prompt injection",
+    "description": "_render_fix_prompt() at line 510 interpolates Finding objects (from reviewer-written JSON files) directly into the fix agent's prompt template. A malicious or confused reviewer agent could write findings with prompt injection strings in the description or fix fields (e.g., 'IGNORE PREVIOUS INSTRUCTIONS'). These strings bypass _check_injection() since they enter via the review JSON, not the spec.",
+    "fix": "Apply sanitization to finding.description and finding.fix before interpolation. Strip known injection patterns or cap each field to a reasonable length (e.g., 500 chars)."
+  }
+]

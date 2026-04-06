@@ -31,18 +31,20 @@ class TaskLike(Protocol):
 def estimate_tokens(text: str) -> int:
     """Estimate the number of tokens in a text string.
 
-    Uses chars / 3.5 for code (> 30% non-alphanumeric) and chars / 4 for
-    prose, both with a 10% safety margin. Code has shorter tokens on average
-    due to punctuation, so overestimating is safer than underestimating.
+    Approximate estimate using ~3.5 chars/token with a 10% safety margin
+    (Finding 21). May over-count for multi-byte Unicode characters (emoji,
+    CJK) since ``len(text)`` counts codepoints, not bytes. Suitable for
+    budget estimation, not exact billing.
+
+    The previous implementation iterated every character to classify code vs.
+    prose — a distinction that contributes at most ~12% difference in the
+    result, well within the safety margin. The fixed ratio is O(1) instead of
+    O(n) and is safe to call on very large strings without measurable overhead.
     """
     if not text:
         return 0
-    non_alnum = sum(1 for ch in text if not ch.isalnum() and not ch.isspace())
-    ratio = non_alnum / len(text)
-    if ratio > 0.30:
-        tokens = int(len(text) / 3.5 * 1.1)
-    else:
-        tokens = int(len(text) / 4 * 1.1)
+    # chars / 3.5 * 1.1 safety margin; integer truncation is intentional.
+    tokens = int(len(text) / 3.5 * 1.1)
     if len(text) > 1000:
         logger.debug("Token estimate: %d chars -> %d tokens", len(text), tokens)
     return tokens
@@ -152,12 +154,23 @@ def build_task_prompt(
     total_content_before_build += estimate_tokens(task_header + task.description + task_footer)
     logger.debug("Priority 1: %d tokens used", tokens_used)
 
-    # 2. Existing file contents (always included)
+    # 2. Existing file contents (budget-aware; truncate or skip if over budget)
     for path, content in existing_file_contents.items():
         file_section = f"### Current contents of {path}:\n```\n{content}\n```\n"
+        section_tokens = estimate_tokens(file_section)
+        total_content_before_build += section_tokens
+        if tokens_used + section_tokens > budget.available_tokens:
+            remaining = budget.available_tokens - tokens_used
+            if remaining > 50:
+                truncated = truncate_to_tokens(file_section, remaining)
+                parts.append(truncated)
+                tokens_used += estimate_tokens(truncated)
+            else:
+                parts.append(f"### {path}: [truncated — token budget exceeded]\n")
+                tokens_used += 10  # approximate overhead
+            continue
         parts.append(file_section)
-        tokens_used += estimate_tokens(file_section)
-        total_content_before_build += estimate_tokens(file_section)
+        tokens_used += section_tokens
     logger.debug("Existing files included: %d", len(existing_file_contents))
     logger.debug("Priority 2: %d tokens used", tokens_used)
 
@@ -199,6 +212,9 @@ def build_task_prompt(
         if tokens_used + tree_tokens > budget.available_tokens:
             remaining = budget.available_tokens - tokens_used
             tree_section = truncate_to_tokens(tree_section, remaining)
+            tokens_used += estimate_tokens(tree_section)
+        else:
+            tokens_used += tree_tokens
         parts.append(tree_section)
         logger.debug("Priority 5: %d tokens used", tokens_used)
 

@@ -1,0 +1,5 @@
+{
+  "allowlisted_commands": ["pytest", "npm", "ruff"],
+  "max_calls_per_iteration": 20,
+  "verify_command": "pytest tests/ -v"
+}

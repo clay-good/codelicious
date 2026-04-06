@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import functools
+import io
 import json
 import logging
 import os
 import pathlib
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
+import tokenize
 from dataclasses import dataclass, field
 
+from codelicious._env import parse_env_int
 from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
 
 logger = logging.getLogger("codelicious.verifier")
@@ -35,15 +40,18 @@ __all__ = [
 ]
 
 # Timeout constants for subprocess calls
-_SYNTAX_AGGREGATE_TIMEOUT_S: int = 300  # Max seconds for all syntax checks combined
-_SYNTAX_PER_FILE_TIMEOUT_S: int = 30  # Max seconds per individual syntax check
-_TEST_TIMEOUT_S: int = 120  # Max seconds for pytest subprocess
-_LINT_TIMEOUT_S: int = 60  # Max seconds for lint subprocess
-_CUSTOM_CMD_TIMEOUT_S: int = 120  # Max seconds for custom verify command
-_PIP_AUDIT_TIMEOUT_S: int = 120  # Max seconds for pip-audit
-_PLAYWRIGHT_TIMEOUT_S: int = 300  # Max seconds for Playwright tests
+# Each is overridable via CODELICIOUS_TIMEOUT_<NAME> environment variable
+
+_SYNTAX_AGGREGATE_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_SYNTAX", 300, min_val=1)
+_SYNTAX_PER_FILE_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_SYNTAX_PER_FILE", 30, min_val=1)
+_TEST_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_TEST", 120, min_val=1)
+_LINT_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_LINT", 60, min_val=1)
+_CUSTOM_CMD_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_CUSTOM_CMD", 120, min_val=1)
+_PIP_AUDIT_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_AUDIT", 120, min_val=1)
+_PLAYWRIGHT_TIMEOUT_S: int = parse_env_int("CODELICIOUS_TIMEOUT_PLAYWRIGHT", 300, min_val=1)
 
 _MAX_OUTPUT: int = 10_000
+_MAX_COMPILE_SIZE: int = 1_000_000  # 1 MB per file — DoS ceiling for compile() (Finding 47)
 
 # ---------------------------------------------------------------------------
 # Tool probing
@@ -63,10 +71,53 @@ _TOOL_NAMES: tuple[str, ...] = (
 )
 
 
+# Install guidance for tools (EM-4: actionable error messages)
+_INSTALL_GUIDANCE: dict[str, str] = {
+    "ruff": "pip install ruff (or pip install -e '.[dev]' for all dev tools)",
+    "bandit": "pip install bandit (or pip install -e '.[dev]' for all dev tools)",
+    "pip-audit": "pip install pip-audit (or pip install -e '.[dev]' for all dev tools)",
+    "semgrep": "pip install semgrep",
+    "eslint": "npm install -g eslint",
+    "tsc": "npm install -g typescript",
+    "jest": "npm install -g jest",
+    "cargo": "Install Rust: https://rustup.rs/",
+    "go": "Install Go: https://go.dev/dl/",
+    "playwright": "pip install playwright && playwright install",
+    "pytest": "pip install pytest (or pip install -e '.[dev]' for all dev tools)",
+    "pytest-cov": "pip install pytest-cov (or pip install -e '.[dev]' for all dev tools)",
+}
+
+
 def _truncate(text: str) -> str:
     if len(text) <= _MAX_OUTPUT:
         return text
     return text[:_MAX_OUTPUT] + "\n[truncated]"
+
+
+def _escape_markdown_cell(value: str) -> str:
+    """Escape a string for safe inclusion in a Markdown table cell (S20-P3-7).
+
+    Replaces pipe characters and strips newlines so the table structure is preserved.
+    """
+    return value.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
+def _find_py_files(project_dir: pathlib.Path) -> list[pathlib.Path]:
+    """Walk the project tree once and return all .py files.
+
+    Skips hidden directories and __pycache__. Used by check_syntax and
+    check_security to avoid duplicate os.walk traversals (Finding 10).
+    """
+    py_files: list[pathlib.Path] = []
+    for root, dirs, files in os.walk(str(project_dir)):
+        # Prune hidden dirs, __pycache__, node_modules in-place to prevent
+        # os.walk from descending into them (Finding 8).
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules")]
+        root_path = pathlib.Path(root)
+        for f in files:
+            if f.endswith(".py"):
+                py_files.append(root_path / f)
+    return py_files
 
 
 @dataclass
@@ -91,12 +142,14 @@ class VerificationResult:
         return all(c.passed for c in self.checks)
 
 
+@functools.lru_cache(maxsize=1)
 def probe_tools(project_dir: pathlib.Path) -> dict[str, bool]:  # noqa: ARG001
     """Return a dict mapping tool name to True if available on PATH.
 
     project_dir is accepted for API consistency but is not used — tool
     availability is determined purely by PATH, not project-local installs.
-    The result is not cached; callers may cache it themselves.
+    The result is cached via @lru_cache for the lifetime of the process
+    (Finding 27: the previous docstring incorrectly said "not cached").
     """
     logger.debug("Probing tools: %s", _TOOL_NAMES)
     result = {tool: shutil.which(tool) is not None for tool in _TOOL_NAMES}
@@ -170,7 +223,8 @@ def check_lint(
         return CheckResult(
             name="lint",
             passed=True,
-            message=f"Lint skipped: linter not available for {language}",
+            message=f"Lint skipped: linter not available for {language}. "
+            f"Install with: {_INSTALL_GUIDANCE.get('ruff', 'see documentation')}",
         )
 
     if language == "python":
@@ -193,14 +247,20 @@ def check_lint(
             text=True,
             timeout=timeout,
             cwd=str(project_dir),
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="lint",
             passed=True,
-            message=f"Lint skipped: {cmd[0]} not found",
+            message=f"Lint skipped: {cmd[0]} not found. "
+            f"Install with: {_INSTALL_GUIDANCE.get(cmd[0], 'see documentation')}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="lint",
             passed=False,
@@ -230,6 +290,7 @@ def check_coverage(
     language: str,
     threshold: int,
     tool_available: bool,
+    timeout: int = 180,
 ) -> CheckResult:
     """Run coverage check for Python projects.
 
@@ -247,7 +308,7 @@ def check_coverage(
         return CheckResult(
             name="coverage",
             passed=True,
-            message="Coverage skipped: coverage tool not available",
+            message=f"Coverage skipped: coverage tool not available. Install with: {_INSTALL_GUIDANCE['pytest-cov']}",
         )
 
     tests_dir = project_dir / "tests"
@@ -273,16 +334,21 @@ def check_coverage(
             ],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=timeout,
             cwd=str(project_dir),
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="coverage",
             passed=True,
-            message="Coverage skipped: pytest not installed",
+            message=f"Coverage skipped: pytest not installed. Install with: {_INSTALL_GUIDANCE['pytest']}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="coverage",
             passed=False,
@@ -328,7 +394,7 @@ def check_pip_audit(
         return CheckResult(
             name="pip_audit",
             passed=True,
-            message="pip-audit skipped: not installed",
+            message=f"pip-audit skipped: not installed. Install with: {_INSTALL_GUIDANCE['pip-audit']}",
         )
 
     try:
@@ -338,14 +404,19 @@ def check_pip_audit(
             text=True,
             timeout=_PIP_AUDIT_TIMEOUT_S,
             cwd=str(project_dir),
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="pip_audit",
             passed=True,
-            message="pip-audit skipped: not found",
+            message=f"pip-audit skipped: not found. Install with: {_INSTALL_GUIDANCE['pip-audit']}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="pip_audit",
             passed=False,
@@ -392,7 +463,7 @@ def check_playwright(
         return CheckResult(
             name="playwright",
             passed=True,
-            message="Playwright skipped: not installed",
+            message=f"Playwright skipped: not installed. Install with: {_INSTALL_GUIDANCE['playwright']}",
         )
 
     e2e_dir = project_dir / "e2e"
@@ -405,19 +476,24 @@ def check_playwright(
 
     try:
         result = subprocess.run(
-            ["npx", "playwright", "test", "e2e/", "--reporter=line"],
+            [sys.executable, "-m", "playwright", "test", "e2e/", "--reporter=line"],
             capture_output=True,
             text=True,
             timeout=_PLAYWRIGHT_TIMEOUT_S,
             cwd=str(project_dir),
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="playwright",
             passed=True,
-            message="Playwright skipped: npx not found",
+            message=f"Playwright skipped: playwright not found. Install with: {_INSTALL_GUIDANCE['playwright']}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="playwright",
             passed=False,
@@ -451,7 +527,7 @@ _SECURITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("pickle deserialization", re.compile(r"\bpickle\.loads?\s*\(")),
     (
         "yaml.load without SafeLoader",
-        re.compile(r"\byaml\.load\s*\((?!.*Loader)"),
+        re.compile(r"\byaml\.load\s*\((?!.*SafeLoader)"),
     ),
     ("marshal deserialization", re.compile(r"\bmarshal\.loads?\s*\(")),
 ]
@@ -488,19 +564,13 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
 def check_syntax(
     project_dir: pathlib.Path,
     aggregate_timeout: int = _SYNTAX_AGGREGATE_TIMEOUT_S,
+    py_files: list[pathlib.Path] | None = None,
 ) -> CheckResult:
     """Check Python syntax of all .py files in the project."""
     import time
 
-    py_files: list[pathlib.Path] = []
-    for root, _dirs, files in os.walk(str(project_dir)):
-        root_path = pathlib.Path(root)
-        # Skip hidden dirs and __pycache__
-        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
-            continue
-        for f in files:
-            if f.endswith(".py"):
-                py_files.append(root_path / f)
+    if py_files is None:
+        py_files = _find_py_files(project_dir)
 
     if not py_files:
         return CheckResult(
@@ -520,28 +590,53 @@ def check_syntax(
             msg = f"Aggregate timeout: syntax check exceeded {aggregate_timeout}s after checking {i} files"
             errors.append(msg)
             break
-        # Clamp per-file timeout to remaining aggregate time
-        remaining_agg = aggregate_timeout - elapsed_agg
-        file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
+
+        # Use the built-in compile() in-process instead of spawning a subprocess
+        # per file. Fall back to subprocess only if the file cannot be read.
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "py_compile", str(py_file)],
-                capture_output=True,
-                text=True,
-                timeout=file_timeout,
-                cwd=str(project_dir),
-            )
-            if result.returncode != 0:
-                err = result.stderr.strip() or result.stdout.strip()
-                errors.append(f"{py_file.name}: {err}")
-        except FileNotFoundError:
-            return CheckResult(
-                name="syntax",
-                passed=False,
-                message="Python interpreter not found",
-            )
-        except subprocess.TimeoutExpired:
-            errors.append(f"{py_file.name}: compilation timed out")
+            source = py_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Cannot read the file — fall back to subprocess check
+            logger.debug("Cannot read %s (%s); falling back to subprocess syntax check", py_file.name, exc)
+            elapsed_agg = time.monotonic() - aggregate_start
+            remaining_agg = aggregate_timeout - elapsed_agg
+            file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "py_compile", str(py_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=file_timeout,
+                    cwd=str(project_dir),
+                    start_new_session=True,
+                )
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    errors.append(f"{py_file.name}: {err}")
+            except FileNotFoundError:
+                return CheckResult(
+                    name="syntax",
+                    passed=False,
+                    message="Python interpreter not found",
+                )
+            except subprocess.TimeoutExpired as e:
+                try:
+                    os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                errors.append(f"{py_file.name}: compilation timed out")
+            continue
+
+        # Guard against agent-writable files that could cause a DoS via
+        # compile() on extremely large inputs (Finding 47).
+        if len(source) > _MAX_COMPILE_SIZE:
+            errors.append(f"{py_file.name}: file too large for syntax check ({len(source)} bytes)")
+            continue
+
+        try:
+            compile(source, str(py_file), "exec")
+        except SyntaxError as exc:
+            errors.append(f"{py_file.name}:{exc.lineno}: {exc.msg}")
 
     logger.debug("Syntax check complete: %d errors found", len(errors))
     if errors:
@@ -579,14 +674,19 @@ def check_tests(project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S) -> Ch
             text=True,
             timeout=timeout,
             cwd=str(project_dir),
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="tests",
             passed=False,
-            message="pytest not installed; cannot run tests",
+            message=f"pytest not installed; cannot run tests. Install with: {_INSTALL_GUIDANCE['pytest']}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="tests",
             passed=False,
@@ -617,42 +717,115 @@ def check_tests(project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S) -> Ch
 def _strip_string_literals(line: str) -> str:
     """Remove string literal contents from a line, preserving structure.
 
-    Handles escaped quotes and raw strings. Returns line with string
-    contents replaced by empty string placeholders. This helps the security
-    scanner avoid false positives from patterns inside string literals.
+    Handles escaped quotes, raw strings, bytes literals (b"..."), and
+    f-strings. Returns line with string contents replaced by empty string
+    placeholders. For f-strings, expressions inside ``{...}`` are preserved
+    while static portions are stripped.
+
+    This helps the security scanner avoid false positives from patterns
+    inside string literals (EC-3).
     """
-    result = []
+    result: list[str] = []
     i = 0
     while i < len(line):
-        # Check for raw string prefix (r", r', b", b', u", u', or combinations)
-        if line[i] in "rRbBuU" and i + 1 < len(line) and line[i + 1] in "\"'":
-            quote_char = line[i + 1]
-            i += 2
-            # Skip to closing quote (no escape processing for raw strings)
-            while i < len(line) and line[i] != quote_char:
-                i += 1
-            if i < len(line):
-                i += 1  # skip closing quote
-            result.append('""')  # placeholder
+        # Consume string prefix characters (r, b, u, f in any case/order)
+        prefix_start = i
+        prefix_lower = ""
+        while i < len(line) and line[i].lower() in "rbuf" and len(prefix_lower) < 3:
+            prefix_lower += line[i].lower()
+            i += 1
+
+        # Check if prefix is followed by a quote character
+        if prefix_lower and i < len(line) and line[i] in "\"'":
+            is_raw = "r" in prefix_lower
+            is_fstring = "f" in prefix_lower
+            quote_char = line[i]
+
+            # Check for triple-quote
+            if line[i : i + 3] in ('"""', "'''"):
+                delim = line[i : i + 3]
+                i += 3
+                if is_fstring:
+                    # Preserve f-string expressions inside {}, strip static parts
+                    result.append('""')
+                    _strip_fstring_content(line, i, result, delim=delim)
+                    end = line.find(delim, i)
+                    i = (end + 3) if end != -1 else len(line)
+                else:
+                    end = line.find(delim, i)
+                    i = (end + 3) if end != -1 else len(line)
+                    result.append('""')
+                continue
+
+            # Single-quoted string
+            i += 1  # skip opening quote
+            if is_fstring:
+                # Preserve f-string expressions inside {}, strip static parts
+                result.append('"')
+                while i < len(line) and line[i] != quote_char:
+                    if not is_raw and line[i] == "\\":
+                        i += 2
+                        continue
+                    if line[i] == "{" and i + 1 < len(line) and line[i + 1] != "{":
+                        # Real expression — find matching }
+                        depth = 1
+                        i += 1
+                        result.append("{")
+                        while i < len(line) and depth > 0:
+                            if line[i] == "{":
+                                depth += 1
+                            elif line[i] == "}":
+                                depth -= 1
+                                if depth == 0:
+                                    result.append("}")
+                                    i += 1
+                                    break
+                            result.append(line[i])
+                            i += 1
+                        continue
+                    i += 1
+                if i < len(line):
+                    i += 1  # skip closing quote
+                result.append('"')
+            elif is_raw:
+                # Raw: no escape processing
+                while i < len(line) and line[i] != quote_char:
+                    i += 1
+                if i < len(line):
+                    i += 1
+                result.append('""')
+            else:
+                # Regular or bytes literal: process escapes
+                while i < len(line):
+                    if line[i] == "\\":
+                        i += 2
+                        continue
+                    if line[i] == quote_char:
+                        i += 1
+                        break
+                    i += 1
+                result.append('""')
             continue
-        # Check for triple-quoted string (handles same-line open/close)
+
+        # No quote followed the prefix chars — they're just identifiers
+        if prefix_lower:
+            i = prefix_start  # rewind; fall through to normal char handling
+
+        # Check for triple-quoted string (no prefix)
         if line[i : i + 3] in ('"""', "'''"):
             delim = line[i : i + 3]
             i += 3
             end = line.find(delim, i)
-            if end != -1:
-                i = end + 3
-            else:
-                i = len(line)  # unclosed triple-quote (multiline continues)
+            i = (end + 3) if end != -1 else len(line)
             result.append('""')
             continue
-        # Check for single-quoted string
+        # Check for single-quoted string (no prefix)
         if line[i] in "\"'":
             quote_char = line[i]
             i += 1
             while i < len(line):
                 if line[i] == "\\":
-                    i += 2  # skip escaped character
+                    i += 2
                     continue
                 if line[i] == quote_char:
                     i += 1
@@ -665,16 +838,77 @@ def _strip_string_literals(line: str) -> str:
     return "".join(result)
 
 
-def check_security(project_dir: pathlib.Path) -> CheckResult:
+def _strip_fstring_content(line: str, start: int, result: list[str], *, delim: str) -> None:
+    """Helper: walk an f-string triple-quote body and emit expressions to *result*.
+
+    This is best-effort for the single-line security scanner use case — it does
+    not attempt full Python parsing of nested f-string expressions.
+    """
+    i = start
+    end = line.find(delim, i)
+    stop = end if end != -1 else len(line)
+    while i < stop:
+        if line[i] == "{" and i + 1 < stop and line[i + 1] != "{":
+            depth = 1
+            i += 1
+            result.append("{")
+            while i < stop and depth > 0:
+                if line[i] == "{":
+                    depth += 1
+                elif line[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        result.append("}")
+                        i += 1
+                        break
+                result.append(line[i])
+                i += 1
+        else:
+            i += 1
+
+
+def _get_string_line_ranges(source: str) -> set[int]:
+    """Return 1-based line numbers of *interior* lines of multiline strings (S20-P2-8).
+
+    Only the interior lines of triple-quoted strings (not the opening/closing
+    lines) are excluded from security scanning.  This ensures that code on the
+    same line as a triple-quote delimiter (e.g. ``eval(x); msg = \\"\\"\\"...``)
+    is still scanned, while lines wholly inside a docstring body are skipped.
+
+    Single-line strings are never excluded — secret patterns intentionally scan
+    string contents for hardcoded credentials.
+
+    Uses Python's ``tokenize`` module for accurate boundary detection.
+    Falls back to an empty set (no exclusions) on ``TokenError`` so that
+    syntactically invalid files are still scanned conservatively.
+    """
+    string_lines: set[int] = set()
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok_type, tok_string, start, end, _tok_line in tokens:
+            if tok_type == tokenize.STRING:
+                # Only skip interior lines of multiline strings (spans > 1 line)
+                # or single-line triple-quoted strings.
+                is_multiline_span = start[0] != end[0]
+                is_triple_quoted = tok_string.lstrip("brBRuUfF").startswith(('"""', "'''"))
+
+                if is_multiline_span:
+                    # Skip interior lines only (not the opening/closing lines
+                    # which may have code before/after the delimiter).
+                    for line_no in range(start[0] + 1, end[0]):
+                        string_lines.add(line_no)
+                elif is_triple_quoted:
+                    # Single-line triple-quoted string: skip entirely
+                    string_lines.add(start[0])
+    except tokenize.TokenError:
+        logger.debug("tokenize.TokenError: falling back to no string exclusions")
+    return string_lines
+
+
+def check_security(project_dir: pathlib.Path, py_files: list[pathlib.Path] | None = None) -> CheckResult:
     """Scan Python files for security concerns."""
-    py_files: list[pathlib.Path] = []
-    for root, _dirs, files in os.walk(str(project_dir)):
-        root_path = pathlib.Path(root)
-        if any(part.startswith(".") or part == "__pycache__" for part in root_path.relative_to(project_dir).parts):
-            continue
-        for f in files:
-            if f.endswith(".py"):
-                py_files.append(root_path / f)
+    if py_files is None:
+        py_files = _find_py_files(project_dir)
 
     logger.info("Security scan: scanning %d Python files", len(py_files))
     findings: list[str] = []
@@ -688,37 +922,16 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
 
         rel_path = py_file.relative_to(project_dir)
 
-        in_multiline_string = False
-        multiline_delim: str = ""
+        # Use tokenize to accurately identify lines inside string literals (S20-P2-8).
+        # This replaces the fragile line.count(delim) % 2 heuristic that failed on
+        # even numbers of triple-quote pairs and mixed quote styles.
+        string_lines = _get_string_line_ranges(content)
+
         for line_no, line in enumerate(content.splitlines(), start=1):
             stripped = line.lstrip()
 
-            # Track triple-quoted string boundaries; skip lines inside them.
-            # A line can open and close a triple-quote on the same line —
-            # handle by counting occurrences of the SAME delimiter type.
-            if not in_multiline_string:
-                for delim in ('"""', "'''"):
-                    count = line.count(delim)
-                    if count % 2 == 1:
-                        # Odd number of delimiters → entering a multi-line string
-                        in_multiline_string = True
-                        multiline_delim = delim
-                        logger.debug(
-                            "Security scan: entering multiline string at line %d (delim=%s)",
-                            line_no,
-                            delim,
-                        )
-                        break
-                # If still not in a multi-line string after the check, the
-                # line may have even (balanced) triple-quotes — treat as normal.
-                if in_multiline_string:
-                    continue
-            else:
-                # We are inside a multi-line string; look for the closing delimiter
-                count = line.count(multiline_delim)
-                if count % 2 == 1:
-                    in_multiline_string = False
-                    logger.debug("Security scan: exiting multiline string at line %d", line_no)
+            # Skip lines that are entirely inside string tokens (S20-P2-8)
+            if line_no in string_lines:
                 continue
 
             # Skip comment lines (including indented comments)
@@ -759,7 +972,12 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
 
             # Strip string literal contents to avoid false positives from patterns
             # that appear inside strings (e.g., 'do not use eval(x)')
-            scan_part = _strip_string_literals(code_part)
+            # Fast pre-check: skip the expensive char-by-char function for lines
+            # with no string literals (~70% of code lines) (Finding 17)
+            if '"' not in code_part and "'" not in code_part:
+                scan_part = code_part
+            else:
+                scan_part = _strip_string_literals(code_part)
             for pattern_name, pattern in _SECURITY_PATTERNS:
                 if pattern.search(scan_part):
                     findings.append(f"{rel_path}:{line_no}: {pattern_name}")
@@ -783,6 +1001,43 @@ def check_security(project_dir: pathlib.Path) -> CheckResult:
         passed=True,
         message="No security concerns found",
     )
+
+
+# Script extensions that require path validation when used as arguments (S20-P2-3)
+_SCRIPT_EXTENSIONS: frozenset[str] = frozenset({".sh", ".bash", ".py", ".rb", ".pl"})
+
+
+def _validate_command_args(args: list[str], repo_path: pathlib.Path) -> str | None:
+    """Check all command arguments against the denylist (S20-P2-3).
+
+    Returns an error message if a forbidden argument is found, or None if all args are safe.
+    """
+    resolved_repo = str(repo_path.resolve())
+    for arg in args[1:]:
+        basename = os.path.basename(arg)
+        # Strip common script extensions for denylist comparison
+        name_no_ext = basename
+        for ext in _SCRIPT_EXTENSIONS:
+            if basename.endswith(ext):
+                name_no_ext = basename[: -len(ext)]
+                break
+
+        # Check if the argument basename matches a denied command
+        if name_no_ext in DENIED_COMMANDS or basename in DENIED_COMMANDS:
+            return f"Argument matches denied command: '{arg}'"
+
+        # Check script files from outside the repo
+        if "/" in arg or os.sep in arg:
+            _, dot_ext = os.path.splitext(arg)
+            if dot_ext in _SCRIPT_EXTENSIONS:
+                try:
+                    resolved_arg = str(pathlib.Path(arg).resolve())
+                except (OSError, ValueError):
+                    return f"Cannot resolve script argument path: '{arg}'"
+                if not resolved_arg.startswith(resolved_repo + os.sep) and resolved_arg != resolved_repo:
+                    return f"External script argument not allowed: '{arg}'"
+
+    return None
 
 
 def check_custom_command(
@@ -840,6 +1095,15 @@ def check_custom_command(
                     passed=False,
                     message="Custom command rejected: shell metacharacters detected in argument",
                 )
+
+        # Check all arguments against the denylist (S20-P2-3)
+        arg_error = _validate_command_args(args, project_dir)
+        if arg_error:
+            return CheckResult(
+                name="custom",
+                passed=False,
+                message=f"Custom command rejected: {arg_error}",
+            )
     else:
         logger.info("Custom command validation: cmd=%s, basename=empty", command)
 
@@ -851,14 +1115,20 @@ def check_custom_command(
             timeout=timeout,
             cwd=str(project_dir),
             shell=False,
+            start_new_session=True,
         )
     except FileNotFoundError:
         return CheckResult(
             name="custom",
             passed=False,
-            message=f"Command not found: {args[0]}",
+            message=f"Command not found: {args[0]}. "
+            f"Install with: {_INSTALL_GUIDANCE.get(args[0], 'check your PATH or install the tool')}",
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
         return CheckResult(
             name="custom",
             passed=False,
@@ -926,13 +1196,16 @@ def verify(
         available_tools = [tool for tool, avail in tools.items() if avail]
         logger.debug("Tools available: %s", available_tools)
 
+    # Walk the project tree once and share the result (Finding 10)
+    py_files = _find_py_files(project_dir)
+
     checks: list[CheckResult] = [
-        check_syntax(project_dir),
+        check_syntax(project_dir, py_files=py_files),
         check_tests(
             project_dir,
             timeout=test_timeout if test_timeout is not None else _TEST_TIMEOUT_S,
         ),
-        check_security(project_dir),
+        check_security(project_dir, py_files=py_files),
     ]
 
     if tools is not None and languages is not None:
@@ -1046,7 +1319,9 @@ def write_build_summary(
         lines.append("|---|---|---|")
         for check in last_verification.checks:
             status = "pass" if check.passed else "FAIL"
-            lines.append(f"| {check.name} | {status} | {check.message} |")
+            safe_name = _escape_markdown_cell(check.name)
+            safe_msg = _escape_markdown_cell(check.message)
+            lines.append(f"| {safe_name} | {status} | {safe_msg} |")
         lines.append("")
 
     summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

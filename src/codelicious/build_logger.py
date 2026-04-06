@@ -55,9 +55,20 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
     removed_count = 0
     cutoff_timestamp = time.time() - (retention_days * 86400)  # 86400 = seconds per day
 
+    # Define onerror callback once outside the loop (spec-22 Phase 5)
+    def _rmtree_onerror(func, path, exc_info):
+        logger.warning("Failed to remove %s: %s", path, exc_info[1])
+
     # Iterate through session directories in the project directory
     for session_dir in builds_dir.iterdir():
         if not session_dir.is_dir():
+            continue
+        # Skip symlinks and verify path containment to prevent directory traversal (Finding 44)
+        if session_dir.is_symlink():
+            logger.warning("Skipping symlink in builds dir: %s", session_dir.name)
+            continue
+        if not session_dir.resolve().is_relative_to(builds_dir.resolve()):
+            logger.warning("Skipping directory that escapes builds dir: %s", session_dir.name)
             continue
 
         # Parse timestamp from directory name (format: YYYYMMDDTHHMMSSZ)
@@ -65,22 +76,19 @@ def cleanup_old_builds(builds_dir: pathlib.Path, retention_days: int = 30) -> in
         try:
             # Parse the timestamp from the session_id format
             # Expected format: "20260314T123045Z" (YYYYMMDDTHHMMSSZ)
-            if not session_id.endswith("z"):
+            if not session_id.endswith("Z"):
                 logger.debug("Skipping directory with non-timestamp name: %s", session_id)
                 continue
 
             # Parse the timestamp
-            dt = datetime.strptime(session_id, "%Y%m%dT%H%M%Sz")
+            dt = datetime.strptime(session_id, "%Y%m%dT%H%M%SZ")
             dt = dt.replace(tzinfo=timezone.utc)
             dir_timestamp = dt.timestamp()
 
             if dir_timestamp < cutoff_timestamp:
                 # Directory is older than retention period
-                def onerror(func, path, exc_info):
-                    logger.warning("Failed to remove %s: %s", path, exc_info[1])
-
                 try:
-                    shutil.rmtree(session_dir, onerror=onerror)
+                    shutil.rmtree(session_dir, onerror=_rmtree_onerror)
                     removed_count += 1
                     logger.debug("Removed old build directory: %s", session_dir)
                 except Exception as exc:
@@ -110,7 +118,7 @@ class BuildSession:
         log_dir: pathlib.Path | None = None,
     ) -> None:
         project_name = project_root.resolve().name
-        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%Sz")
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
         if log_dir is None:
             log_dir = pathlib.Path.home() / ".codelicious" / "builds"
@@ -135,7 +143,7 @@ class BuildSession:
         self.session_id = session_id
         self.session_dir = self._session_dir
 
-        # Write meta.json
+        # Write meta.json — create with 0o600 atomically (P2-12 fix)
         meta = {
             "project": str(project_root.resolve()),
             "project_name": project_name,
@@ -152,41 +160,91 @@ class BuildSession:
             },
         }
         meta_path = self._session_dir / "meta.json"
-        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-        os.chmod(str(meta_path), 0o600)
-
-        # Open output.log and session.jsonl (line-buffered)
-        self._output_log = open(self._session_dir / "output.log", "w", encoding="utf-8", buffering=1)
+        meta_content = json.dumps(meta, indent=2) + "\n"
+        fd = os.open(str(meta_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(str(self._session_dir / "output.log"), 0o600)
-        except OSError as exc:
-            logger.warning("Failed to set permissions on output.log: %s", exc)
-            # Don't re-raise -- permissions are a hardening measure, not critical
-
-        try:
-            self._event_log = open(self._session_dir / "session.jsonl", "w", encoding="utf-8", buffering=1)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(meta_content)
         except BaseException:
-            self._output_log.close()
+            # fd is owned by fdopen on success; on failure before fdopen
+            # completes, the fd may already be closed — ignore EBADF
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             raise
         try:
-            os.chmod(str(self._session_dir / "session.jsonl"), 0o600)
+            os.chmod(str(meta_path), 0o600)
         except OSError as exc:
-            logger.warning("Failed to set permissions on session.jsonl: %s", exc)
+            logger.warning("Failed to set permissions on meta.json: %s", exc)
+
+        # Store file paths only.  Actual file handles are deferred to
+        # _open_handles(), which is called lazily on first use so that handles
+        # are always created within a properly managed resource context
+        # (Finding 25: BuildSession opens file handles before context manager).
+        self._output_log_path = self._session_dir / "output.log"
+        self._event_log_path = self._session_dir / "session.jsonl"
+        self._output_log = None
+        self._event_log = None
 
         logger.info("Build session created: %s/%s", project_name, session_id)
         logger.debug("Session directory: %s", self._session_dir)
 
+    def _open_handles(self) -> None:
+        """Open output.log and session.jsonl file handles (line-buffered).
+
+        Called from __enter__ and lazily on first write so that callers
+        that do not use the context manager still work correctly.  Idempotent:
+        does nothing if the handles are already open.  If the second open()
+        fails, the first handle is closed before re-raising (Finding 25).
+        """
+        if self._output_log is not None:
+            return  # already open
+
+        # Create with 0o600 atomically via os.open (P2-12 fix)
+        fd = os.open(str(self._output_log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            self._output_log = os.fdopen(fd, "w", encoding="utf-8", buffering=1)
+        except BaseException:
+            os.close(fd)
+            raise
+        try:
+            os.chmod(str(self._output_log_path), 0o600)
+        except OSError as exc:
+            logger.warning("Failed to set permissions on output.log: %s", exc)
+
+        try:
+            fd2 = os.open(str(self._event_log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                self._event_log = os.fdopen(fd2, "w", encoding="utf-8", buffering=1)
+            except BaseException:
+                os.close(fd2)
+                raise
+        except BaseException:
+            self._output_log.close()
+            self._output_log = None
+            raise
+        try:
+            os.chmod(str(self._event_log_path), 0o600)
+        except OSError as exc:
+            logger.warning("Failed to set permissions on session.jsonl: %s", exc)
+
     @property
     def output_file(self) -> Any:
         """Public file handle for tee_to in run_agent()."""
-        return self._output_log
+        with self._lock:
+            self._open_handles()
+            return self._output_log
 
     def emit(self, event: str, **kwargs: Any) -> None:
         """Write one structured JSON event to session.jsonl."""
         logger.debug("Build event: %s %s", event, kwargs)
         with self._lock:
             if self._closed:
+                # S20-P3-9: warn instead of silently dropping the event
+                logger.warning("Event dropped: session closed, event_type=%s", event)
                 return
+            self._open_handles()
             entry = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "event": event,
@@ -198,7 +256,9 @@ class BuildSession:
         """Write a separator line with timestamp to output.log."""
         with self._lock:
             if self._closed:
+                logger.warning("Phase header dropped: session closed, phase=%s", phase_name)
                 return
+            self._open_handles()
             ts = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
             separator = f"\n{'=' * 60}\n[{ts}] {phase_name}\n{'=' * 60}\n"
             self._output_log.write(separator)
@@ -214,7 +274,8 @@ class BuildSession:
         Args:
             success: Whether the build succeeded.
         """
-        self._explicit_success = success
+        with self._lock:
+            self._explicit_success = success
 
     def close(
         self,
@@ -240,12 +301,28 @@ class BuildSession:
             if claude_session_id:
                 summary["claude_session_id"] = claude_session_id
 
+            # Create with 0o600 atomically via os.open (P2-12 fix)
             summary_path = self._session_dir / "summary.json"
-            summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-            os.chmod(str(summary_path), 0o600)
+            summary_content = json.dumps(summary, indent=2) + "\n"
+            fd = os.open(str(summary_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(summary_content)
+            except BaseException:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
+            try:
+                os.chmod(str(summary_path), 0o600)
+            except OSError as exc:
+                logger.warning("Failed to set permissions on summary.json: %s", exc)
 
-            self._output_log.close()
-            self._event_log.close()
+            if self._output_log is not None:
+                self._output_log.close()
+            if self._event_log is not None:
+                self._event_log.close()
 
             logger.info(
                 "Build session closed: success=%s, elapsed=%.1fs, tasks_done=%d, tasks_failed=%d",
@@ -255,12 +332,30 @@ class BuildSession:
                 tasks_failed,
             )
 
+    def __del__(self) -> None:
+        """Safety-net finalizer: close file handles if not already closed.
+
+        This is called by the garbage collector and prevents file handle
+        leaks when the context manager is not used or an exception bypasses
+        __exit__. It is not guaranteed to be called (e.g. at interpreter
+        shutdown), but covers the common case.
+        """
+        try:
+            if not self._closed:
+                self.close()
+        except Exception:
+            # __del__ must never raise — swallow any errors silently.
+            pass
+
     def __enter__(self) -> "BuildSession":
+        self._open_handles()
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        if self._explicit_success is not None:
-            self.close(success=self._explicit_success)
+        with self._lock:
+            explicit = self._explicit_success
+        if explicit is not None:
+            self.close(success=explicit)
         else:
             self.close(success=(exc_type is None))
         return False

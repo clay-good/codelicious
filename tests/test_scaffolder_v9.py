@@ -18,20 +18,27 @@ from codelicious.scaffolder import (
 def test_scaffold_claude_dir_creates_directory_structure(
     tmp_path: pathlib.Path,
 ) -> None:
+    _EXPECTED_PATHS = {
+        ".claude/settings.json",
+        ".claude/agents/builder/SKILL.md",
+        ".claude/agents/tester/SKILL.md",
+        ".claude/agents/reviewer/SKILL.md",
+        ".claude/agents/explorer/SKILL.md",
+        ".claude/skills/run-tests/SKILL.md",
+        ".claude/skills/lint-fix/SKILL.md",
+        ".claude/skills/verify-all/SKILL.md",
+        ".claude/skills/update-state/SKILL.md",
+        ".claude/rules/conventions.md",
+        ".claude/rules/security.md",
+    }
     files = scaffold_claude_dir(tmp_path)
-    assert len(files) >= 11
-    # Check key files exist
-    assert (tmp_path / ".claude" / "settings.json").is_file()
-    assert (tmp_path / ".claude" / "agents" / "builder" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "agents" / "tester" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "agents" / "reviewer" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "agents" / "explorer" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "skills" / "run-tests" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "skills" / "lint-fix" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "skills" / "verify-all" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "skills" / "update-state" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "rules" / "conventions.md").is_file()
-    assert (tmp_path / ".claude" / "rules" / "security.md").is_file()
+    assert len(files) == len(_EXPECTED_PATHS), (
+        f"Expected {len(_EXPECTED_PATHS)} files, got {len(files)}: {sorted(files)}"
+    )
+    assert set(files) == _EXPECTED_PATHS
+    # Verify all files actually exist on disk
+    for rel_path in _EXPECTED_PATHS:
+        assert (tmp_path / rel_path).is_file(), f"Missing file: {rel_path}"
 
 
 # -- idempotent double-run ------------------------------------------------
@@ -44,6 +51,41 @@ def test_scaffold_claude_dir_idempotent(tmp_path: pathlib.Path) -> None:
     assert files2 == []
     # First run should have written all files
     assert len(files1) >= 11
+
+
+def test_scaffold_claude_dir_idempotent_file_contents(tmp_path: pathlib.Path) -> None:
+    """After two scaffold runs, the on-disk content of every written file must be
+    identical to the content produced by the first run (Finding 56).
+
+    This verifies that the second run does not silently overwrite files with
+    subtly different content (e.g. regenerated timestamps or changed defaults).
+    """
+    # First run: capture written paths and their content
+    files1 = scaffold_claude_dir(tmp_path)
+    assert len(files1) >= 11, "First run should write at least 11 files"
+
+    first_run_contents: dict[str, str] = {}
+    for rel_path in files1:
+        first_run_contents[rel_path] = (tmp_path / rel_path).read_text(encoding="utf-8")
+
+    # Second run: must be a no-op
+    files2 = scaffold_claude_dir(tmp_path)
+    assert files2 == [], "Second run must not overwrite any files"
+
+    # Verify on-disk content matches first run exactly for a representative sample
+    sample_paths = [
+        ".claude/agents/builder/SKILL.md",
+        ".claude/rules/conventions.md",
+        ".claude/settings.json",
+    ]
+    for rel_path in sample_paths:
+        assert rel_path in first_run_contents, f"Expected {rel_path} to have been written on first run"
+        on_disk = (tmp_path / rel_path).read_text(encoding="utf-8")
+        assert on_disk == first_run_contents[rel_path], (
+            f"File {rel_path} changed between runs:\n"
+            f"  first run : {first_run_contents[rel_path]!r}\n"
+            f"  on disk   : {on_disk!r}"
+        )
 
 
 # -- dry run ---------------------------------------------------------------
@@ -95,15 +137,20 @@ def test_settings_json_valid(tmp_path: pathlib.Path) -> None:
     assert isinstance(data["permissions"]["deny"], list)
 
 
-# -- settings includes detected test command -------------------------------
+# -- settings includes explicit safe Bash allow entries --------------------
 
 
-def test_settings_permissions_include_bash_wildcard(tmp_path: pathlib.Path) -> None:
+def test_settings_permissions_include_explicit_bash_entries(tmp_path: pathlib.Path) -> None:
     scaffold_claude_dir(tmp_path, test_command="python3 -m pytest tests/")
     settings = tmp_path / ".claude" / "settings.json"
     data = json.loads(settings.read_text(encoding="utf-8"))
     allow = data["permissions"]["allow"]
-    assert "Bash(*)" in allow
+    # Broad wildcard must NOT be present; explicit entries must be present instead.
+    assert "Bash(*)" not in allow
+    assert "Bash(pytest *)" in allow
+    assert "Bash(python -m pytest *)" in allow
+    assert "Bash(cat *)" in allow
+    assert "Bash(ls *)" in allow
 
 
 # -- rules have paths frontmatter -----------------------------------------
@@ -137,8 +184,11 @@ def test_conventions_detection_python(tmp_path: pathlib.Path) -> None:
 
 def test_conventions_detection_no_config(tmp_path: pathlib.Path) -> None:
     result = _detect_conventions(tmp_path)
-    # Should return empty string or minimal defaults
     assert isinstance(result, str)
+    # When no pyproject.toml is present, defaults should be used
+    assert "99" in result, "Default line length 99 should appear in the output"
+    assert "double quotes" in result, "Default quote style 'double quotes' should appear in the output"
+    assert "4 spaces" in result, "Default indent '4 spaces' should appear in the output"
 
 
 # -- managed block references skills --------------------------------------
@@ -178,6 +228,47 @@ def test_build_permissions_deny_list() -> None:
     assert "Bash(sudo *)" in perms["deny"]
 
 
-def test_build_permissions_includes_bash_wildcard() -> None:
+def test_build_permissions_includes_explicit_bash_entries() -> None:
     perms = _build_permissions("python3 -m pytest tests/", "", "")
-    assert "Bash(*)" in perms["allow"]
+    # Broad wildcard must NOT be present; explicit safe entries must be present.
+    assert "Bash(*)" not in perms["allow"]
+    assert "Bash(pytest *)" in perms["allow"]
+    assert "Bash(python -m pytest *)" in perms["allow"]
+    assert "Bash(cat *)" in perms["allow"]
+    assert "Bash(ls *)" in perms["allow"]
+    assert "Bash(grep *)" in perms["allow"]
+
+
+# -- Finding 82: _detect_conventions OSError on pyproject.toml read --------
+
+
+def test_detect_conventions_oserror_on_pyproject_read(tmp_path: pathlib.Path) -> None:
+    """When pyproject.toml.read_text() raises OSError, _detect_conventions must
+    silently fall back to default values rather than propagating the error.
+
+    The source catches OSError and sets text = '' in that path, so the returned
+    string must still contain the default line-length, quote-style, and indent.
+    """
+    from unittest.mock import patch
+
+    # Create a pyproject.toml so that pyproject.is_file() returns True
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[tool.ruff]\n", encoding="utf-8")
+
+    original_read_text = pathlib.Path.read_text
+
+    def failing_read_text(self, *args, **kwargs):
+        if self.name == "pyproject.toml":
+            raise OSError("simulated read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    with patch.object(pathlib.Path, "read_text", failing_read_text):
+        result = _detect_conventions(tmp_path)
+
+    # Must return a valid string with default values (not raise)
+    assert isinstance(result, str)
+    assert len(result) > 0
+    # Defaults: line-length=99, double quotes, 4 spaces
+    assert "99" in result, f"Expected default line-length '99' in result: {result!r}"
+    assert "double quotes" in result, f"Expected default quote style in result: {result!r}"
+    assert "4 spaces" in result, f"Expected default indent style in result: {result!r}"

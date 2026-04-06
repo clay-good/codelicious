@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from codelicious.tools.command_runner import CommandRunner, CommandDeniedError
+from codelicious.tools.command_runner import CommandRunner
 from codelicious.security_constants import DENIED_COMMANDS, BLOCKED_METACHARACTERS
 
 
@@ -118,8 +118,6 @@ class TestAllowedCommands:
             "pytest --version",
             "ruff check .",
             "npm test",
-            "cargo build",
-            "go test ./...",
             "ls -la",
             "cat README.md",
             "grep pattern file.txt",
@@ -209,7 +207,7 @@ class TestCommandExecution:
 
     def test_successful_command_execution(self, runner: CommandRunner) -> None:
         """Valid commands should execute and return output."""
-        with patch("subprocess.Popen") as mock_popen:
+        with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_proc.communicate.return_value = ("success output", "")
             mock_proc.returncode = 0
@@ -220,21 +218,22 @@ class TestCommandExecution:
             assert result["stdout"] == "success output"
 
     def test_failed_command_execution(self, runner: CommandRunner) -> None:
-        """Failed commands should return appropriate error."""
-        with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.communicate.return_value = ("", "error output")
-            mock_proc.returncode = 1
-            mock_popen.return_value = mock_proc
+        """The real 'false' command (always exits 1) should produce success=False.
 
-            result = runner.safe_run("false")  # 'false' command returns 1
-            assert result["success"] is False
-            assert result["stderr"] == "error output"
+        This test exercises the actual subprocess execution path without mocking,
+        confirming that a non-zero exit code propagates correctly into the result.
+        """
+        # 'false' is a POSIX utility that always exits with code 1.
+        # It is not in the denylist and has no metacharacters, so it reaches Popen.
+        result = runner.safe_run("false")
+        assert result["success"] is False
+        # stdout and stderr may be empty for 'false', but success must be False
+        assert "success" in result
 
     def test_timeout_handling(self, runner: CommandRunner) -> None:
         """Commands that timeout should be handled gracefully."""
         with patch("os.killpg", side_effect=ProcessLookupError):
-            with patch("subprocess.Popen") as mock_popen:
+            with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
                 mock_proc = MagicMock()
                 mock_proc.pid = 12345
                 mock_proc.communicate.side_effect = [
@@ -250,7 +249,7 @@ class TestCommandExecution:
 
     def test_exception_handling(self, runner: CommandRunner) -> None:
         """Unexpected exceptions should be handled gracefully."""
-        with patch("subprocess.Popen") as mock_popen:
+        with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
             mock_popen.side_effect = OSError("Test error")
             result = runner.safe_run("some_command")
             assert result["success"] is False
@@ -302,6 +301,24 @@ class TestSecurityConstantsConsistency:
         }
         assert dangerous.issubset(DENIED_COMMANDS)
 
+    def test_denied_commands_includes_package_managers_and_build_tools(self) -> None:
+        """DENIED_COMMANDS should include package managers and build tools (Finding 39).
+
+        These tools are dangerous because they execute arbitrary code:
+        - make: executes arbitrary Makefile recipes
+        - pip/pip3: pip install runs setup.py / build hooks
+        - pipx: installs and runs packages in isolated environments
+        - npx: downloads and executes arbitrary npm packages
+        - go: `go run` compiles and executes arbitrary Go source
+        """
+        build_tools = {"make", "pip", "pip3", "pipx", "npx", "go"}
+        assert build_tools.issubset(DENIED_COMMANDS)
+
+    def test_denied_commands_includes_jvm_dotnet_and_git(self) -> None:
+        """DENIED_COMMANDS should include JVM, .NET, Rust, and git (spec-22 Phase 8)."""
+        new_entries = {"java", "javac", "cargo", "dotnet", "mvn", "gradle", "git"}
+        assert new_entries.issubset(DENIED_COMMANDS)
+
 
 class TestShlexSplitValidation:
     """Tests for shlex.split() based validation (spec-16 Phase 1, P1-2)."""
@@ -338,12 +355,14 @@ class TestShlexSplitValidation:
         assert reason == ""
 
     def test_escaped_quotes_handled(self, runner: CommandRunner) -> None:
-        """Commands with escaped quotes should be handled correctly."""
-        # This is valid quoting
+        """Commands with escaped quotes inside single-quoted strings are rejected as malformed."""
+        # "echo 'it\'s working'" — in Python the string is: echo 'it\'s working'
+        # In POSIX shlex, backslash inside single quotes is literal, so 'it\' closes
+        # the single quote after the backslash, leaving "s working'" with an unclosed quote.
+        # shlex.split() raises ValueError, which _is_safe maps to (False, "Malformed ...").
         is_safe, reason = runner._is_safe("echo 'it\\'s working'")
-        # shlex handles this differently on different platforms, but should not crash
-        # The key is that it doesn't raise ValueError
-        assert isinstance(is_safe, bool)
+        assert is_safe is False
+        assert "Malformed" in reason
 
 
 class TestNewlineRejection:
@@ -386,7 +405,7 @@ class TestProcessGroupTimeout:
             raise ProcessLookupError("Process already exited")
 
         with patch("os.killpg", side_effect=mock_killpg):
-            with patch("subprocess.Popen") as mock_popen:
+            with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
                 mock_proc = MagicMock()
                 mock_proc.pid = 12345
                 mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=1)
@@ -403,7 +422,7 @@ class TestProcessGroupTimeout:
 
     def test_start_new_session_enabled(self, runner: CommandRunner) -> None:
         """Verify that start_new_session=True is passed to Popen."""
-        with patch("subprocess.Popen") as mock_popen:
+        with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_proc.communicate.return_value = ("output", "")
             mock_proc.returncode = 0
@@ -419,7 +438,7 @@ class TestProcessGroupTimeout:
     def test_timeout_cleanup_handles_already_exited(self, runner: CommandRunner) -> None:
         """Verify graceful handling when process already exited during cleanup."""
         with patch("os.killpg", side_effect=ProcessLookupError):
-            with patch("subprocess.Popen") as mock_popen:
+            with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
                 mock_proc = MagicMock()
                 mock_proc.pid = 99999
                 mock_proc.communicate.side_effect = [
@@ -436,7 +455,7 @@ class TestProcessGroupTimeout:
 
     def test_timeout_value_customizable(self, runner: CommandRunner) -> None:
         """Verify custom timeout value is respected."""
-        with patch("subprocess.Popen") as mock_popen:
+        with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_proc.communicate.return_value = ("output", "")
             mock_proc.returncode = 0
@@ -450,7 +469,7 @@ class TestProcessGroupTimeout:
     def test_timeout_message_includes_duration(self, runner: CommandRunner) -> None:
         """Verify timeout message includes the actual timeout duration."""
         with patch("os.killpg", side_effect=ProcessLookupError):
-            with patch("subprocess.Popen") as mock_popen:
+            with patch("codelicious.tools.command_runner.subprocess.Popen") as mock_popen:
                 mock_proc = MagicMock()
                 mock_proc.pid = 12345
                 mock_proc.communicate.side_effect = [
@@ -464,15 +483,22 @@ class TestProcessGroupTimeout:
                 assert "30s" in result["stderr"]
 
 
-class TestCommandDeniedError:
-    """Tests for the CommandDeniedError exception."""
+# -- Finding 81: CommandRunner with non-existent repo_path -----------------
 
-    def test_command_denied_error_exists(self) -> None:
-        """Verify CommandDeniedError exception class exists."""
-        assert issubclass(CommandDeniedError, Exception)
 
-    def test_command_denied_error_can_be_raised(self) -> None:
-        """Verify CommandDeniedError can be raised with message."""
-        with pytest.raises(CommandDeniedError) as exc_info:
-            raise CommandDeniedError("Test denied message")
-        assert "Test denied message" in str(exc_info.value)
+def test_commandrunner_nonexistent_repo_path_safe_run_fails(tmp_path: Path) -> None:
+    """Constructing CommandRunner with a non-existent path and running a safe
+    command must return success=False.
+
+    The cwd passed to Popen will not exist, causing Popen to raise FileNotFoundError
+    (or OSError on some platforms).  CommandRunner wraps all subprocess errors and
+    must return a failure result rather than propagating the exception.
+    """
+    nonexistent = tmp_path / "does_not_exist"
+    runner = CommandRunner(repo_path=nonexistent, config={})
+
+    # "ls" is safe (no denylist hit, no metacharacters) so it reaches Popen
+    result = runner.safe_run("ls")
+
+    assert result["success"] is False, "Expected success=False when repo_path does not exist, got True"
+    assert "Subprocess Execution Error" in result["stderr"]

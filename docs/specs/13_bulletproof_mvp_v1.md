@@ -1,6 +1,6 @@
 ---
 version: 1.0.0
-status: Draft
+status: Complete
 date: 2026-03-16
 author: Claude Opus 4.6 (spec generation), Clay Good (review)
 depends_on: ["12_mvp_closure_v1.md", "08_hardening_reliability_v1.md", "07_sandbox_security_hardening.md"]
@@ -181,7 +181,13 @@ they affect the security boundary of the system.
 
 ---
 
-#### Phase 1: Make Prompt Injection Guard Blocking
+#### Phase 1: Make Prompt Injection Guard Blocking — COMPLETE
+
+- [x] `_check_injection` raises `PromptInjectionError` instead of `warnings.warn`
+- [x] Error includes matched pattern and approximate line number
+- [x] `PromptInjectionError` added to `errors.py` (inherits `CodeliciousError`)
+- [x] 10 new tests in `tests/test_planner.py` (all 6 patterns, clean spec, line number, case-insensitive, code block limitation)
+- [x] 763 tests pass (no regressions)
 
 Finding: planner.py _check_injection emits warnings.warn but does not raise. The injection
 guard has no blocking effect. A spec containing adversarial instructions proceeds to full
@@ -1750,7 +1756,7 @@ After all 25 phases are complete, verify:
 - [ ] grep for f-string logging: 0 matches in src/
 - [ ] grep for addLevelName: 0 matches in src/
 - [ ] grep for "git add .": 0 matches in src/ (replaced with explicit staging)
-- [ ] grep for warnings.warn in planner.py _check_injection: 0 matches (replaced with raise)
+- [x] grep for warnings.warn in planner.py _check_injection: 0 matches (replaced with raise)
 - [ ] README.md metrics match actual values
 - [ ] STATE.md shows spec-13 complete
 - [ ] BUILD_COMPLETE contains "DONE"

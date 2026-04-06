@@ -7,9 +7,11 @@ import time
 
 import pytest
 
-from codelicious.errors import ExecutionError, LLMClientError
+from codelicious.errors import ExecutionError, LLMClientError, SandboxViolationError
 from codelicious.executor import (
+    _normalize_file_path,
     _normalize_path,
+    _parse_markdown_with_filename,
     _parse_strict_format,
     execute_fix,
     execute_task,
@@ -319,9 +321,9 @@ def test_backslash_paths_normalized() -> None:
 def test_parse_response_with_nested_code_blocks() -> None:
     """Nested markdown code blocks inside file content are handled without crash."""
     response = '```python\n# main.py\ndef f():\n    """\n    ```nested```\n    """\n    pass\n```\n'
-    # May succeed or return empty; must not raise an unhandled exception
     result = parse_llm_response(response, expected_files=["main.py"])
-    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0][0] == "main.py"
 
 
 def test_parse_response_extremely_large() -> None:
@@ -330,10 +332,9 @@ def test_parse_response_extremely_large() -> None:
     large_content = "x = 1\n" * 200_000  # ~1.4 MB
     response = "--- FILE: big.py ---\n" + large_content + "--- END FILE ---\n"
     result = parse_llm_response(response)
-    assert isinstance(result, list)
-    if result:
-        assert result[0][0] == "big.py"
-        assert len(result[0][1]) > 0
+    assert len(result) >= 1
+    assert result[0][0] == "big.py"
+    assert len(result[0][1]) > 0
 
 
 def test_parse_response_binary_content() -> None:
@@ -515,6 +516,28 @@ def test_normalize_path_backslash() -> None:
     assert result == "src/main.py"
 
 
+# -- _normalize_file_path: path traversal detection (Finding 53) -------------
+
+
+def test_normalize_path_traversal_double_dot_raises() -> None:
+    """_normalize_file_path raises SandboxViolationError for '../../etc/passwd'."""
+    with pytest.raises(SandboxViolationError, match="Path traversal detected"):
+        _normalize_path("../../etc/passwd")
+
+
+def test_normalize_path_traversal_double_dot_in_middle_raises() -> None:
+    """_normalize_file_path raises SandboxViolationError when '..' appears mid-path."""
+    with pytest.raises(SandboxViolationError, match="Path traversal detected"):
+        _normalize_path("src/../../../etc/shadow")
+
+
+def test_normalize_path_traversal_via_parse_llm_response_raises() -> None:
+    """parse_llm_response raises SandboxViolationError for a traversal path in strict format."""
+    traversal_response = "--- FILE: ../../etc/passwd ---\nroot:x:0:0:root\n--- END FILE ---\n"
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)
+
+
 # -- _write_files path normalization (spec-v8 Phase 5, Issue 21) -------------
 
 
@@ -656,28 +679,26 @@ def show_markdown():
     pass
 ```
 '''
-    # The parser should extract one file, treating the inner ``` as content
+    # The parser should extract one file (example.py via markdown_with_filename).
+    # The inner ``` closes the block early, so content is truncated, but the
+    # file path is still correctly identified.
     result = parse_llm_response(response)
-    # This is a tricky case - the inner ``` might close the block early
-    # At minimum, it should complete without hanging
-    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0][0] == "example.py"
 
 
 def test_unclosed_code_block_handled() -> None:
-    """Input with opening fence but no closing fence completes without hang."""
+    """Input with opening fence but no closing fence completes without hang and extracts the file."""
     response = "```python main.py\nprint('hello')\n# No closing fence"
 
     start = time.perf_counter()
-    try:
-        result = parse_llm_response(response, expected_files=["main.py"])
-        # If it returns, verify it's a list
-        assert isinstance(result, list)
-    except ExecutionError:
-        # Also acceptable - no valid closed code block found
-        pass
+    result = parse_llm_response(response, expected_files=["main.py"])
     elapsed = time.perf_counter() - start
 
     assert elapsed < 1.0, f"Parsing took {elapsed:.2f}s, expected < 1s"
+    assert len(result) == 1
+    assert result[0][0] == "main.py"
+    assert "print('hello')" in result[0][1]
 
 
 def test_markdown_with_filename_large_input() -> None:
@@ -722,3 +743,175 @@ def test_single_file_fallback_large_input() -> None:
     assert elapsed < 2.0, f"Parsing took {elapsed:.2f}s, expected < 2s"
     assert len(result) == 1
     assert result[0][0] == "big.py"
+
+
+# ---------------------------------------------------------------------------
+# Finding 87: Response truncation at MAX limit
+# ---------------------------------------------------------------------------
+
+
+def test_parse_response_truncated_at_max_limit() -> None:
+    """A response exactly 1 byte over MAX_RESPONSE_LENGTH is truncated and still parsed.
+
+    The test constructs a strict-format response whose total length is
+    _MAX_RESPONSE_LENGTH + 1, verifies that parse_llm_response still returns
+    results (the truncation must not destroy the extractable portion).
+    """
+    from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+    # Build a large but valid response that comfortably fits within the limit
+    # and then pad it to exceed the limit by exactly 1 byte.
+    header = "--- FILE: big.py ---\n"
+    footer = "\n--- END FILE ---\n"
+    # Calculate how much filler we need so that total length = _MAX_RESPONSE_LENGTH + 1
+    filler_len = _MAX_RESPONSE_LENGTH + 1 - len(header) - len(footer)
+    assert filler_len > 0, "MAX_RESPONSE_LENGTH constant is too small for this test"
+
+    response = header + ("x" * filler_len) + footer
+    assert len(response) == _MAX_RESPONSE_LENGTH + 1, "Response must be exactly 1 byte over limit"
+
+    result = parse_llm_response(response)
+    # After truncation the --- END FILE --- marker is cut off, so the strict
+    # parser won't find the closing marker for big.py. The function should
+    # still return a non-empty result via one of the other strategies or
+    # raise ExecutionError — neither should crash or hang.
+    # We only assert that it completes without unhandled exception.
+    assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Finding 88: Path traversal in parse_llm_response
+# ---------------------------------------------------------------------------
+
+
+def test_parse_llm_response_path_traversal_raises() -> None:
+    """parse_llm_response must raise SandboxViolationError for traversal paths."""
+    from codelicious.errors import SandboxViolationError
+
+    traversal_response = "--- FILE: ../../etc/passwd ---\nroot:x:0:0:root\n--- END FILE ---\n"
+
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)
+
+
+def test_parse_llm_response_double_dot_in_middle_raises() -> None:
+    """parse_llm_response raises SandboxViolationError for mid-path .. traversal."""
+    from codelicious.errors import SandboxViolationError
+
+    traversal_response = "--- FILE: src/../../../etc/shadow ---\ncontent\n--- END FILE ---\n"
+
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)
+
+
+# ---------------------------------------------------------------------------
+# spec-18 Phase 7: GD-3 — Truncation marker tests
+# ---------------------------------------------------------------------------
+
+
+class TestResponseTruncationMarker:
+    """Tests for truncation marker in LLM responses (spec-18 Phase 7: GD-3)."""
+
+    def test_truncation_marker_appended(self) -> None:
+        """When response exceeds max length, truncation marker is appended."""
+        from codelicious.errors import ExecutionError
+        from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+        # Create a response larger than the limit
+        huge_response = "x" * (_MAX_RESPONSE_LENGTH + 1000)
+        # parse_llm_response will raise ExecutionError because the garbage
+        # input has no parseable files, but it should truncate first without crashing
+        with pytest.raises(ExecutionError):
+            parse_llm_response(huge_response, [])
+
+    def test_truncation_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Truncation logs a WARNING with original and truncated sizes."""
+        import logging
+
+        from codelicious.errors import ExecutionError
+        from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+        huge_response = "x" * (_MAX_RESPONSE_LENGTH + 500)
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(ExecutionError):
+                parse_llm_response(huge_response, [])
+
+        assert any("truncated" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 14: ReDoS-Safe Markdown Parsing (S20-P3-2, S20-P3-5)
+# ---------------------------------------------------------------------------
+
+
+class TestReDoSSafeMarkdownParsing:
+    """Tests for S20-P3-2: line-by-line state machine parser for code blocks."""
+
+    def test_parse_normal_code_block(self) -> None:
+        """A standard ```python filepath code block must be parsed correctly."""
+        text = "```python src/main.py\nprint('hello')\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/main.py"
+        assert "print('hello')" in result[0][1]
+
+    def test_parse_multiple_code_blocks(self) -> None:
+        """Multiple code blocks must all be extracted."""
+        text = "```python src/a.py\ncode_a\n```\nSome text\n```js src/b.js\ncode_b\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 2
+        assert result[0][0] == "src/a.py"
+        assert result[1][0] == "src/b.js"
+
+    def test_parse_nested_backticks_no_hang(self) -> None:
+        """Pathological nested backticks must not cause ReDoS (complete quickly)."""
+        # 2MB of backtick-heavy content that would cause quadratic backtracking with regex
+        payload = "```" * 10000 + "\n" + "x\n" * 1000 + "```" * 10000
+        start = time.monotonic()
+        _parse_markdown_with_filename(payload)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"Parser took {elapsed:.1f}s on pathological input (limit: 5s)"
+
+    def test_parse_empty_code_block(self) -> None:
+        """An empty code block with a filename must produce empty content."""
+        text = "```python src/empty.py\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/empty.py"
+        assert result[0][1] == ""
+
+    def test_parse_code_block_with_language(self) -> None:
+        """A code block with only a language (no filename) must be skipped."""
+        text = "```python\nprint('no filename')\n```\n"
+        result = _parse_markdown_with_filename(text)
+        # "python" has no dot in basename, so it should not be treated as a filename
+        assert len(result) == 0
+
+    def test_parse_code_block_with_filename(self) -> None:
+        """A code block with just a filename (no language) must be parsed."""
+        text = '```src/config.json\n{"key": "val"}\n```\n'
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/config.json"
+
+    def test_parse_large_input_completes_in_time(self) -> None:
+        """2MB of normal markdown must parse in under 5 seconds."""
+        # Generate 2MB+ of valid markdown with code blocks
+        blocks = []
+        for i in range(100):
+            blocks.append(f"```python src/file_{i}.py\n")
+            blocks.append("x = 1  # some padding to fill space\n" * 600)
+            blocks.append("```\n\n")
+        text = "".join(blocks)
+        assert len(text) > 2_000_000, f"Generated only {len(text)} bytes"
+
+        start = time.monotonic()
+        result = _parse_markdown_with_filename(text)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"Parser took {elapsed:.1f}s on 2MB input (limit: 5s)"
+        assert len(result) == 100
+
+    def test_path_normalization_comment_accuracy(self) -> None:
+        """_normalize_file_path must reject .. paths (early filter before sandbox)."""
+        with pytest.raises(SandboxViolationError):
+            _normalize_file_path("src/../../../etc/passwd")

@@ -15,6 +15,7 @@ Thumbs.db
 *~
 #*#
 .claude
+.codelicious 
 
 # --------------------
 # Python Specific
@@ -44,6 +45,8 @@ share/python/
 .coverage
 .coverage.*
 htmlcov/
+coverage.xml
+.ruff_cache/
 .venv
 venv/
 vevnv/

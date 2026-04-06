@@ -2,11 +2,16 @@
 
 import io
 import json
+import socket
+import ssl
+from datetime import datetime
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, call
 import urllib.error
 
-from codelicious.llm_client import LLMClient
+from codelicious.errors import ConfigurationError
+from codelicious.llm_client import LLMClient, _validate_endpoint_url
+from codelicious.logger import _REDACTED
 
 
 class TestLLMClientErrorSanitization:
@@ -123,9 +128,9 @@ class TestLLMClientErrorSanitization:
             assert "status 500" in caplog.text
 
     def test_connection_error_handling(self, client):
-        """Generic connection errors should also produce clean messages."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = ConnectionError("Connection refused")
+        """Network errors exhaust retries then produce a clean LLM Connection Error message."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
             with pytest.raises(RuntimeError) as exc_info:
                 client.chat_completion([{"role": "user", "content": "test"}])
@@ -221,10 +226,20 @@ class TestLLMClientInitialization:
         assert client.coder_model == "custom-coder"
 
     def test_custom_endpoint(self, monkeypatch):
-        """LLMClient should allow custom endpoint configuration."""
+        """LLMClient should allow custom HTTPS endpoint that resolves to a public IP."""
         monkeypatch.setenv("HF_TOKEN", "hf_test")
-        client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
+        # Mock DNS resolution to return a public IP for the custom endpoint
+        public_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=public_addrinfo):
+            client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
         assert client.endpoint_url == "https://custom.api.com/v1/chat"
+
+    def test_llm_api_key_takes_priority_over_hf_token(self, monkeypatch):
+        """LLM_API_KEY should take priority over HF_TOKEN when both are set."""
+        monkeypatch.setenv("HF_TOKEN", "hf_should_not_be_used")
+        monkeypatch.setenv("LLM_API_KEY", "llm_key_takes_priority")
+        client = LLMClient()
+        assert client.api_key == "llm_key_takes_priority"
 
 
 class TestLLMClientErrorBodySanitization:
@@ -266,7 +281,7 @@ class TestLLMClientErrorBodySanitization:
 
             # The API key should be redacted in the log
             assert "sk-proj-abc123def456xyz789" not in caplog.text
-            assert "***REDACTED***" in caplog.text
+            assert _REDACTED in caplog.text
 
     def test_error_body_hf_token_redacted_in_logs(self, client, caplog):
         """HuggingFace tokens in error body should be redacted."""
@@ -373,3 +388,267 @@ class TestLLMClientErrorBodySanitization:
             assert "model_not_found" in caplog.text
             assert "gpt-4-unknown" in caplog.text
             assert "req-12345" in caplog.text
+
+
+class TestLLMClientNetworkRetry:
+    """Tests for network-level error retry logic (URLError, socket.timeout, ssl.SSLError, etc.)."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        """Create an LLMClient with a mock API key."""
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token_12345")
+        return LLMClient()
+
+    def test_url_error_retries_and_raises(self, client):
+        """URLError should be retried up to _MAX_RETRIES times then raise RuntimeError."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            # Should have attempted 1 + _MAX_RETRIES times total
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            # Sleep should be called _MAX_RETRIES times (not on the final attempt)
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_socket_timeout_retries_and_raises(self, client):
+        """socket.timeout should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = socket.timeout("timed out")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_ssl_error_retries_and_raises(self, client):
+        """ssl.SSLError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = ssl.SSLError("SSL handshake failed")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_connection_reset_error_retries_and_raises(self, client):
+        """ConnectionResetError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = ConnectionResetError("Connection reset by peer")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_os_error_retries_and_raises(self, client):
+        """OSError should be retried with exponential backoff."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = OSError("Network unreachable")
+
+            with pytest.raises(RuntimeError) as exc_info:
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            assert mock_urlopen.call_count == client._MAX_RETRIES + 1
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            assert "LLM Connection Error" in str(exc_info.value)
+
+    def test_network_error_exponential_backoff_intervals(self, client):
+        """Sleep durations should follow exponential backoff: 1s, 2s, 4s."""
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
+            mock_urlopen.side_effect = urllib.error.URLError("timeout")
+
+            with pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+            expected_sleeps = [call(client._BACKOFF_BASE_S * (2**i)) for i in range(client._MAX_RETRIES)]
+            assert mock_sleep.call_args_list == expected_sleeps
+
+    def test_network_error_succeeds_on_retry(self, client):
+        """A transient network error should succeed once the connection recovers."""
+        success_response = {"choices": [{"message": {"content": "hello"}}]}
+
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            # Fail on the first two attempts, succeed on the third
+            fail_then_succeed = [
+                urllib.error.URLError("temporary failure"),
+                urllib.error.URLError("temporary failure"),
+                io.StringIO(json.dumps(success_response)),
+            ]
+
+            def side_effect(*args, **kwargs):
+                val = fail_then_succeed.pop(0)
+                if isinstance(val, Exception):
+                    raise val
+
+                # Return a context manager whose read() gives the JSON bytes
+                class _FakeResponse:
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *a):
+                        return False
+
+                    def read(self_inner, size=-1):
+                        return json.dumps(success_response).encode("utf-8")
+
+                return _FakeResponse()
+
+            mock_urlopen.side_effect = side_effect
+
+            result = client.chat_completion([{"role": "user", "content": "test"}])
+            assert result == success_response
+            assert mock_urlopen.call_count == 3
+
+    def test_network_error_warning_logged(self, client, caplog):
+        """A warning should be logged for each retried network error."""
+        import logging
+
+        with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+            with caplog.at_level(logging.WARNING, logger="codelicious.llm"):
+                with pytest.raises(RuntimeError):
+                    client.chat_completion([{"role": "user", "content": "test"}])
+
+            # A warning should appear for each retry attempt
+            warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warning_records) == client._MAX_RETRIES
+            assert all("Transient network error" in r.message for r in warning_records)
+
+
+class TestTimestampFormat:
+    """Tests that ISO-8601 UTC timestamps used across the project are well-formed."""
+
+    def test_utc_timestamp_is_valid_iso_with_utc_offset(self) -> None:
+        """datetime.now(timezone.utc).isoformat() must be parseable and carry a UTC offset.
+
+        The project uses this pattern in ProgressReporter and other event emitters.
+        A weak assertion like ``assert 'T' in ts`` misses malformed or naive timestamps.
+        """
+        from datetime import timezone
+
+        ts = datetime.now(timezone.utc).isoformat()
+
+        # Must be parseable as a valid ISO-8601 datetime — raises ValueError if not.
+        parsed = datetime.fromisoformat(ts)
+
+        # The parsed datetime must carry UTC timezone info (offset == 0).
+        assert parsed.tzinfo is not None, "timestamp must be timezone-aware"
+        assert parsed.utcoffset().total_seconds() == 0, "timestamp must have zero UTC offset"
+
+        # The serialised string must contain the UTC offset marker.
+        assert ts.endswith("+00:00"), f"expected '+00:00' suffix, got: {ts!r}"
+
+
+# ---------------------------------------------------------------------------
+# spec-18 Phase 10: LLM API call timing instrumentation
+# ---------------------------------------------------------------------------
+
+
+class TestLLMTimingInstrumentation:
+    """Tests for LLM API call timing log entries (spec-18 Phase 10)."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.setenv("LLM_API_KEY", "hf_test_key_123")
+        return LLMClient()
+
+    def test_llm_timing_logged(self, client, caplog):
+        """Successful LLM call logs INFO entry with 'completed in'."""
+        import logging
+
+        fake_response = json.dumps({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}).encode()
+
+        mock_resp = io.BytesIO(fake_response)
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        mock_resp.headers = {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with caplog.at_level(logging.INFO, logger="codelicious.llm"):
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+        assert any("completed in" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 1: SSRF Prevention in LLM Endpoint URL Validation (S20-P1-1)
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointURLValidation:
+    """Tests for _validate_endpoint_url SSRF prevention (S20-P1-1)."""
+
+    def test_rejects_http_scheme(self):
+        """HTTP scheme must be rejected — only HTTPS is permitted."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("http://api.example.com/v1/chat")
+
+    def test_rejects_ftp_scheme(self):
+        """FTP scheme must be rejected."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("ftp://files.example.com/model")
+
+    def test_rejects_file_scheme(self):
+        """file:// scheme must be rejected."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("file:///etc/passwd")
+
+    def test_rejects_localhost(self):
+        """HTTPS to localhost must be rejected (loopback IP)."""
+        loopback_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=loopback_addrinfo):
+            with pytest.raises(ConfigurationError, match="loopback"):
+                _validate_endpoint_url("https://localhost/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["10.0.0.1", "10.255.255.255"])
+    def test_rejects_private_10_range(self, ip):
+        """10.0.0.0/8 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["172.16.0.1", "172.31.255.255"])
+    def test_rejects_private_172_range(self, ip):
+        """172.16.0.0/12 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["192.168.0.1", "192.168.255.255"])
+    def test_rejects_private_192_range(self, ip):
+        """192.168.0.0/16 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    def test_accepts_valid_https_endpoint(self):
+        """A valid HTTPS endpoint resolving to a public IP must be accepted."""
+        public_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=public_addrinfo):
+            _validate_endpoint_url("https://api.example.com/v1/chat")
+
+    def test_accepts_allowlisted_endpoint(self):
+        """Known-good HuggingFace Router URLs bypass DNS resolution checks."""
+        # Should succeed without any DNS mock since it's allowlisted
+        _validate_endpoint_url("https://router.huggingface.co/sambanova/v1/chat/completions")
+
+    def test_rejects_link_local(self):
+        """Link-local addresses (169.254.x.x) must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.1.1", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="link-local"):
+                _validate_endpoint_url("https://169.254.1.1/v1/chat")

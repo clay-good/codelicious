@@ -1,5 +1,7 @@
 """Defines all custom exception classes for the codelicious project."""
 
+from __future__ import annotations
+
 import warnings  # noqa: F401 — re-exported for convenience
 
 __all__ = [
@@ -11,6 +13,7 @@ __all__ = [
     "ClaudeAuthError",
     "ClaudeRateLimitError",
     "ConcurrentBuildError",
+    "ConfigurationError",
     "ContextBudgetError",
     "DeniedPathError",
     "DisallowedExtensionError",
@@ -40,11 +43,14 @@ __all__ = [
     "PatienceExhaustedError",
     "PlanningError",
     "PolicyViolationError",
+    "PromptInjectionError",
     "PromptInjectionWarning",
     "CodeliciousError",
     "ReplanningError",
     "SandboxViolationError",
     "SpecFileNotFoundError",
+    "ToolTimeoutError",
+    "ToolValidationError",
     "UnsafePathError",
     "VerificationError",
 ]
@@ -61,6 +67,15 @@ class CodeliciousError(Exception):
         super().__init__(message)
         self.message: str = message
         self.path: str | None = path
+
+
+# ---------------------------------------------------------------------------
+# Configuration errors
+# ---------------------------------------------------------------------------
+
+
+class ConfigurationError(CodeliciousError):
+    """Raised when a configuration value is invalid or insecure."""
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +135,10 @@ class LLMAuthenticationError(LLMClientError):
 
 class LLMRateLimitError(LLMClientError):
     """Raised when the LLM rate limit is exceeded."""
+
+    def __init__(self, message: str, *, retry_after_s: float = 60.0, path: str | None = None) -> None:
+        super().__init__(message, path=path)
+        self.retry_after_s = retry_after_s
 
 
 class LLMTimeoutError(LLMClientError):
@@ -248,6 +267,14 @@ class BuildTimeoutError(CodeliciousError):
     """Raised when a build exceeds the maximum allowed wall-clock time."""
 
 
+class ToolTimeoutError(CodeliciousError):
+    """Raised when a tool call exceeds its per-call timeout (spec-18 Phase 6: TE-2)."""
+
+
+class ToolValidationError(CodeliciousError):
+    """Raised when a tool call has missing or invalid parameters (spec-18 Phase 9: DP-1)."""
+
+
 class AgentTimeout(CodeliciousError):
     """Raised when a Claude Code agent subprocess exceeds its time limit."""
 
@@ -298,5 +325,17 @@ class CICheckError(CodeliciousError):
 # ---------------------------------------------------------------------------
 
 
+class PromptInjectionError(CodeliciousError):
+    """Raised when prompt injection patterns are detected in a spec.
+
+    The injection guard is blocking — the build must not proceed when
+    adversarial patterns like 'IGNORE PREVIOUS INSTRUCTIONS' or 'SYSTEM:'
+    are found in the spec text.
+    """
+
+
 class PromptInjectionWarning(UserWarning):
-    """Warning issued when potential prompt injection is detected."""
+    """Warning issued when potential prompt injection is detected.
+
+    .. deprecated:: Use PromptInjectionError instead. Kept for backward compat.
+    """

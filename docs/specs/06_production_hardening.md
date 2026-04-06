@@ -1,6 +1,6 @@
 ---
 version: 2.1.0
-status: Draft
+status: Complete
 date: 2026-03-15
 author: Clay Good
 depends_on: ["05_feature_dual_engine.md"]
@@ -926,7 +926,7 @@ for the Claude Code engine to work optimally.
 - [x] Rules section (read before modify, verify after change)
 - [x] How to Work section (agent names, skill names, TodoWrite)
 - [x] Git & PR Policy section (branch protection, commit guidelines)
-- [ ] Convention auto-detection from pyproject.toml
+- [x] Convention auto-detection from pyproject.toml
 
 ### 5.2 .claude/agents/ (Parallel Sub-Agents)
 
@@ -1056,24 +1056,24 @@ graph TD
 
 ## 9. Acceptance Criteria
 
-- [ ] `_io.atomic_write_text()` prevents corruption on process kill
-- [ ] `BuildSession` creates session directory with meta.json, output.log, session.jsonl
-- [ ] `ProgressReporter` writes JSON-Lines events with rotation at 10MB
-- [ ] All prompt templates reference agents, skills, and tools by name
-- [ ] `scaffold()` creates/updates CLAUDE.md with codelicious managed block
-- [ ] `scaffold_claude_dir()` generates 4 agents, 4 skills, 2 rules, 1 settings.json
-- [ ] Claude engine spawns subprocess, parses stream-json, handles errors
-- [ ] Claude engine orchestrates: scaffold → analyze → build → verify → reflect → PR
-- [ ] HF engine works identically to current behavior (no regression)
-- [ ] HF engine adds retry logic with exponential backoff
-- [ ] `verifier.py` runs syntax, test, lint, security checks
-- [ ] `cache_engine.flush_cache()` writes atomically to disk
-- [ ] CLI supports `--engine`, `--agent-timeout`, `--resume`, `--model` flags
-- [ ] Engine auto-detection works (claude → HF → setup instructions)
-- [ ] Startup banner shows engine, model, project, branch
-- [ ] All dead proxilion-build code removed from `src/codelicious/`
-- [ ] `proxilion-build-v1/` directory deleted
-- [ ] All tests pass: `python3 -m pytest tests/ -v`
+- [x] `_io.atomic_write_text()` prevents corruption on process kill
+- [x] `BuildSession` creates session directory with meta.json, output.log, session.jsonl
+- [x] `ProgressReporter` writes JSON-Lines events with rotation at 10MB
+- [x] All prompt templates reference agents, skills, and tools by name
+- [x] `scaffold()` creates/updates CLAUDE.md with codelicious managed block
+- [x] `scaffold_claude_dir()` generates 4 agents, 4 skills, 2 rules, 1 settings.json
+- [x] Claude engine spawns subprocess, parses stream-json, handles errors
+- [x] Claude engine orchestrates: scaffold → analyze → build → verify → reflect → PR
+- [x] HF engine works identically to current behavior (no regression)
+- [x] HF engine adds retry logic with exponential backoff
+- [x] `verifier.py` runs syntax, test, lint, security checks
+- [x] `cache_engine.flush_cache()` writes atomically to disk
+- [x] CLI supports `--engine`, `--agent-timeout`, `--resume`, `--model` flags
+- [x] Engine auto-detection works (claude → HF → setup instructions)
+- [x] Startup banner shows engine, model, project, branch
+- [x] All dead proxilion-build code removed from `src/codelicious/`
+- [x] `proxilion-build-v1/` directory deleted
+- [x] All tests pass: `python3 -m pytest tests/ -v`
 
 ---
 

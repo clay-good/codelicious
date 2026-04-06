@@ -1,6 +1,6 @@
 ---
 version: 2.0.0
-status: Draft
+status: Complete
 date: 2026-03-15
 author: Clay Good
 related_specs: ["00_master_spec.md", "01_feature_cli_tooling.md"]
@@ -470,18 +470,18 @@ graph TD
 
 ## 11. Acceptance Criteria
 
-- [ ] `codelicious /path/to/repo` with `claude` on PATH uses Claude Code engine.
-- [ ] `codelicious /path/to/repo` without `claude` but with `HF_TOKEN` uses HF engine.
-- [ ] `codelicious /path/to/repo` with neither prints clear setup instructions.
-- [ ] `--engine claude` forces Claude engine (errors if unavailable).
-- [ ] `--engine huggingface` forces HF engine (errors if no token).
-- [ ] `CODELICIOUS_ENGINE` env var works as override.
-- [ ] Claude engine spawns subprocess correctly and parses stream-json.
-- [ ] Claude engine handles auth errors, rate limits, and timeouts gracefully.
-- [ ] HF engine works identically to current behavior.
-- [ ] All tests pass: `python3 -m pytest tests/ -v`.
-- [ ] Startup banner shows which engine and model are active.
-- [ ] `codelicious --help` documents the `--engine` flag.
+- [x] `codelicious /path/to/repo` with `claude` on PATH uses Claude Code engine.
+- [x] `codelicious /path/to/repo` without `claude` but with `HF_TOKEN` uses HF engine.
+- [x] `codelicious /path/to/repo` with neither prints clear setup instructions.
+- [x] `--engine claude` forces Claude engine (errors if unavailable).
+- [x] `--engine huggingface` forces HF engine (errors if no token).
+- [x] `CODELICIOUS_ENGINE` env var works as override.
+- [x] Claude engine spawns subprocess correctly and parses stream-json.
+- [x] Claude engine handles auth errors, rate limits, and timeouts gracefully.
+- [x] HF engine works identically to current behavior.
+- [x] All tests pass: `python3 -m pytest tests/ -v`.
+- [x] Startup banner shows which engine and model are active.
+- [x] `codelicious --help` documents the `--engine` flag.
 
 ## 12. The "Claude Code" Bridge
 
