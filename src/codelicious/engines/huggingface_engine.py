@@ -172,7 +172,7 @@ class HuggingFaceEngine(BuildEngine):
                         logger.error("Aborting after %d consecutive transient failures.", max_retries)
                         break
                     # S20-P2-4: Exponential backoff with jitter, capped at 30s
-                    delay = min(2.0 * (2**consecutive_errors) + random.uniform(0, 1), 30.0)
+                    delay = min(2.0 * (2**consecutive_errors) + random.uniform(0, 1), 30.0)  # nosec B311
                     logger.warning(
                         "Transient LLM error (%d/%d): %s — retrying in %.1fs",
                         consecutive_errors,
