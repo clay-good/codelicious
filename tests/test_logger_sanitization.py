@@ -365,41 +365,46 @@ class TestSanitizingFilterArgs:
         return record
 
     def test_tuple_args_secret_is_redacted(self) -> None:
-        """Secrets in tuple args are redacted in-place."""
+        """Secrets in tuple args are redacted in the final formatted message."""
         secret = "sk-ant-api03-" + "X" * 20
         record = self._make_record("key=%s", (secret,))
         f = SanitizingFilter()
         result = f.filter(record)
 
         assert result is True
-        assert isinstance(record.args, tuple)
-        assert record.args[0] == "***REDACTED***"
+        # S20-P3-3: early-format replaces msg with formatted+sanitized result, args cleared
+        formatted = record.getMessage()
+        assert secret not in formatted
+        assert "***REDACTED***" in formatted
 
     def test_tuple_args_non_secret_is_preserved(self) -> None:
-        """Non-secret tuple args are left unchanged."""
+        """Non-secret tuple args are preserved in the final formatted message."""
         record = self._make_record("count=%s", ("42",))
         f = SanitizingFilter()
         f.filter(record)
 
-        assert record.args == ("42",)
+        formatted = record.getMessage()
+        assert "42" in formatted
 
     def test_dict_args_secret_value_is_redacted(self) -> None:
-        """Secrets in dict args values are redacted in-place."""
+        """Secrets in dict args values are redacted in the final formatted message."""
         secret = "ghp_" + "Y" * 20
         record = self._make_record("%(key)s", {"key": secret})
         f = SanitizingFilter()
         f.filter(record)
 
-        assert isinstance(record.args, dict)
-        assert record.args["key"] == "***REDACTED***"
+        formatted = record.getMessage()
+        assert secret not in formatted
+        assert "***REDACTED***" in formatted
 
     def test_dict_args_non_secret_value_is_preserved(self) -> None:
-        """Non-secret dict args values are left unchanged."""
+        """Non-secret dict args values are preserved in the final formatted message."""
         record = self._make_record("%(key)s", {"key": "hello"})
         f = SanitizingFilter()
         f.filter(record)
 
-        assert record.args["key"] == "hello"
+        formatted = record.getMessage()
+        assert "hello" in formatted
 
     def test_none_args_is_handled(self) -> None:
         """None args (no interpolation) is handled without error."""
@@ -466,6 +471,8 @@ class TestSetupLogging:
             result_logger = setup_logging(tmp_path / "readonly_project", verbose=False)
 
         assert result_logger is not None
+        assert result_logger.name == "codelicious"
+        assert len(result_logger.handlers) > 0
 
     def test_returns_codelicious_logger(self, tmp_path) -> None:
         """setup_logging always returns the 'codelicious' logger."""
@@ -530,3 +537,127 @@ class TestCreateLogCallback:
             callback("empty_event", {})  # should not raise
 
         assert any("empty_event" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 15: Credential Redaction Timing Fix (S20-P3-3)
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialRedactionTiming:
+    """Tests for S20-P3-3: secrets in format args must be redacted in final output."""
+
+    def _make_record(self, msg: str, args: tuple | None = None) -> logging.LogRecord:
+        """Create a LogRecord with the given msg and args."""
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=msg,
+            args=args,
+            exc_info=None,
+        )
+        return record
+
+    def test_secret_in_format_arg_is_redacted(self) -> None:
+        """A secret passed as a format argument must be redacted."""
+        f = SanitizingFilter()
+        record = self._make_record("Key: %s", ("sk-ant-secret12345678901234",))
+        f.filter(record)
+        formatted = record.getMessage()
+        assert "sk-ant-secret" not in formatted
+        assert "REDACTED" in formatted
+
+    def test_secret_in_msg_is_redacted(self) -> None:
+        """A secret directly in the message must be redacted."""
+        f = SanitizingFilter()
+        record = self._make_record("Token is hf_abcdefghij1234567890")
+        f.filter(record)
+        formatted = record.getMessage()
+        assert "hf_abcdefghij" not in formatted
+        assert "REDACTED" in formatted
+
+    def test_secret_spanning_msg_and_args_is_redacted(self) -> None:
+        """A secret formed by msg % args combination must be redacted."""
+        f = SanitizingFilter()
+        record = self._make_record("Auth: Bearer %s", ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.sig123456",))
+        f.filter(record)
+        formatted = record.getMessage()
+        assert "eyJhbGci" not in formatted
+
+    def test_non_secret_format_args_preserved(self) -> None:
+        """Non-secret format arguments must survive sanitization."""
+        f = SanitizingFilter()
+        record = self._make_record("Processing file: %s in %s", ("main.py", "src/"))
+        f.filter(record)
+        formatted = record.getMessage()
+        assert "main.py" in formatted
+        assert "src/" in formatted
+
+    def test_integer_format_args_not_corrupted(self) -> None:
+        """Integer format arguments must not be corrupted by sanitization."""
+        f = SanitizingFilter()
+        record = self._make_record("Processed %d files in %d seconds", (42, 7))
+        f.filter(record)
+        formatted = record.getMessage()
+        assert "42" in formatted
+        assert "7" in formatted
+
+    def test_empty_args_handled(self) -> None:
+        """A record with no args must pass through cleanly."""
+        f = SanitizingFilter()
+        record = self._make_record("Simple message with no args")
+        f.filter(record)
+        formatted = record.getMessage()
+        assert formatted == "Simple message with no args"
+
+
+# ---------------------------------------------------------------------------
+# spec-21 Phase 16d: logger.py — TimingContext and log_call_details
+# ---------------------------------------------------------------------------
+
+
+class TestTimingContextAndLogCallDetails:
+    """Tests for TimingContext and log_call_details (spec-21 Phase 16d)."""
+
+    def test_timing_context_measures_elapsed(self, caplog) -> None:
+        """TimingContext must log elapsed time on exit."""
+        from codelicious.logger import TimingContext
+
+        test_logger = logging.getLogger("test_timing")
+        test_logger.setLevel(logging.DEBUG)
+
+        with caplog.at_level(logging.DEBUG, logger="test_timing"):
+            with TimingContext(test_logger, "test_op"):
+                pass  # instant operation
+
+        assert any("test_op" in r.message and "completed" in r.message for r in caplog.records)
+
+    def test_timing_context_logs_failure(self, caplog) -> None:
+        """TimingContext must log a warning when the block raises."""
+        from codelicious.logger import TimingContext
+
+        test_logger = logging.getLogger("test_timing_fail")
+        test_logger.setLevel(logging.DEBUG)
+
+        with caplog.at_level(logging.WARNING, logger="test_timing_fail"):
+            try:
+                with TimingContext(test_logger, "fail_op"):
+                    raise ValueError("boom")
+            except ValueError:
+                pass
+
+        assert any("fail_op" in r.message and "failed" in r.message for r in caplog.records)
+
+    def test_log_call_details_format(self, caplog) -> None:
+        """log_call_details must log function name and parameters at DEBUG level."""
+        from codelicious.logger import log_call_details
+
+        test_logger = logging.getLogger("test_call_details")
+        test_logger.setLevel(logging.DEBUG)
+
+        with caplog.at_level(logging.DEBUG, logger="test_call_details"):
+            log_call_details(test_logger, "my_func", x=42, name="test")
+
+        assert any("my_func" in r.message and "x=42" in r.message for r in caplog.records)

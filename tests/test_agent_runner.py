@@ -11,13 +11,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codelicious.agent_runner import (
+    FORBIDDEN_CLI_FLAGS,
     AgentResult,
     _MAX_PROMPT_LENGTH,
     _POLL_INTERVAL_S,
+    _build_agent_command,
     _check_agent_errors,
     _enforce_timeout,
     _parse_agent_output,
+    _process_stream_event,
     _sanitize_prompt,
+    _validate_command_flags,
     run_agent,
 )
 from codelicious.errors import (
@@ -25,6 +29,7 @@ from codelicious.errors import (
     ClaudeAuthError,
     ClaudeRateLimitError,
     CodeliciousError,
+    PolicyViolationError,
 )
 
 
@@ -132,6 +137,17 @@ class TestTimeoutBehavior:
         assert exc_info.value.elapsed_s == 61.0
         assert "60" in str(exc_info.value)
 
+    def test_enforce_timeout_raises_when_elapsed_equals_timeout(self) -> None:
+        """_enforce_timeout should raise AgentTimeout when elapsed == timeout (boundary: >= check)."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+        mock_proc.wait.return_value = 0
+
+        with pytest.raises(AgentTimeout):
+            _enforce_timeout(mock_proc, elapsed=60.0, timeout=60.0)
+
+        mock_proc.terminate.assert_called_once()
+
     def test_enforce_timeout_does_not_raise_when_under_limit(self) -> None:
         """_enforce_timeout should be a no-op when elapsed < timeout."""
         mock_proc = MagicMock()
@@ -218,8 +234,8 @@ class TestIntegration:
         mock_proc.poll.side_effect = [None, None, 0]
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
-        mock_proc.stdout.__iter__ = MagicMock(return_value=iter([]))
-        mock_proc.stderr.__iter__ = MagicMock(return_value=iter([]))
+        mock_proc.stdout = iter([])
+        mock_proc.stderr = iter([])
         mock_popen.return_value = mock_proc
 
         config = MagicMock()
@@ -247,130 +263,39 @@ class TestIntegration:
         assert actual_prompt == "-- --dangerous-flag"
 
 
-class TestAllowDangerousEnvVar:
-    """Tests for Finding 38: CODELICIOUS_ALLOW_DANGEROUS must require exact string."""
+class TestDangerousFlagNeverPresent:
+    """Tests for S20-P1-3: --dangerously-skip-permissions is permanently removed."""
 
-    def test_exact_value_enables_flag(self, tmp_path: pathlib.Path) -> None:
-        """Only 'I-UNDERSTAND-THE-RISKS' activates --dangerously-skip-permissions."""
+    def test_flag_not_in_command_default_config(self, tmp_path: pathlib.Path) -> None:
+        """Default config must never include --dangerously-skip-permissions."""
         import types
 
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
+        from codelicious.agent_runner import _build_agent_command
+
+        config = types.SimpleNamespace(model="", effort="", max_turns=0)
+        cmd = _build_agent_command("test", tmp_path, config, "claude")
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_flag_not_in_command_even_with_allow_dangerous(self, tmp_path: pathlib.Path) -> None:
+        """Even config.allow_dangerous=True must NOT add the flag (S20-P1-3)."""
+        import types
+
+        from codelicious.agent_runner import _build_agent_command
+
+        config = types.SimpleNamespace(allow_dangerous=True, model="", effort="", max_turns=0)
+        cmd = _build_agent_command("test", tmp_path, config, "claude")
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_flag_not_in_command_even_with_env_var(self, tmp_path: pathlib.Path) -> None:
+        """Even CODELICIOUS_ALLOW_DANGEROUS env var must NOT add the flag (S20-P1-3)."""
+        import types
+
+        from codelicious.agent_runner import _build_agent_command
+
+        config = types.SimpleNamespace(model="", effort="", max_turns=0)
         with patch.dict("os.environ", {"CODELICIOUS_ALLOW_DANGEROUS": "I-UNDERSTAND-THE-RISKS"}):
-            from codelicious.agent_runner import _build_agent_command
-
-            cmd = _build_agent_command("test", tmp_path, config, "claude")
-        assert "--dangerously-skip-permissions" in cmd
-
-    def test_truthy_string_one_does_not_enable_flag(self, tmp_path: pathlib.Path) -> None:
-        """'1' must not activate --dangerously-skip-permissions (Finding 38 fix)."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        with patch.dict("os.environ", {"CODELICIOUS_ALLOW_DANGEROUS": "1"}):
-            from codelicious.agent_runner import _build_agent_command
-
             cmd = _build_agent_command("test", tmp_path, config, "claude")
         assert "--dangerously-skip-permissions" not in cmd
-
-    def test_truthy_string_true_does_not_enable_flag(self, tmp_path: pathlib.Path) -> None:
-        """'true' must not activate --dangerously-skip-permissions (Finding 38 fix)."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        with patch.dict("os.environ", {"CODELICIOUS_ALLOW_DANGEROUS": "true"}):
-            from codelicious.agent_runner import _build_agent_command
-
-            cmd = _build_agent_command("test", tmp_path, config, "claude")
-        assert "--dangerously-skip-permissions" not in cmd
-
-    def test_truthy_string_yes_does_not_enable_flag(self, tmp_path: pathlib.Path) -> None:
-        """'yes' must not activate --dangerously-skip-permissions (Finding 38 fix)."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        with patch.dict("os.environ", {"CODELICIOUS_ALLOW_DANGEROUS": "yes"}):
-            from codelicious.agent_runner import _build_agent_command
-
-            cmd = _build_agent_command("test", tmp_path, config, "claude")
-        assert "--dangerously-skip-permissions" not in cmd
-
-    def test_empty_env_var_does_not_enable_flag(self, tmp_path: pathlib.Path) -> None:
-        """An absent or empty env var must not activate the flag."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        env_without_var = {k: v for k, v in __import__("os").environ.items() if k != "CODELICIOUS_ALLOW_DANGEROUS"}
-        with patch.dict("os.environ", env_without_var, clear=True):
-            from codelicious.agent_runner import _build_agent_command
-
-            cmd = _build_agent_command("test", tmp_path, config, "claude")
-        assert "--dangerously-skip-permissions" not in cmd
-
-    def test_exact_value_logs_security_warning(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
-        """Activating via env var must emit a WARNING-level security message."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=False,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        with patch.dict("os.environ", {"CODELICIOUS_ALLOW_DANGEROUS": "I-UNDERSTAND-THE-RISKS"}):
-            from codelicious.agent_runner import _build_agent_command
-
-            with caplog.at_level("WARNING", logger="codelicious.agent_runner"):
-                _build_agent_command("test", tmp_path, config, "claude")
-
-        assert any("SECURITY WARNING" in r.message or "dangerously" in r.message.lower() for r in caplog.records)
-
-    def test_config_allow_dangerous_true_does_not_log_env_warning(
-        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Warning is only emitted when env var activates the flag, not config flag."""
-        import types
-
-        config = types.SimpleNamespace(
-            allow_dangerous=True,
-            model="",
-            effort="",
-            max_turns=0,
-        )
-        env_without_var = {k: v for k, v in __import__("os").environ.items() if k != "CODELICIOUS_ALLOW_DANGEROUS"}
-        with patch.dict("os.environ", env_without_var, clear=True):
-            from codelicious.agent_runner import _build_agent_command
-
-            with caplog.at_level("WARNING", logger="codelicious.agent_runner"):
-                cmd = _build_agent_command("test", tmp_path, config, "claude")
-
-        assert "--dangerously-skip-permissions" in cmd
-        # The env-var-specific warning must NOT appear (it was the config that triggered it)
-        assert not any("SECURITY WARNING" in r.message for r in caplog.records)
 
 
 class TestCheckAgentErrors:
@@ -378,8 +303,8 @@ class TestCheckAgentErrors:
 
     def test_returncode_zero_does_not_raise(self) -> None:
         """Return code 0 should not raise any exception."""
-        # Should complete without raising
-        _check_agent_errors(0, ["some stdout\n"], ["some stderr\n"])
+        # Should complete without raising and return None
+        assert _check_agent_errors(0, ["some stdout\n"], ["some stderr\n"]) is None
 
     def test_auth_in_stderr_raises_claude_auth_error(self) -> None:
         """'auth' in stderr should raise ClaudeAuthError."""
@@ -441,7 +366,7 @@ class TestCheckAgentErrorsF21:
         """'auth failed' in stderr (contains 'auth') triggers ClaudeAuthError."""
         with pytest.raises(ClaudeAuthError) as exc_info:
             _check_agent_errors(1, [], ["auth failed\n"])
-        assert exc_info.value is not None
+        assert "authentication" in str(exc_info.value).lower()
 
     def test_auth_failed_message_mentions_authentication(self) -> None:
         """ClaudeAuthError message should mention authentication."""
@@ -481,7 +406,7 @@ class TestCheckAgentErrorsF21:
     def test_returncode_zero_never_raises(self) -> None:
         """Returncode 0 must return cleanly even if stderr contains 'auth'."""
         # auth in stderr is irrelevant when returncode is 0
-        _check_agent_errors(0, [], ["auth failed somehow\n"])
+        assert _check_agent_errors(0, [], ["auth failed somehow\n"]) is None
 
 
 class TestParseAgentOutput:
@@ -611,6 +536,16 @@ class TestRunAgentProjectRootValidation:
         with pytest.raises(CodeliciousError, match="does not exist or is not a directory"):
             run_agent(prompt="test", project_root=a_file, config=config)
 
+    def test_regular_file_as_project_root_raises_codelicious_error(self, tmp_path: pathlib.Path) -> None:
+        """Passing a regular file (not a directory) as project_root raises CodeliciousError."""
+        myfile = tmp_path / "myfile.txt"
+        myfile.write_text("content", encoding="utf-8")
+        config = MagicMock()
+        config.dry_run = False
+
+        with pytest.raises(CodeliciousError):
+            run_agent(prompt="test", project_root=myfile, config=config)
+
     def test_valid_project_root_does_not_raise_validation_error(self, tmp_path: pathlib.Path) -> None:
         """An existing directory does not raise at the validation step (dry_run avoids subprocess)."""
         config = MagicMock()
@@ -618,3 +553,418 @@ class TestRunAgentProjectRootValidation:
 
         result = run_agent(prompt="hello", project_root=tmp_path, config=config)
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Findings 8 and 68 — _process_stream_event unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestProcessStreamEvent:
+    """Findings 8 and 68: _process_stream_event correctly parses stream-json events."""
+
+    def test_process_stream_event_assistant_text(self) -> None:
+        """Assistant event with a text block returns the text as display and empty session_id."""
+        event = {"type": "assistant", "message": {"content": [{"type": "text", "text": "Hello world"}]}}
+        sid, display = _process_stream_event(event)
+        assert sid == ""
+        assert display == "Hello world"
+
+    def test_process_stream_event_tool_use(self) -> None:
+        """Assistant event with a tool_use block includes the tool name in display."""
+        event = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}}
+        sid, display = _process_stream_event(event)
+        assert "[tool_use: read_file]" in display
+
+    def test_process_stream_event_system_init(self) -> None:
+        """System init event returns the session_id and empty display text."""
+        event = {"type": "system", "subtype": "init", "session_id": "sess-abc-123"}
+        sid, display = _process_stream_event(event)
+        assert sid == "sess-abc-123"
+
+    def test_process_stream_event_unknown_type(self) -> None:
+        """Unknown event type returns empty strings for both session_id and display."""
+        event = {"type": "unknown_event_xyz"}
+        sid, display = _process_stream_event(event)
+        assert sid == ""
+        assert display == ""
+
+
+# ---------------------------------------------------------------------------
+# Finding 67 — _build_agent_command resume_session_id branch
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAgentCommandResumeSession:
+    """Finding 67: _build_agent_command includes --resume <id> when resume_session_id is set."""
+
+    def test_resume_session_id_adds_resume_flag(self, tmp_path: pathlib.Path) -> None:
+        """Passing resume_session_id='sess-123' must add '--resume' and 'sess-123' to command."""
+        import types
+
+        from codelicious.agent_runner import _build_agent_command
+
+        config = types.SimpleNamespace(allow_dangerous=False, model="", effort="", max_turns=0)
+        cmd = _build_agent_command("prompt text", tmp_path, config, "claude", resume_session_id="sess-123")
+
+        assert "--resume" in cmd
+        resume_index = cmd.index("--resume")
+        assert cmd[resume_index + 1] == "sess-123"
+
+    def test_no_resume_session_id_omits_resume_flag(self, tmp_path: pathlib.Path) -> None:
+        """When resume_session_id is empty, '--resume' must not appear in the command."""
+        import types
+
+        from codelicious.agent_runner import _build_agent_command
+
+        config = types.SimpleNamespace(allow_dangerous=False, model="", effort="", max_turns=0)
+        cmd = _build_agent_command("prompt text", tmp_path, config, "claude")
+
+        assert "--resume" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Finding 69 — run_agent finally block process cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentFinallyCleanup:
+    """Finding 69: run_agent finally block terminates a still-running process."""
+
+    @patch("codelicious.agent_runner.shutil.which")
+    @patch("codelicious.agent_runner.subprocess.Popen")
+    def test_finally_terminates_running_process(
+        self,
+        mock_popen: MagicMock,
+        mock_which: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """When proc.poll() returns None in finally, proc.terminate() must be called."""
+        import subprocess as _subprocess
+        import types
+
+        mock_which.return_value = "/usr/bin/claude"
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 55555
+
+        # poll() sequence:
+        #   - First two calls from the main loop: None (running), then 0 (exited) — exits loop cleanly.
+        #   - Call inside the finally block: None (still running) — triggers terminate path.
+        mock_proc.poll.side_effect = [None, 0, None]
+        mock_proc.returncode = 0
+
+        # proc.wait inside finally: first call (after terminate) times out; second succeeds.
+        mock_proc.wait.side_effect = [
+            _subprocess.TimeoutExpired(cmd="claude", timeout=10),  # terminate wait times out
+            0,  # kill wait succeeds
+            0,  # final proc.wait after the loop
+        ]
+
+        mock_proc.stdout.__iter__ = MagicMock(return_value=iter([]))
+        mock_proc.stderr.__iter__ = MagicMock(return_value=iter([]))
+        mock_popen.return_value = mock_proc
+
+        config = types.SimpleNamespace(
+            dry_run=False,
+            model="",
+            effort="",
+            max_turns=0,
+            agent_timeout_s=60,
+            allow_dangerous=False,
+        )
+
+        # run_agent should complete without raising (returncode=0 after process exit)
+        result = run_agent(prompt="test", project_root=tmp_path, config=config)
+
+        assert result.success is True
+        mock_proc.terminate.assert_called()
+        mock_proc.kill.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Finding 12 — run_agent() main event loop integration coverage
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentMainEventLoop:
+    """Finding 12: exercise the main event loop body in run_agent().
+
+    The stdout_queue consumer path (lines that drive JSON parsing, tee_to
+    writes, session-ID extraction, and the 50-line progress logger) was
+    previously untouched by any test.  These tests feed real line data
+    through the mocked Popen stdout iterator so that the drainer thread
+    populates the queue and the loop body processes it.
+    """
+
+    @patch("codelicious.agent_runner.shutil.which")
+    @patch("codelicious.agent_runner.subprocess.Popen")
+    def test_json_event_processing_session_id_and_tee(
+        self,
+        mock_popen: MagicMock,
+        mock_which: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """JSON events are parsed: session_id extracted, display text written to tee_to.
+
+        The stdout iterator yields a system/init event followed by an assistant
+        text event.  After run_agent() returns the result session_id must equal
+        the one in the init event and tee_to must contain the assistant text.
+        """
+        import io
+        import json
+        import types
+
+        mock_which.return_value = "/usr/bin/claude"
+
+        init_line = json.dumps({"type": "system", "subtype": "init", "session_id": "sess-test-123"}) + "\n"
+        assistant_line = (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "Hello from agent"}]},
+                }
+            )
+            + "\n"
+        )
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.side_effect = [None, None, 0]
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.stdout.__iter__ = MagicMock(return_value=iter([init_line, assistant_line]))
+        mock_proc.stderr.__iter__ = MagicMock(return_value=iter([]))
+        mock_popen.return_value = mock_proc
+
+        config = types.SimpleNamespace(
+            dry_run=False,
+            model="",
+            effort="",
+            max_turns=0,
+            agent_timeout_s=60,
+            allow_dangerous=False,
+        )
+
+        tee = io.StringIO()
+        result = run_agent(
+            prompt="test prompt",
+            project_root=tmp_path,
+            config=config,
+            tee_to=tee,
+        )
+
+        assert result.session_id == "sess-test-123"
+        tee_contents = tee.getvalue()
+        assert "Hello from agent" in tee_contents
+
+    @patch("codelicious.agent_runner.shutil.which")
+    @patch("codelicious.agent_runner.subprocess.Popen")
+    def test_plain_text_line_written_to_tee(
+        self,
+        mock_popen: MagicMock,
+        mock_which: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Non-JSON stdout lines are forwarded verbatim to tee_to.
+
+        When a line cannot be parsed as JSON the loop falls through to the
+        except branch and writes the raw line to tee_to.
+        """
+        import io
+        import types
+
+        mock_which.return_value = "/usr/bin/claude"
+
+        plain_lines = ["plain text output\n", "another plain line\n"]
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 22222
+        mock_proc.poll.side_effect = [None, None, 0]
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.stdout.__iter__ = MagicMock(return_value=iter(plain_lines))
+        mock_proc.stderr.__iter__ = MagicMock(return_value=iter([]))
+        mock_popen.return_value = mock_proc
+
+        config = types.SimpleNamespace(
+            dry_run=False,
+            model="",
+            effort="",
+            max_turns=0,
+            agent_timeout_s=60,
+            allow_dangerous=False,
+        )
+
+        tee = io.StringIO()
+        result = run_agent(
+            prompt="test prompt",
+            project_root=tmp_path,
+            config=config,
+            tee_to=tee,
+        )
+
+        assert result.success is True
+        tee_contents = tee.getvalue()
+        assert "plain text output" in tee_contents
+        assert "another plain line" in tee_contents
+
+    @patch("codelicious.agent_runner.shutil.which")
+    @patch("codelicious.agent_runner.subprocess.Popen")
+    def test_run_agent_handles_none_stderr(
+        self,
+        mock_popen: MagicMock,
+        mock_which: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """REV-P1-1: No AssertionError when proc.stderr is None."""
+        import types
+
+        mock_which.return_value = "/usr/bin/claude"
+
+        mock_proc = MagicMock()
+        mock_proc.stderr = None
+        mock_proc.stdout.__iter__ = MagicMock(return_value=iter(["output line\n"]))
+        mock_proc.pid = 12345
+        mock_proc.poll.side_effect = [None, None, 0]
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        config = types.SimpleNamespace(
+            dry_run=False,
+            model="",
+            effort="",
+            max_turns=0,
+            agent_timeout_s=5,
+            allow_dangerous=False,
+        )
+
+        # Should not raise AssertionError
+        result = run_agent(
+            prompt="test",
+            project_root=tmp_path,
+            config=config,
+        )
+        assert result is not None
+
+    @patch("codelicious.agent_runner.shutil.which")
+    @patch("codelicious.agent_runner.subprocess.Popen")
+    def test_progress_logging_every_50_lines(
+        self,
+        mock_popen: MagicMock,
+        mock_which: MagicMock,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """51 stdout lines trigger the every-50-lines debug log and complete without error.
+
+        The loop body increments output_lines and logs at DEBUG level when
+        len(output_lines) % 50 == 0.  Feeding 51 lines exercises that branch
+        once (at line 50) and confirms the loop handles the full batch.
+        """
+        import types
+
+        mock_which.return_value = "/usr/bin/claude"
+
+        lines = [f"line {i}\n" for i in range(51)]
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 33333
+        mock_proc.poll.side_effect = [None, None, 0]
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.stdout.__iter__ = MagicMock(return_value=iter(lines))
+        mock_proc.stderr.__iter__ = MagicMock(return_value=iter([]))
+        mock_popen.return_value = mock_proc
+
+        config = types.SimpleNamespace(
+            dry_run=False,
+            model="",
+            effort="",
+            max_turns=0,
+            agent_timeout_s=60,
+            allow_dangerous=False,
+        )
+
+        with caplog.at_level("DEBUG", logger="codelicious.agent_runner"):
+            result = run_agent(
+                prompt="test prompt",
+                project_root=tmp_path,
+                config=config,
+            )
+
+        assert result.success is True
+        # The 50th line triggers the progress log
+        progress_records = [r for r in caplog.records if "lines processed" in r.message]
+        assert len(progress_records) >= 1
+        assert "50" in progress_records[0].message
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 3: Remove --dangerously-skip-permissions (S20-P1-3)
+# ---------------------------------------------------------------------------
+
+
+class TestForbiddenCLIFlags:
+    """Tests for S20-P1-3: FORBIDDEN_CLI_FLAGS and _validate_command_flags."""
+
+    def test_command_does_not_contain_dangerously_skip_permissions(self, tmp_path: pathlib.Path) -> None:
+        """_build_agent_command must never include --dangerously-skip-permissions."""
+        import types
+
+        config = types.SimpleNamespace(model="opus", effort="high", max_turns=10)
+        cmd = _build_agent_command("test prompt", tmp_path, config, "/usr/bin/claude")
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_forbidden_flag_validation_raises(self) -> None:
+        """_validate_command_flags must raise PolicyViolationError on forbidden flag."""
+        cmd = ["claude", "--print", "--dangerously-skip-permissions", "-p", "test"]
+        with pytest.raises(PolicyViolationError, match="Forbidden CLI flag"):
+            _validate_command_flags(cmd)
+
+    def test_validate_command_flags_clean_passes(self) -> None:
+        """_validate_command_flags must not raise for clean command."""
+        cmd = ["claude", "--print", "--output-format", "stream-json", "-p", "test"]
+        _validate_command_flags(cmd)  # Should not raise
+
+    def test_forbidden_cli_flags_is_frozenset(self) -> None:
+        """FORBIDDEN_CLI_FLAGS must be a frozenset for immutability."""
+        assert isinstance(FORBIDDEN_CLI_FLAGS, frozenset)
+        assert "--dangerously-skip-permissions" in FORBIDDEN_CLI_FLAGS
+
+    def test_agent_subprocess_command_structure(self, tmp_path: pathlib.Path) -> None:
+        """Built command must have expected structure: binary, --print, format, --verbose, -p."""
+        import types
+
+        config = types.SimpleNamespace(model="", effort="", max_turns=0)
+        cmd = _build_agent_command("hello world", tmp_path, config, "/usr/bin/claude")
+        assert cmd[0] == "/usr/bin/claude"
+        assert "--print" in cmd
+        assert "--output-format" in cmd
+        assert "stream-json" in cmd
+        assert "--verbose" in cmd
+        assert "-p" in cmd
+        idx = cmd.index("-p")
+        assert cmd[idx + 1] == "hello world"
+
+    def test_scaffolded_settings_has_permissions(self, tmp_path: pathlib.Path) -> None:
+        """scaffold_claude_dir must write settings.json with allow/deny permissions."""
+        import json
+
+        from codelicious.scaffolder import scaffold_claude_dir
+
+        scaffold_claude_dir(tmp_path)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        assert settings_path.exists()
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert "permissions" in data
+        perms = data["permissions"]
+        assert "allow" in perms
+        assert "deny" in perms
+        # Must include key safe operations
+        assert any("Read" in entry for entry in perms["allow"])
+        assert any("Edit" in entry for entry in perms["allow"])
+        assert any("Bash(pytest" in entry for entry in perms["allow"])
+        # Must deny dangerous operations
+        assert any("force" in entry for entry in perms["deny"])

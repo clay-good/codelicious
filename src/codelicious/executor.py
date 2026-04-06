@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -72,18 +73,27 @@ def _normalize_file_path(raw: str) -> str:
     """
     from codelicious.errors import SandboxViolationError
 
-    path = raw.strip().replace("\\", "/")
-    # Collapse multiple slashes
-    while "//" in path:
-        path = path.replace("//", "/")
-    # Remove leading ./
-    while path.startswith("./"):
-        path = path[2:]
+    path = raw.strip()
+
+    # EC-1: Reject Windows UNC paths before any normalization
+    if path.replace("\\", "/").startswith("//"):
+        raise SandboxViolationError(f"UNC paths are not allowed: {raw!r}")
+
+    path = path.replace("\\", "/")
+    # Collapse multiple slashes in a single pass (Finding 14)
+    path = re.sub(r"/+", "/", path)
+    # Remove leading ./ in a single pass
+    path = re.sub(r"^(\./)+", "", path)
     # Strip leading/trailing slashes
     path = path.strip("/")
-    # Reject traversal
-    if ".." in path.split("/"):
+    # Early filter for path traversal. The sandbox's resolve_path() is the definitive guard.
+    parts = path.split("/")
+    if ".." in parts:
         raise SandboxViolationError(f"Path traversal detected: {raw!r}")
+    # EC-1: Reject triple-dot (or more) path components
+    for part in parts:
+        if re.fullmatch(r"\.{3,}", part):
+            raise SandboxViolationError(f"Path component '{part}' is not allowed: {raw!r}")
     logger.debug("Path normalized: %r -> %r", raw, path)
     return path
 
@@ -108,11 +118,16 @@ def parse_llm_response(
     remaining strategies.
     """
     if len(response) > _MAX_RESPONSE_LENGTH:
+        original_len = len(response)
         logger.warning(
-            "LLM response exceeds %d chars, truncating for parsing",
+            "LLM response truncated from %d to %d characters",
+            original_len,
             _MAX_RESPONSE_LENGTH,
         )
-        response = response[:_MAX_RESPONSE_LENGTH]
+        response = response[:_MAX_RESPONSE_LENGTH] + (
+            f"\n[TRUNCATED: Response exceeded maximum length. Only the first "
+            f"{_MAX_RESPONSE_LENGTH:,} characters were processed.]"
+        )
 
     logger.debug(
         "Parsing LLM response (%d chars, expected_files=%s)",

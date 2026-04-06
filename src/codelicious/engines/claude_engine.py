@@ -63,6 +63,29 @@ _SKIP_DIRS: set[str] = {
 _UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
 _CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]", re.MULTILINE)
 
+# Characters allowed in spec_filter values (S20-P1-4).
+# Everything else is stripped to prevent prompt injection.
+_SAFE_PATH_RE = re.compile(r"[^a-zA-Z0-9/_.\- ]")
+_MAX_SPEC_FILTER_LEN = 256
+
+
+def _sanitize_spec_filter(value: str) -> str:
+    """Sanitize a spec_filter value to prevent prompt injection (S20-P1-4).
+
+    Strips all characters except alphanumeric, forward slash, hyphen,
+    underscore, period, and space.  Enforces a 256 character limit.
+    """
+    sanitized = _SAFE_PATH_RE.sub("", value)
+    return sanitized[:_MAX_SPEC_FILTER_LEN]
+
+
+def _check_deadline(deadline: float, phase_name: str, max_time: int) -> None:
+    """Raise BuildTimeoutError if the build deadline has passed."""
+    if time.monotonic() > deadline:
+        from codelicious.errors import BuildTimeoutError
+
+        raise BuildTimeoutError(f"Build exceeded {max_time}s deadline before {phase_name} phase")
+
 
 def _git_tracked_files(repo_path: pathlib.Path) -> set[pathlib.Path] | None:
     """Return the set of tracked files, or None if not a git repo."""
@@ -215,6 +238,22 @@ class ClaudeCodeEngine(BuildEngine):
 
         start = time.monotonic()
 
+        # Build deadline enforcement (spec-18 Phase 6: TE-1)
+        max_build_time = getattr(config, "agent_timeout_s", 3600)
+        build_deadline = start + max_build_time
+
+        # Extract spec_id from spec_filter for deterministic branch naming (spec-22)
+        spec_id: str | None = None
+        if spec_filter:
+            import re as _re
+
+            _m = _re.match(r"^(\d+)", pathlib.Path(spec_filter).stem)
+            spec_id = _m.group(1) if _m else pathlib.Path(spec_filter).stem
+
+        # Sanitize spec_filter before rendering into any prompt (S20-P1-4)
+        safe_spec_filter = _sanitize_spec_filter(spec_filter) if spec_filter else ""
+
+        _check_deadline(build_deadline, "SCAFFOLD", max_build_time)
         # ── Phase 1: SCAFFOLD ──────────────────────────────────────
         logger.info("Phase 1/6: SCAFFOLD — writing CLAUDE.md + .claude/")
         try:
@@ -223,6 +262,7 @@ class ClaudeCodeEngine(BuildEngine):
         except Exception as e:
             logger.warning("Scaffolding failed (non-fatal): %s", e)
 
+        _check_deadline(build_deadline, "BUILD", max_build_time)
         # ── Phase 2: BUILD ─────────────────────────────────────────
         logger.info("Phase 2/6: BUILD — autonomous implementation")
         clear_build_complete(repo_path)
@@ -230,7 +270,8 @@ class ClaudeCodeEngine(BuildEngine):
         build_prompt = render(
             AGENT_BUILD_SPEC,
             project_name=project_name,
-            spec_filter=spec_filter or "No specific spec assigned — find the first incomplete spec file in the repo.",
+            spec_filter=safe_spec_filter
+            or "No specific spec assigned — find the first incomplete spec file in the repo.",
         )
 
         try:
@@ -279,7 +320,9 @@ class ClaudeCodeEngine(BuildEngine):
                 )
             raise
 
+        _check_deadline(build_deadline, "VERIFY", max_build_time)
         # ── Phase 3: VERIFY ────────────────────────────────────────
+        verified_green = False
         for verify_pass in range(1, verify_passes + 1):
             logger.info("Phase 3/6: VERIFY — pass %d/%d", verify_pass, verify_passes)
             try:
@@ -288,6 +331,7 @@ class ClaudeCodeEngine(BuildEngine):
                 vresult = verify(repo_path)
                 if vresult.all_passed:
                     logger.info("Verification passed (all checks green).")
+                    verified_green = True
                     break
                 failed = [c for c in vresult.checks if not c.passed]
                 logger.warning(
@@ -317,6 +361,7 @@ class ClaudeCodeEngine(BuildEngine):
                 logger.warning("Verification error: %s", e)
                 break
 
+        _check_deadline(build_deadline, "REFLECT", max_build_time)
         # ── Phase 4: REFLECT (optional) ────────────────────────────
         if reflect:
             logger.info("Phase 4/6: REFLECT — quality review (read-only)")
@@ -336,23 +381,35 @@ class ClaudeCodeEngine(BuildEngine):
         else:
             logger.info("Phase 4/6: REFLECT — skipped (--no-reflect)")
 
+        _check_deadline(build_deadline, "GIT COMMIT", max_build_time)
         # ── Phase 5: GIT COMMIT + PUSH ─────────────────────────────
         logger.info("Phase 5/6: GIT — committing and pushing changes")
+        commit_prefix = f"[spec-{spec_id}] " if spec_id else ""
         try:
-            git_manager.commit_verified_changes(commit_message=f"codelicious: build {project_name} from specs")
+            git_manager.commit_verified_changes(
+                commit_message=f"{commit_prefix}codelicious: build {project_name} from specs"
+            )
             git_manager.push_to_origin()
             logger.info("Changes committed and pushed.")
         except Exception as e:
             logger.warning("Git commit/push failed: %s", e)
 
+        _check_deadline(build_deadline, "PR", max_build_time)
         # ── Phase 6: PR (ensure exactly one exists) ────────────────
         if push_pr:
             logger.info("Phase 6/6: PR — ensuring draft PR exists for branch")
             try:
-                git_manager.ensure_draft_pr_exists(spec_summary=f"codelicious: build {project_name}")
+                git_manager.ensure_draft_pr_exists(
+                    spec_id=spec_id or "",
+                    spec_summary=f"build {project_name}",
+                )
                 logger.info("PR ensured.")
+                # Transition to ready-for-review only when verification passed (spec-22 Phase 4)
+                if verified_green:
+                    logger.info("Verification green — transitioning PR to ready-for-review.")
+                    git_manager.transition_pr_to_review(spec_id=spec_id or "")
             except Exception as e:
-                logger.warning("PR creation failed: %s", e)
+                logger.warning("PR creation/transition failed: %s", e)
         else:
             logger.info("Phase 6/6: PR — skipped (use --push-pr to enable)")
 
@@ -445,6 +502,7 @@ class ClaudeCodeEngine(BuildEngine):
         """
         start = time.monotonic()
         repo_path = pathlib.Path(repo_path).resolve()
+        build_deadline = start + kwargs.get("agent_timeout_s", 3600)
 
         # Extract config kwargs
         model = kwargs.get("model", "")
@@ -547,6 +605,7 @@ class ClaudeCodeEngine(BuildEngine):
         last_result: BuildResult | None = None
 
         for cycle in range(1, max_cycles + 1):
+            _check_deadline(build_deadline, f"cycle {cycle}", kwargs.get("agent_timeout_s", 3600))
             logger.info("═══ Continuous cycle %d/%d ═══", cycle, max_cycles)
 
             if use_parallel and not spec_filter:
@@ -601,6 +660,8 @@ class ClaudeCodeEngine(BuildEngine):
                     backoff = float(cycle_result.message.split(":")[1])
                 except (IndexError, ValueError):
                     backoff = _DEFAULT_RATE_LIMIT_BACKOFF_S
+                # S21-P2-2: Clamp backoff to prevent adversarial sleep durations
+                backoff = min(max(backoff, 1.0), 300.0)
                 logger.warning("Rate limited — backing off %.0fs before retry...", backoff)
                 time.sleep(backoff)
                 # Don't count rate limits as consecutive failures

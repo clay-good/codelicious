@@ -1,7 +1,8 @@
 ---
 version: 1.0.0
-status: Draft
+status: Complete
 date: 2026-03-23
+completed: 2026-04-03
 author: Claude Opus 4.6 (spec generation), Clay Good (review)
 depends_on: ["16_reliability_test_coverage_v1.md", "08_hardening_reliability_v1.md"]
 related_specs: ["00_master_spec.md", "03_feature_git_orchestration.md", "21_coverage_hardening_documentation_v1.md"]
@@ -614,11 +615,11 @@ Run tests. Fix any failures. Commit with message: "test(git): comprehensive PR l
    - Spec-22 completion status
 
 **Acceptance criteria:**
-- [ ] README documents the spec-as-PR workflow accurately
-- [ ] README security numbers match actual constants
-- [ ] Mermaid diagrams render correctly in GitHub markdown
-- [ ] STATE.md reflects spec-22 completion
-- [ ] No stale claims remain in documentation
+- [x] README documents the spec-as-PR workflow accurately
+- [x] README security numbers match actual constants (96 commands, 31 extensions)
+- [x] Mermaid diagrams render correctly in GitHub markdown
+- [x] STATE.md reflects spec-22 completion
+- [x] No stale claims remain in documentation
 
 **Claude Code prompt:**
 ```
@@ -903,14 +904,14 @@ After all phases:
 
 These items were identified during the audit but are not addressed in this spec because they require new modules, new dependencies, or architectural changes beyond the current scope.
 
-| Item | Reason Deferred |
-|------|-----------------|
-| REV-P1-1: Assertions in threaded context (agent_runner.py) | Requires agent_runner refactor |
-| REV-P1-3: TOCTOU race in sandbox.py:229 | Requires OS-level atomic operations |
-| REV-P1-4: JSON deserialization depth limits (planner.py) | Requires custom JSON decoder |
-| P2-NEW-2: subprocess.run without process group (verifier.py) | Requires process group refactor |
-| S22-P2-18: HF engine error content in history | Requires HF engine refactor |
-| S22-P2-19: HF engine unbounded message history | Requires context window management |
+| Item | Status |
+|------|--------|
+| ~~REV-P1-1: Assertions in threaded context~~ | **FIXED** in spec-23 Phase 1 |
+| ~~REV-P1-3: TOCTOU race in sandbox.py~~ | **FIXED** in spec-23 Phase 1 |
+| ~~REV-P1-4: JSON deserialization depth limits~~ | **FIXED** in spec-23 Phase 1 |
+| ~~P2-NEW-2: subprocess.run without process group~~ | **FIXED** in spec-23 Phase 1 |
+| ~~S22-P2-18: HF engine error content in history~~ | **MITIGATED** — truncate_history + generic error messages |
+| ~~S22-P2-19: HF engine unbounded message history~~ | **MITIGATED** — truncate_history at line 126 |
 | S22-P3-10: RAG chunk prompt injection surface | Requires content sanitization framework |
-| CI/CD pipeline with coverage enforcement | Requires GitHub Actions configuration |
-| Pre-commit hooks | Requires .pre-commit-config.yaml |
+| ~~CI/CD pipeline with coverage enforcement~~ | **EXISTS** — .github/workflows/ci.yml |
+| ~~Pre-commit hooks~~ | **EXISTS** — .pre-commit-config.yaml |

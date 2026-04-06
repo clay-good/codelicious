@@ -5,7 +5,7 @@ and handles all error cases gracefully.
 """
 
 import pathlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -413,3 +413,153 @@ def test_directory_listing_max_entries_one(fs_tooling: FSTooling, tmp_path: path
     lines = [line for line in stdout.split("\n") if line.strip()]
     assert len(lines) == 2
     assert "[truncated: max entries reached]" in stdout
+
+
+# -- Finding 80: dotfile suppression in native_list_directory --------------
+
+
+def test_native_list_directory_suppresses_dotfiles(fs_tooling: FSTooling, tmp_path: pathlib.Path) -> None:
+    """native_list_directory('.') must not include dotfiles like .gitignore in output.
+
+    Dotfiles (files whose name starts with '.') should be suppressed from
+    directory listings so that the agent does not accidentally expose or act on
+    hidden configuration files.
+    """
+    # Create a dotfile that should be suppressed
+    (tmp_path / ".gitignore").write_text("*.pyc\n__pycache__/\n", encoding="utf-8")
+    # Create a normal file that should appear
+    (tmp_path / "main.py").write_text("# main module\n", encoding="utf-8")
+
+    response = fs_tooling.native_list_directory(".")
+    assert response["success"] is True
+
+    stdout = response["stdout"]
+    assert "main.py" in stdout, "Normal file must appear in directory listing"
+    assert ".gitignore" not in stdout, "Dotfile .gitignore must be absent from directory listing"
+
+
+# -- Generic Exception branch in native_read_file (Finding 47) -------------
+
+
+def test_native_read_file_generic_exception_returns_failure(fs_tooling: FSTooling) -> None:
+    """native_read_file returns success=False with the error message in stderr when
+    sandbox.read_file raises an unexpected RuntimeError (the broad 'except Exception'
+    branch at fs_tools.py:45-46).
+    """
+    error_message = "unexpected I/O failure"
+    with patch.object(fs_tooling.sandbox, "read_file", side_effect=RuntimeError(error_message)):
+        response = fs_tooling.native_read_file("some_file.py")
+
+    assert response["success"] is False
+    assert response["stdout"] == ""
+    assert error_message in response["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 6: Directory Listing Sandbox Enforcement (S20-P2-2)
+# ---------------------------------------------------------------------------
+
+
+class TestDirectoryListingSandbox:
+    """Tests for S20-P2-2: os.walk sandbox enforcement in native_list_directory."""
+
+    def test_walk_followlinks_false(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """os.walk must use followlinks=False so symlinks are not followed."""
+        # Create a directory with a symlink pointing outside the repo
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        outside = tmp_path.parent / "outside_dir_fl"
+        outside.mkdir(exist_ok=True)
+        (outside / "secret.txt").write_text("secret\n", encoding="utf-8")
+        (tmp_path / "src" / "link").symlink_to(outside)
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".", max_depth=10)
+        assert result["success"] is True
+        # The symlink itself may appear as a name, but the contents of
+        # the outside directory must NOT appear
+        assert "secret.txt" not in result["stdout"]
+
+    def test_walk_path_outside_sandbox_skipped(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """Paths resolving outside the sandbox boundary must be silently skipped."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "safe.py").write_text("ok\n", encoding="utf-8")
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".")
+        assert result["success"] is True
+        assert "safe.py" in result["stdout"]
+
+    def test_walk_symlink_not_followed(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """A symlinked subdirectory must not be descended into."""
+        (tmp_path / "real").mkdir()
+        (tmp_path / "real" / "data.txt").write_text("data\n", encoding="utf-8")
+        outside = tmp_path.parent / "outside_target_snf"
+        outside.mkdir(exist_ok=True)
+        (outside / "leaked.txt").write_text("leak\n", encoding="utf-8")
+        (tmp_path / "real" / "escape").symlink_to(outside)
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".", max_depth=10)
+        assert result["success"] is True
+        assert "data.txt" in result["stdout"]
+        assert "leaked.txt" not in result["stdout"]
+
+    def test_walk_depth_limit_enforced(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """Directories beyond max_depth must not be traversed."""
+        # Create a/b/c/d/deep.txt (4 levels)
+        deep = tmp_path / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / "deep.txt").write_text("deep\n", encoding="utf-8")
+        (tmp_path / "a" / "top.txt").write_text("top\n", encoding="utf-8")
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        # max_depth=2 means we can descend into a/ and a/b/ but not a/b/c/
+        result = fs.native_list_directory(".", max_depth=2)
+        assert result["success"] is True
+        assert "top.txt" in result["stdout"]
+        assert "deep.txt" not in result["stdout"]
+
+    def test_walk_entry_count_limit_enforced(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """Listing must stop after max_entries and include a truncation marker."""
+        # Create 20 files
+        for i in range(20):
+            (tmp_path / f"file_{i:03d}.txt").write_text(f"content {i}\n", encoding="utf-8")
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".", max_entries=5)
+        assert result["success"] is True
+        assert "[truncated: max entries reached]" in result["stdout"]
+
+    def test_walk_normal_directory_succeeds(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """A normal directory tree must list correctly."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("main\n", encoding="utf-8")
+        (tmp_path / "README.md").write_text("readme\n", encoding="utf-8")
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".")
+        assert result["success"] is True
+        assert "main.py" in result["stdout"]
+        assert "README.md" in result["stdout"]
+
+    def test_walk_empty_directory_returns_empty(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """An empty directory must return success with empty or minimal output."""
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".")
+        assert result["success"] is True
+
+    def test_walk_nested_directories(self, tmp_path: pathlib.Path, mock_cache_manager: MagicMock) -> None:
+        """Nested directories must be listed with correct indentation."""
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "b").mkdir()
+        (tmp_path / "a" / "b" / "nested.py").write_text("nested\n", encoding="utf-8")
+        (tmp_path / "a" / "sibling.py").write_text("sibling\n", encoding="utf-8")
+
+        fs = FSTooling(tmp_path, mock_cache_manager)
+        result = fs.native_list_directory(".", max_depth=10)
+        assert result["success"] is True
+        assert "nested.py" in result["stdout"]
+        assert "sibling.py" in result["stdout"]
+        assert "a/" in result["stdout"]
+        assert "b/" in result["stdout"]

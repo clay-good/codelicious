@@ -23,6 +23,7 @@ import concurrent.futures
 import json
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 import threading
@@ -200,7 +201,13 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
 
     Returns the path to the new worktree directory.
     """
-    worktree_dir = repo_path / ".codelicious" / "worktrees" / branch_name
+    # Sanitize branch_name to prevent path traversal (Finding 30)
+    safe_branch = re.sub(r"[^a-zA-Z0-9_\-/]", "_", branch_name)
+    safe_branch = safe_branch.replace("..", "_")
+    worktree_dir = repo_path / ".codelicious" / "worktrees" / safe_branch
+    worktrees_root = (repo_path / ".codelicious" / "worktrees").resolve()
+    if not worktree_dir.resolve().is_relative_to(worktrees_root):
+        raise RuntimeError(f"Worktree path escapes allowed directory: {branch_name}")
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Clean up stale worktree if it exists
@@ -218,7 +225,7 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
     # Create the worktree with a new branch
     try:
         result = subprocess.run(
-            ["git", "worktree", "add", "-b", branch_name, str(worktree_dir)],
+            ["git", "worktree", "add", "-b", safe_branch, str(worktree_dir)],
             cwd=str(repo_path),
             capture_output=True,
             text=True,
@@ -231,7 +238,7 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
         # Branch might already exist — try without -b
         try:
             result = subprocess.run(
-                ["git", "worktree", "add", str(worktree_dir), branch_name],
+                ["git", "worktree", "add", str(worktree_dir), safe_branch],
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,
@@ -567,9 +574,9 @@ class Orchestrator:
         """
         from codelicious.prompts import AGENT_BUILD_SPEC, render
 
-        from codelicious.git.git_orchestrator import GitManager
+        from codelicious.git.git_orchestrator import spec_branch_name
 
-        branch_name = GitManager.branch_for_spec(spec_path.name)
+        branch_name = spec_branch_name(spec_path.name)
         worktree_dir: pathlib.Path | None = None
 
         try:
@@ -668,6 +675,8 @@ class Orchestrator:
 
         Returns list of (branch_name, success) tuples.
         """
+        from codelicious.git.git_orchestrator import spec_branch_name
+
         if not specs:
             return []
 
@@ -717,7 +726,7 @@ class Orchestrator:
                             _log_spec_progress(spec, branch, ok)
                             results.append((branch, ok))
                         except Exception as e:
-                            branch = f"codelicious/build-{spec.stem}"
+                            branch = spec_branch_name(spec.name)
                             with count_lock:
                                 completed_count += 1
                                 count = completed_count
@@ -886,6 +895,7 @@ class Orchestrator:
         max_review_workers: int = 4,
         max_build_cycles: int = 10,
         push_pr: bool = False,
+        max_wall_clock_s: float = 7200,
     ) -> OrchestratorResult:
         """Run the full orchestrated pipeline.
 
@@ -908,6 +918,10 @@ class Orchestrator:
             Max build→merge iterations before giving up.
         push_pr:
             Whether to push and create/update PR after completion.
+        max_wall_clock_s:
+            Hard wall-clock limit in seconds for the entire run (Finding 22).
+            Defaults to 7200 (2 hours). The build loop is aborted if this
+            limit is reached before all cycles complete.
         """
         from codelicious.prompts import scan_remaining_tasks_for_spec
 
@@ -936,6 +950,16 @@ class Orchestrator:
         consecutive_failures = 0
 
         for cycle in range(1, max_build_cycles + 1):
+            # Wall-clock timeout guard (Finding 22)
+            elapsed_so_far = time.monotonic() - start
+            if elapsed_so_far >= max_wall_clock_s:
+                logger.error(
+                    "Wall-clock timeout reached after %.1fs (limit=%ss). Aborting build loop.",
+                    elapsed_so_far,
+                    max_wall_clock_s,
+                )
+                break
+
             # Cache scan_remaining_tasks_for_spec results keyed by spec path so
             # each spec is queried at most once per cycle (Finding 26).
             remaining_cache: dict[pathlib.Path, int] = {s: scan_remaining_tasks_for_spec(s) for s in incomplete_specs}
@@ -1029,12 +1053,17 @@ class Orchestrator:
         self.git_manager.push_to_origin()
 
         if push_pr:
-            try:
-                self.git_manager.ensure_draft_pr_exists(
-                    f"Orchestrated build: {len(specs)} specs, {len(findings)} findings"
-                )
-            except Exception as e:
-                logger.warning("PR creation failed: %s", e)
+            # Create/reuse one PR per successfully built spec (spec-22 Phase 4)
+            for spec in specs:
+                _m = re.match(r"^(\d+)", spec.stem)
+                _sid = _m.group(1) if _m else spec.stem
+                try:
+                    self.git_manager.ensure_draft_pr_exists(
+                        spec_id=_sid,
+                        spec_summary=f"build {self.project_name}",
+                    )
+                except Exception as e:
+                    logger.warning("PR creation for spec-%s failed: %s", _sid, e)
 
         elapsed = time.monotonic() - start
         return OrchestratorResult(

@@ -10,12 +10,26 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import random
+import re
 import time
 
 from codelicious.engines.base import BuildEngine, BuildResult
-from codelicious.loop_controller import MAX_HISTORY_TOKENS, truncate_history
+from codelicious.errors import LLMRateLimitError
+from codelicious.loop_controller import MAX_HISTORY_TOKENS, MAX_TOOL_RESULT_BYTES, truncate_history
 
 logger = logging.getLogger("codelicious.engines.huggingface")
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Classify an exception as transient (retryable) vs fatal."""
+    import urllib.error
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 500, 502, 503, 504)
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError)):
+        return True
+    return False
 
 
 class HuggingFaceEngine(BuildEngine):
@@ -44,14 +58,42 @@ class HuggingFaceEngine(BuildEngine):
         start = time.monotonic()
         repo_path = pathlib.Path(repo_path).resolve()
         max_iterations = kwargs.get("max_iterations", 50)
+        max_build_time = kwargs.get("agent_timeout_s", 3600)
+        build_deadline = start + max_build_time
 
         # Load config
         config_path = repo_path / ".codelicious" / "config.json"
-        config = {"allowlisted_commands": ["pytest", "npm", "ruff", "black"]}
+        # Allowed config keys — must match git_orchestrator._ALLOWED_CONFIG_KEYS (Finding 11)
+        _allowed_keys = frozenset(
+            {"allowlisted_commands", "default_reviewers", "max_calls_per_iteration", "verify_command"}
+        )
+        _config_max_bytes = 100_000
+
+        config: dict = {}
         if config_path.exists():
             try:
-                config = json.loads(config_path.read_text())
-            except json.JSONDecodeError:
+                config_size = config_path.stat().st_size
+                if config_size > _config_max_bytes:
+                    logger.error("config.json too large (%d bytes); skipping.", config_size)
+                else:
+                    loaded = json.loads(config_path.read_text())
+                    if isinstance(loaded, dict):
+                        # Filter to allowed keys only (Finding 11: prevent config injection)
+                        filtered = {k: v for k, v in loaded.items() if k in _allowed_keys}
+                        config.update(filtered)
+                        # S20-P3-4: Deprecation warning for allowlisted_commands
+                        if "allowlisted_commands" in config:
+                            logger.warning(
+                                "Config key 'allowlisted_commands' is deprecated and ignored. "
+                                "Command restrictions are hardcoded in security_constants.py."
+                            )
+                            del config["allowlisted_commands"]
+                        # Clamp max_calls_per_iteration to safe range
+                        if "max_calls_per_iteration" in config:
+                            config["max_calls_per_iteration"] = max(
+                                10, min(100, int(config["max_calls_per_iteration"]))
+                            )
+            except (json.JSONDecodeError, ValueError):
                 pass
 
         # Initialize components
@@ -65,8 +107,10 @@ class HuggingFaceEngine(BuildEngine):
         # System prompt
         spec_focus = ""
         if spec_filter:
+            # Sanitize spec_filter to prevent prompt injection (Finding 32)
+            safe_filter = re.sub(r"[^\w\-./]", "_", spec_filter).replace("\n", "").replace("\x00", "")
             spec_focus = (
-                f"\n\nIMPORTANT: Focus ONLY on the spec file: {spec_filter}\n"
+                f"\n\nIMPORTANT: Focus ONLY on the spec file: {safe_filter}\n"
                 "Build ALL unchecked tasks from that spec. Do not look at other spec files.\n"
             )
 
@@ -94,9 +138,14 @@ class HuggingFaceEngine(BuildEngine):
 
         completed = False
         consecutive_errors = 0
+        consecutive_empty = 0
         max_retries = 5
 
         for iteration in range(max_iterations):
+            if time.monotonic() > build_deadline:
+                from codelicious.errors import BuildTimeoutError
+
+                raise BuildTimeoutError(f"Build exceeded {max_build_time}s deadline at iteration {iteration + 1}")
             logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
             logger.info("Pinging HuggingFace LLM inference endpoint...")
 
@@ -110,29 +159,60 @@ class HuggingFaceEngine(BuildEngine):
                     role="coder",
                 )
                 consecutive_errors = 0  # Reset on success
+            except LLMRateLimitError as e:
+                # S20-P2-6: Honour retry_after_s from rate limit response
+                delay = min(e.retry_after_s, 60.0)
+                logger.warning("Rate limited, sleeping %.1fs", delay)
+                time.sleep(delay)
+                continue
             except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors > max_retries:
-                    logger.error("Aborting after %d consecutive LLM failures.", max_retries)
-                    break
-                backoff = min(2**consecutive_errors, 60)
-                logger.warning(
-                    "LLM call failed (%d/%d): %s — retrying in %ds",
-                    consecutive_errors,
-                    max_retries,
-                    e,
-                    backoff,
-                )
-                time.sleep(backoff)
+                if _is_transient(e):
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_retries:
+                        logger.error("Aborting after %d consecutive transient failures.", max_retries)
+                        break
+                    # S20-P2-4: Exponential backoff with jitter, capped at 30s
+                    delay = min(2.0 * (2**consecutive_errors) + random.uniform(0, 1), 30.0)
+                    logger.warning(
+                        "Transient LLM error (%d/%d): %s — retrying in %.1fs",
+                        consecutive_errors,
+                        max_retries,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "The previous API call failed. Please continue your work.",
+                        }
+                    )
+                    continue
+                else:
+                    logger.error("Fatal LLM error: %s", e)
+                    logger.debug("Fatal error details:", exc_info=True)
+                    raise
+
+            choices = response.get("choices") or []
+            if not choices or not isinstance(choices[0], dict):
+                consecutive_empty += 1
+                logger.warning("LLM returned empty choices array (attempt %d)", consecutive_empty)
+                if consecutive_empty >= 3:
+                    from codelicious.errors import LLMClientError
+
+                    raise LLMClientError("LLM returned 3 consecutive empty responses, aborting")
+                messages.append({"role": "assistant", "content": "[Empty response from LLM]"})
                 messages.append(
                     {
                         "role": "user",
-                        "content": "The previous API call failed. Please continue your work.",
+                        "content": "Your previous response was empty. Please try again with a valid tool call or text response.",
                     }
                 )
                 continue
-
-            message_obj = response["choices"][0]["message"]
+            consecutive_empty = 0  # Reset on valid response
+            message_obj = choices[0].get("message")
+            if not isinstance(message_obj, dict) or "role" not in message_obj:
+                raise RuntimeError("Malformed LLM response: invalid message object")
             messages.append(message_obj)
 
             # Handle tool calls
@@ -159,21 +239,35 @@ class HuggingFaceEngine(BuildEngine):
                     args = json.loads(tool_call["function"]["arguments"])
                     name = tool_call["function"]["name"]
                     tool_result = tool_registry.dispatch(name, args)
+                    tool_content = json.dumps(tool_result)
+                    if len(tool_content) > MAX_TOOL_RESULT_BYTES:
+                        logger.warning(
+                            "Tool result for '%s' truncated to %d bytes (original: %d bytes)",
+                            name,
+                            MAX_TOOL_RESULT_BYTES,
+                            len(tool_content),
+                        )
+                        tool_content = tool_content[:MAX_TOOL_RESULT_BYTES] + "...<truncated>"
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "name": name,
-                            "content": json.dumps(tool_result),
+                            "content": tool_content,
                         }
                     )
                 except Exception as e:
-                    logger.error("Tool call failed: %s: %s", tool_call, e)
+                    # Log only tool name, not full arguments which may contain secrets (Finding 40)
+                    # Use safe .get() access to avoid secondary KeyError in error handler (Finding 2)
+                    tool_name = tool_call.get("function", {}).get("name", "unknown")
+                    tool_call_id = tool_call.get("id", "")
+                    logger.warning("Tool call failed: %s: %s", tool_name, type(e).__name__)
+                    logger.debug("Tool call traceback for %s:", tool_name, exc_info=True)
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "name": tool_call["function"]["name"],
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
                             "content": json.dumps(
                                 {
                                     "success": False,
@@ -183,12 +277,16 @@ class HuggingFaceEngine(BuildEngine):
                         }
                     )
 
+        # Close tool registry to release file handles (Finding 1: AuditLogger leak)
+        tool_registry.close()
+
         if completed:
             try:
                 git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
                 git_manager.push_to_origin()
             except Exception as e:
-                logger.error("Git commit/push failed: %s", e)
+                logger.warning("Git commit/push failed: %s", e)
+                logger.debug("Git error traceback:", exc_info=True)
 
         elapsed = time.monotonic() - start
         return BuildResult(

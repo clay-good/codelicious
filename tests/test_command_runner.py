@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from codelicious.tools.command_runner import CommandRunner, CommandDeniedError
+from codelicious.tools.command_runner import CommandRunner
 from codelicious.security_constants import DENIED_COMMANDS, BLOCKED_METACHARACTERS
 
 
@@ -118,7 +118,6 @@ class TestAllowedCommands:
             "pytest --version",
             "ruff check .",
             "npm test",
-            "cargo build",
             "ls -la",
             "cat README.md",
             "grep pattern file.txt",
@@ -315,6 +314,11 @@ class TestSecurityConstantsConsistency:
         build_tools = {"make", "pip", "pip3", "pipx", "npx", "go"}
         assert build_tools.issubset(DENIED_COMMANDS)
 
+    def test_denied_commands_includes_jvm_dotnet_and_git(self) -> None:
+        """DENIED_COMMANDS should include JVM, .NET, Rust, and git (spec-22 Phase 8)."""
+        new_entries = {"java", "javac", "cargo", "dotnet", "mvn", "gradle", "git"}
+        assert new_entries.issubset(DENIED_COMMANDS)
+
 
 class TestShlexSplitValidation:
     """Tests for shlex.split() based validation (spec-16 Phase 1, P1-2)."""
@@ -479,15 +483,22 @@ class TestProcessGroupTimeout:
                 assert "30s" in result["stderr"]
 
 
-class TestCommandDeniedError:
-    """Tests for the CommandDeniedError exception."""
+# -- Finding 81: CommandRunner with non-existent repo_path -----------------
 
-    def test_command_denied_error_exists(self) -> None:
-        """Verify CommandDeniedError exception class exists."""
-        assert issubclass(CommandDeniedError, Exception)
 
-    def test_command_denied_error_can_be_raised(self) -> None:
-        """Verify CommandDeniedError can be raised with message."""
-        with pytest.raises(CommandDeniedError) as exc_info:
-            raise CommandDeniedError("Test denied message")
-        assert "Test denied message" in str(exc_info.value)
+def test_commandrunner_nonexistent_repo_path_safe_run_fails(tmp_path: Path) -> None:
+    """Constructing CommandRunner with a non-existent path and running a safe
+    command must return success=False.
+
+    The cwd passed to Popen will not exist, causing Popen to raise FileNotFoundError
+    (or OSError on some platforms).  CommandRunner wraps all subprocess errors and
+    must return a failure result rather than propagating the exception.
+    """
+    nonexistent = tmp_path / "does_not_exist"
+    runner = CommandRunner(repo_path=nonexistent, config={})
+
+    # "ls" is safe (no denylist hit, no metacharacters) so it reaches Popen
+    result = runner.safe_run("ls")
+
+    assert result["success"] is False, "Expected success=False when repo_path does not exist, got True"
+    assert "Subprocess Execution Error" in result["stderr"]

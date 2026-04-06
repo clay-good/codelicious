@@ -73,6 +73,7 @@ class TestDispatchUnknownTool:
         """AuditLogger.log_tool_intent is still called for unknown tools."""
         registry.dispatch("unknown", {})
         registry.audit.log_tool_intent.assert_called_once_with("unknown", {})
+        registry.audit.log_tool_outcome.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,12 @@ class TestDispatchRuntimeError:
         registry.dispatch("crash_tool", {})
         registry.audit.log_sandbox_violation.assert_called()
 
+    def test_runtime_error_does_not_call_log_tool_outcome(self, registry: ToolRegistry) -> None:
+        """RuntimeError path calls log_sandbox_violation, NOT log_tool_outcome."""
+        registry.registry["crash_tool"] = mock.MagicMock(side_effect=RuntimeError("boom"))
+        registry.dispatch("crash_tool", {})
+        registry.audit.log_tool_outcome.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Error dict format
@@ -183,3 +190,18 @@ class TestDispatchErrorDictFormat:
         """The 'success' value in error dicts is the boolean False, not a falsy string."""
         result = registry.dispatch("missing_tool", {})
         assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Per-tool timeout (spec-18 Phase 6: TE-2)
+# ---------------------------------------------------------------------------
+
+
+class TestToolDispatchTimeout:
+    """Tests for per-tool timeout (spec-18 Phase 6: TE-2)."""
+
+    def test_tool_timeout_error_exists(self):
+        """ToolTimeoutError can be imported from errors."""
+        from codelicious.errors import ToolTimeoutError
+
+        assert issubclass(ToolTimeoutError, Exception)

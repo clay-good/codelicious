@@ -66,16 +66,25 @@ def parse_spec(
             path=str(path),
         )
 
-    file_size = resolved.stat().st_size
-    logger.debug("Spec file size: %d bytes", file_size)
-    if file_size > MAX_FILE_SIZE:
+    # Read file in a single operation to eliminate TOCTOU race between
+    # stat() and read() (spec-22 Phase 7).
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise SpecFileNotFoundError(
+            f"Failed to read spec file: {exc}",
+            path=str(path),
+        ) from exc
+
+    logger.debug("Spec file size: %d bytes", len(raw))
+    if len(raw) > MAX_FILE_SIZE:
         raise FileTooLargeError(
-            f"File size {file_size} exceeds limit {MAX_FILE_SIZE}",
+            f"File size {len(raw)} exceeds limit {MAX_FILE_SIZE}",
             path=str(path),
         )
 
     try:
-        content = resolved.read_text(encoding="utf-8")
+        content = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise FileEncodingError(
             f"File is not valid UTF-8: {exc}",

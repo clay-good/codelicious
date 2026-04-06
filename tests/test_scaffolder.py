@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+from unittest.mock import patch
 
 import pytest
 
@@ -166,3 +167,40 @@ def test_valid_path_does_not_raise(tmp_path: pathlib.Path) -> None:
     """scaffold with a normal, non-symlinked path should succeed."""
     scaffold(tmp_path)  # should not raise
     assert (tmp_path / "CLAUDE.md").is_file()
+
+
+# -- start sentinel present but end sentinel missing (Finding 54) ------------
+
+
+def test_start_sentinel_without_end_sentinel(tmp_path: pathlib.Path) -> None:
+    """CLAUDE.md with start sentinel but no end sentinel: scaffold inserts the full managed block.
+
+    Case 4 of scaffold(): when _SENTINEL_START is present but _SENTINEL_END is absent,
+    the code treats end_idx = len(existing), so everything from the start sentinel to
+    EOF is replaced by the current _MANAGED_BLOCK.  The resulting file must contain
+    both sentinels.
+    """
+    claude_md = tmp_path / "CLAUDE.md"
+    # Write a file that has the start sentinel but is missing the end sentinel
+    claude_md.write_text(
+        f"# Preamble\n\n{_SENTINEL_START}\nincomplete managed content without end",
+        encoding="utf-8",
+    )
+    scaffold(tmp_path)
+    content = claude_md.read_text(encoding="utf-8")
+    assert _SENTINEL_START in content
+    assert _SENTINEL_END in content
+    # The preamble before the start sentinel should be preserved
+    assert "# Preamble" in content
+    # The old incomplete content after the start sentinel should be replaced
+    assert "incomplete managed content without end" not in content
+
+
+# -- atomic_write_text raises OSError (Finding 55) ---------------------------
+
+
+def test_scaffold_propagates_oserror_from_atomic_write(tmp_path: pathlib.Path) -> None:
+    """When atomic_write_text raises OSError, scaffold() must propagate the exception."""
+    with patch("codelicious.scaffolder.atomic_write_text", side_effect=OSError("disk full")):
+        with pytest.raises(OSError, match="disk full"):
+            scaffold(tmp_path)

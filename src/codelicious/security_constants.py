@@ -123,5 +123,35 @@ DENIED_COMMANDS: frozenset[str] = frozenset(
         "npx",
         # go: `go run` compiles and executes arbitrary Go source
         "go",
+        # JVM ecosystem: compile and execute arbitrary code
+        "java",
+        "javac",
+        # Rust build tool: executes build scripts and arbitrary code
+        "cargo",
+        # .NET runtime: executes arbitrary .NET assemblies
+        "dotnet",
+        # JVM build tools: execute arbitrary build logic and plugins
+        "mvn",
+        "gradle",
+        # Additional Python package/environment managers (Finding 42)
+        # uv: fast Python package installer that runs build hooks
+        "uv",
+        # poetry: project manager that executes scripts and install hooks
+        "poetry",
+        # pdm: Python dependency manager with build hook execution
+        "pdm",
+        # pyenv: Python version manager that can execute shims
+        "pyenv",
+        # conda/mamba: conda environment managers that execute arbitrary scripts
+        "conda",
+        "mamba",
+        # hatch: modern Python project manager with script execution
+        "hatch",
+        # awk: text processing tool that can execute arbitrary programs
+        "awk",
+        # tclsh: Tcl interpreter that executes arbitrary scripts
+        "tclsh",
+        # expect: scripting tool for automating interactive programs
+        "expect",
     }
 )

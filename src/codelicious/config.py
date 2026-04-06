@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import os
 import pathlib
@@ -233,6 +234,16 @@ class Config:
     spec_path: str = ""  # Path to spec file for auto mode
     log_dir: pathlib.Path = field(default_factory=lambda: pathlib.Path.home() / ".codelicious" / "builds")
 
+    def __repr__(self) -> str:
+        """Mask api_key in repr output to prevent accidental exposure (spec-22 Phase 7)."""
+        fields = []
+        for f in dataclasses.fields(self):
+            val = getattr(self, f.name)
+            if f.name == "api_key" and val:
+                val = "****"
+            fields.append(f"{f.name}={val!r}")
+        return f"Config({', '.join(fields)})"
+
     def get_effective_model(self) -> str:
         """Return the model name, falling back to the provider default."""
         if self.model:
@@ -304,7 +315,10 @@ def build_config(cli_args: argparse.Namespace) -> Config:
             raise ValueError(f"Invalid value for CODELICIOUS_BUILD_MAX_CONTEXT_TOKENS: {env_max_ctx}")
 
     if config.max_context_tokens < 1000:
-        raise ValueError(f"max_context_tokens must be >= 1000, got {config.max_context_tokens}")
+        raise ValueError(
+            f"max_context_tokens must be >= 1000 (recommended: 4000-8000 for most models), "
+            f"got {config.max_context_tokens}"
+        )
 
     # Verify command
     env_verify = os.environ.get("CODELICIOUS_BUILD_VERIFY_COMMAND")

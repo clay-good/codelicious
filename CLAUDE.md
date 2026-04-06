@@ -18,8 +18,16 @@ the current task list and progress.
 - Use `/run-tests`, `/lint-fix`, `/verify-all` skills for common workflows.
 - Use TodoWrite to track sub-steps within complex tasks.
 
+## Security Policy (spec-20)
+- Never use `git add .` — always stage files explicitly or use `git add -u`.
+- Never pass `--dangerously-skip-permissions` to the Claude CLI.
+- All LLM endpoint URLs must be validated for HTTPS and non-private IP.
+- Never commit sensitive files (.env, .pem, .key, .p12, .pfx, .netrc, credentials).
+- Sanitize all user-supplied values (spec_filter, filenames, config) before rendering into prompts.
+
 ## Git & PR Policy
-- You own all git operations: add, commit, push, branch creation.
+- The codelicious orchestrator owns all git operations: add, commit, push, branch creation.
+- You MUST NOT run git or gh commands. The orchestrator handles them.
 - Write clear, descriptive commit messages that explain what changed and why.
 - One commit per logical unit of work (e.g. one task, one fix).
 - Create PRs with meaningful titles and descriptions summarizing actual changes.

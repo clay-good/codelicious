@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from typing import TypedDict
@@ -7,6 +8,8 @@ from codelicious.errors import (
     PathTraversalError,
     SandboxViolationError,
 )
+
+logger = logging.getLogger("codelicious.fs_tools")
 
 
 class ToolResponse(TypedDict):
@@ -28,22 +31,18 @@ class FSTooling:
 
     def native_read_file(self, rel_path: str) -> ToolResponse:
         """
-        Safely reads a file, leveraging the local .codelicious/cache.json
-        if the file hash matches a hot entry to eliminate redundant I/O padding.
+        Safely reads a file using the sandbox's read_file() which includes
+        post-read TOCTOU verification to prevent symlink-swap attacks.
         """
         try:
-            # Use sandbox.resolve_path for consistent path validation
-            target = self.sandbox.resolve_path(rel_path)
-
-            if not target.is_file():
-                return {
-                    "success": False,
-                    "stdout": "",
-                    "stderr": f"Error: '{rel_path}' is not a valid file.",
-                }
-
-            content = target.read_text(encoding="utf-8")
+            content = self.sandbox.read_file(rel_path)
             return {"success": True, "stdout": content, "stderr": ""}
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": f"Error: '{rel_path}' is not a valid file.",
+            }
         except PathTraversalError as e:
             return {"success": False, "stdout": "", "stderr": str(e)}
         except Exception as e:
@@ -73,8 +72,8 @@ class FSTooling:
             return {"success": False, "stdout": "", "stderr": str(e)}
 
     # Default limits for directory listing to prevent DoS via large directory trees
-    DEFAULT_MAX_DEPTH = 3
-    DEFAULT_MAX_ENTRIES = 1000
+    DEFAULT_MAX_DEPTH = 10
+    DEFAULT_MAX_ENTRIES = 5000
 
     def native_list_directory(
         self,
@@ -87,11 +86,12 @@ class FSTooling:
 
         Excludes ignored patterns (.git, __pycache__, etc.).
         Enforces resource limits to prevent DoS via deeply nested or wide directories.
+        Validates every yielded path against the sandbox boundary (S20-P2-2).
 
         Args:
             rel_path: Relative path to list (defaults to ".")
-            max_depth: Maximum depth to traverse (default 3). Depth 0 is the target directory.
-            max_entries: Maximum entries to return (default 1000). Includes truncation marker.
+            max_depth: Maximum depth to traverse (default 10). Depth 0 is the target directory.
+            max_entries: Maximum entries to return (default 5000). Includes truncation marker.
         """
         if max_depth is None:
             max_depth = self.DEFAULT_MAX_DEPTH
@@ -119,11 +119,22 @@ class FSTooling:
                 "build",
             }
 
+            # Pre-compute the resolved repo prefix for sandbox boundary checks (S20-P2-2)
+            repo_prefix = str(self.repo_path.resolve()) + os.sep
+
             tree_output: list[str] = []
             entry_count = 0
             truncated = False
 
-            for root, dirs, files in os.walk(target):
+            # followlinks=False prevents symlinks from escaping the sandbox (S20-P2-2)
+            for root, dirs, files in os.walk(target, followlinks=False):
+                # Validate the walk root against the sandbox boundary (S20-P2-2)
+                resolved_root = Path(root).resolve()
+                if not str(resolved_root).startswith(repo_prefix) and resolved_root != self.repo_path.resolve():
+                    logger.debug("Skipping path outside sandbox: %s", root)
+                    dirs[:] = []
+                    continue
+
                 # Calculate current depth relative to the target directory
                 rel_root = Path(root).relative_to(target)
                 current_depth = len(rel_root.parts)
@@ -152,6 +163,11 @@ class FSTooling:
                     if entry_count >= max_entries:
                         truncated = True
                         break
+                    # Validate individual file paths against sandbox (S20-P2-2)
+                    file_resolved = (resolved_root / f).resolve()
+                    if not str(file_resolved).startswith(repo_prefix):
+                        logger.debug("Skipping file outside sandbox: %s", f)
+                        continue
                     if not f.startswith("."):
                         tree_output.append(f"{sub_indent}{f}")
                         entry_count += 1

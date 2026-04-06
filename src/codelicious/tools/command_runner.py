@@ -11,12 +11,6 @@ from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMAN
 logger = logging.getLogger("codelicious.tools.runner")
 
 
-class CommandDeniedError(Exception):
-    """Raised when a command is denied for security reasons."""
-
-    pass
-
-
 class ToolResponse(TypedDict):
     success: bool
     stdout: str
@@ -151,6 +145,16 @@ class CommandRunner:
                 "stderr": f"Security Violation: Malformed command quoting: {e}",
             }
         except Exception as e:
+            # Kill the process and drain pipes so no handles are leaked
+            # (Finding 26: subprocess pipes not closed on non-timeout error paths).
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError, UnboundLocalError):
+                pass
+            try:
+                proc.communicate(timeout=1)
+            except (subprocess.TimeoutExpired, OSError, UnboundLocalError):
+                pass
             return {
                 "success": False,
                 "stdout": "",

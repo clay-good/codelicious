@@ -183,9 +183,11 @@ class TestHuggingFaceEngineErrorBackoff:
         """After max_retries consecutive LLM failures the loop breaks and returns failure."""
         engine = HuggingFaceEngine()
 
+        import urllib.error
+
         with mock.patch(
             "codelicious.llm_client.LLMClient.chat_completion",
-            side_effect=RuntimeError("LLM connection refused"),
+            side_effect=urllib.error.URLError("LLM connection refused"),
         ):
             with mock.patch("time.sleep"):  # Skip real backoff sleeps
                 result = engine.run_build_cycle(
@@ -398,8 +400,9 @@ class TestHuggingFaceEngineHistoryTruncation:
                             max_iterations=5,
                         )
 
-        # truncate_history must be called at least once (one successful iteration)
-        assert mock_truncate.call_count >= 1
+        # For a single-iteration success (ALL_SPECS_COMPLETE on the first call),
+        # truncate_history must be called exactly once — no more, no less (Finding 62).
+        assert mock_truncate.call_count == 1
 
     def test_truncate_history_called_on_error_iteration(
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
@@ -449,15 +452,17 @@ class TestHuggingFaceEngineSafeErrorMessage:
         self, tmp_path: pathlib.Path, mock_git_manager, mock_cache_manager
     ) -> None:
         """After an LLM failure the user-role message appended is the safe generic text."""
+        import urllib.error
+
         engine = HuggingFaceEngine()
         call_count = 0
-        sensitive_detail = "HTTP 401 Unauthorized: token=sk-secret-abc123"
+        sensitive_detail = "LLM connection refused: token=sk-secret-abc123"
 
         def _flaky(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise RuntimeError(sensitive_detail)
+                raise urllib.error.URLError(sensitive_detail)
             return _make_llm_response("ALL_SPECS_COMPLETE")
 
         captured_messages: list[dict] = []
@@ -490,3 +495,25 @@ class TestHuggingFaceEngineSafeErrorMessage:
         all_content = " ".join(m.get("content", "") or "" for m in captured_messages if m.get("role") == "user")
         assert sensitive_detail not in all_content, "Sensitive exception detail must not appear in conversation history"
         assert "The previous API call failed. Please continue your work." in all_content
+
+
+# ---------------------------------------------------------------------------
+# spec-21 Phase 16a: engines/__init__.py — explicit engine selection
+# ---------------------------------------------------------------------------
+
+
+class TestExplicitEngineSelection:
+    """Tests for explicit engine selection paths (spec-21 Phase 16a)."""
+
+    def test_select_engine_explicit_huggingface_without_token_raises(self) -> None:
+        """select_engine('huggingface') without HF_TOKEN must raise RuntimeError."""
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch("shutil.which", return_value=None):
+                with pytest.raises(RuntimeError, match="HuggingFace token"):
+                    select_engine("huggingface")
+
+    def test_select_engine_explicit_claude_without_binary_raises(self) -> None:
+        """select_engine('claude') without the binary must raise RuntimeError."""
+        with mock.patch("shutil.which", return_value=None):
+            with pytest.raises(RuntimeError, match="Claude Code CLI not found"):
+                select_engine("claude")

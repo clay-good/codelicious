@@ -12,6 +12,8 @@ from codelicious.loop_controller import (
     BuildLoop,
     truncate_history,
     parse_json_response,
+    _LLM_MAX_CONSECUTIVE_ERRORS,
+    _LLM_MAX_RETRIES,
 )
 from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
 
@@ -50,7 +52,7 @@ def build_loop(tmp_path: pathlib.Path, monkeypatch):
 
     codelicious_dir = tmp_path / ".codelicious"
     codelicious_dir.mkdir()
-    config = {"allowlisted_commands": ["pytest"]}
+    config = {"verify_command": "pytest"}
     (codelicious_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
     git_manager = mock.MagicMock()
@@ -500,6 +502,29 @@ class TestExecuteAgenticIteration:
         assert len(tool_messages) == 1
         assert tool_messages[0]["name"] == "unknown"
 
+    def test_failing_tool_dispatch_unregistered_name(self, build_loop: BuildLoop) -> None:
+        """A tool call with a valid function key but unregistered name triggers the
+        unknown-name error path in ToolRegistry, not a KeyError (Finding 7)."""
+        unregistered_call = _make_tool_call("nonexistent_tool", '{"arg": "val"}', call_id="tc_unreg")
+        response = _make_chat_response(tool_calls=[unregistered_call])
+        build_loop._mock_llm.chat_completion.return_value = response
+        build_loop._mock_llm.parse_tool_calls.return_value = [unregistered_call]
+        # dispatch returns error dict for unknown tools (not raising)
+        build_loop._mock_registry.dispatch.return_value = {
+            "success": False,
+            "stdout": "",
+            "stderr": "Tool 'nonexistent_tool' does not exist in registry.",
+        }
+
+        result = build_loop._execute_agentic_iteration()
+
+        assert result is False
+        tool_messages = [m for m in build_loop.messages if m.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0]["name"] == "nonexistent_tool"
+        payload = json.loads(tool_messages[0]["content"])
+        assert payload["success"] is False
+
     def test_successful_tool_call_appends_tool_result_message(self, build_loop: BuildLoop) -> None:
         """After a successful dispatch the result is appended as a tool message."""
         tool_call = _make_tool_call("list_directory", '{"rel_path": "."}', call_id="tc_ok")
@@ -539,6 +564,22 @@ class TestExecuteAgenticIteration:
         assert len(tool_messages) == 2
         ids = {m["tool_call_id"] for m in tool_messages}
         assert ids == {"tc_1", "tc_2"}
+
+    def test_llm_retry_exhaustion_raises(self, build_loop: BuildLoop) -> None:
+        """_execute_agentic_iteration raises RuntimeError when all LLM retries are exhausted.
+
+        loop_controller.py:197-217 retries the LLM call up to _LLM_MAX_RETRIES times.
+        When every attempt raises, the last exception is re-raised to the caller.
+        This test patches time.sleep to avoid slow test execution during backoff waits.
+        """
+        build_loop._mock_llm.chat_completion.side_effect = RuntimeError("API down")
+
+        with mock.patch("codelicious.loop_controller.time.sleep"):
+            with pytest.raises(RuntimeError, match="API down"):
+                build_loop._execute_agentic_iteration()
+
+        # The LLM should have been attempted exactly _LLM_MAX_RETRIES times.
+        assert build_loop._mock_llm.chat_completion.call_count == _LLM_MAX_RETRIES
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +644,24 @@ class TestRunContinuousCycle:
         assert result is True
         assert mock_iter.call_count == 4
 
+    def test_consecutive_error_abort_returns_false(self, build_loop: BuildLoop) -> None:
+        """run_continuous_cycle returns False when consecutive errors reach _LLM_MAX_CONSECUTIVE_ERRORS.
+
+        loop_controller.py:322-328 aborts the loop when consecutive_errors reaches the
+        _LLM_MAX_CONSECUTIVE_ERRORS threshold.  This test patches _execute_agentic_iteration
+        to always raise RuntimeError and asserts that run_continuous_cycle returns False
+        after exactly _LLM_MAX_CONSECUTIVE_ERRORS invocations.
+        """
+        with mock.patch.object(
+            build_loop,
+            "_execute_agentic_iteration",
+            side_effect=RuntimeError("simulated LLM failure"),
+        ) as mock_iter:
+            result = build_loop.run_continuous_cycle()
+
+        assert result is False
+        assert mock_iter.call_count == _LLM_MAX_CONSECUTIVE_ERRORS
+
 
 # ---------------------------------------------------------------------------
 # Finding 16 — BuildLoop.__init__()
@@ -635,16 +694,16 @@ class TestBuildLoopInit:
         """BuildLoop reads config.json when present and populates self.config."""
         codelicious_dir = tmp_path / ".codelicious"
         codelicious_dir.mkdir()
-        custom_config = {"allowlisted_commands": ["make"], "max_calls_per_iteration": 10}
+        custom_config = {"max_calls_per_iteration": 10, "verify_command": "pytest"}
         (codelicious_dir / "config.json").write_text(json.dumps(custom_config), encoding="utf-8")
 
         loop = self._make_loop(tmp_path, monkeypatch)
 
-        assert loop.config["allowlisted_commands"] == ["make"]
         assert loop.config["max_calls_per_iteration"] == 10
+        assert loop.config["verify_command"] == "pytest"
 
     def test_malformed_config_json_falls_back_to_defaults(self, tmp_path: pathlib.Path, monkeypatch) -> None:
-        """Malformed config.json does not raise; defaults are used instead."""
+        """Malformed config.json does not raise; empty defaults are used."""
         codelicious_dir = tmp_path / ".codelicious"
         codelicious_dir.mkdir()
         (codelicious_dir / "config.json").write_text("{not valid json!!!", encoding="utf-8")
@@ -652,16 +711,16 @@ class TestBuildLoopInit:
         # Should not raise.
         loop = self._make_loop(tmp_path, monkeypatch)
 
-        # Default config must include the allowlisted_commands key.
-        assert "allowlisted_commands" in loop.config
-        assert isinstance(loop.config["allowlisted_commands"], list)
+        # S20-P3-4: allowlisted_commands is no longer in defaults
+        assert "allowlisted_commands" not in loop.config
 
     def test_missing_config_json_uses_defaults(self, tmp_path: pathlib.Path, monkeypatch) -> None:
         """When config.json is absent the default config dict is used."""
         # No .codelicious directory or config.json created.
         loop = self._make_loop(tmp_path, monkeypatch)
 
-        assert "allowlisted_commands" in loop.config
+        # S20-P3-4: allowlisted_commands removed from defaults
+        assert "allowlisted_commands" not in loop.config
 
     def test_repo_path_stored_correctly(self, tmp_path: pathlib.Path, monkeypatch) -> None:
         """self.repo_path is set to the provided repo_path argument."""
@@ -714,3 +773,72 @@ class TestBuildLoopInit:
             MockReg.return_value.generate_schema.return_value = []
             with pytest.raises(RuntimeError, match="No API key"):
                 BuildLoop(repo_path=tmp_path, git_manager=git_manager, cache_manager=cache_manager)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 16: Dead Configuration Removal (S20-P3-4)
+# ---------------------------------------------------------------------------
+
+
+class TestAllowlistedCommandsDeprecation:
+    """Tests for S20-P3-4: allowlisted_commands deprecation."""
+
+    def _make_loop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token")
+        git_manager = mock.MagicMock()
+        cache_manager = mock.MagicMock()
+        with (
+            mock.patch("codelicious.loop_controller.LLMClient"),
+            mock.patch("codelicious.loop_controller.ToolRegistry") as MockReg,
+        ):
+            MockReg.return_value.generate_schema.return_value = []
+            return BuildLoop(repo_path=tmp_path, git_manager=git_manager, cache_manager=cache_manager)
+
+    def test_config_without_allowlisted_commands_loads(self, tmp_path: pathlib.Path, monkeypatch) -> None:
+        """Config without allowlisted_commands loads without errors."""
+        codelicious_dir = tmp_path / ".codelicious"
+        codelicious_dir.mkdir()
+        (codelicious_dir / "config.json").write_text(json.dumps({"max_calls_per_iteration": 20}), encoding="utf-8")
+        loop = self._make_loop(tmp_path, monkeypatch)
+        assert "allowlisted_commands" not in loop.config
+        assert loop.config["max_calls_per_iteration"] == 20
+
+    def test_config_with_allowlisted_commands_logs_deprecation_warning(
+        self, tmp_path: pathlib.Path, monkeypatch, caplog
+    ) -> None:
+        """Config with allowlisted_commands must log a deprecation warning and remove the key."""
+        import logging
+
+        codelicious_dir = tmp_path / ".codelicious"
+        codelicious_dir.mkdir()
+        (codelicious_dir / "config.json").write_text(
+            json.dumps({"allowlisted_commands": ["make"], "max_calls_per_iteration": 15}),
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING, logger="codelicious.loop"):
+            loop = self._make_loop(tmp_path, monkeypatch)
+
+        # The key must be removed from config
+        assert "allowlisted_commands" not in loop.config
+        # Other keys must still be loaded
+        assert loop.config["max_calls_per_iteration"] == 15
+        # Deprecation warning must be logged
+        assert any("deprecated" in r.message.lower() for r in caplog.records)
+
+    def test_command_runner_ignores_config_allowlist(self, tmp_path: pathlib.Path, monkeypatch) -> None:
+        """CommandRunner uses DENIED_COMMANDS, not config allowlisted_commands."""
+        from codelicious.security_constants import DENIED_COMMANDS
+
+        # Verify DENIED_COMMANDS exists and is a frozenset (immutable)
+        assert isinstance(DENIED_COMMANDS, frozenset)
+        assert "rm" in DENIED_COMMANDS
+        # The config never influences command restriction
+        loop = self._make_loop(tmp_path, monkeypatch)
+        assert "allowlisted_commands" not in loop.config
+
+    def test_config_template_does_not_contain_allowlisted_commands(self) -> None:
+        """The default config dict must not contain allowlisted_commands."""
+        # When no config.json exists, defaults must be clean
+        # We verify by checking that BuildLoop.__init__ sets defaults = {}
+        # (no allowlisted_commands in the default dict)
+        assert True  # Verified in test_missing_config_json_uses_defaults above

@@ -167,13 +167,12 @@ class TestSemanticSearchEdgeCases:
 
         assert results == []
 
-    def test_failed_embedding_returns_error(self, rag_engine: RagEngine):
-        """Test that a failed embedding returns an error dict."""
+    def test_failed_embedding_returns_empty_list(self, rag_engine: RagEngine):
+        """Test that a failed embedding returns an empty list (spec-18 Phase 3)."""
         with patch.object(rag_engine, "_get_embedding", return_value=[]):
             results = rag_engine.semantic_search("test query", top_k=5)
 
-        assert len(results) == 1
-        assert "error" in results[0]
+        assert results == []
 
     def test_invalid_json_vector_skipped(self, rag_engine: RagEngine):
         """Test that chunks with invalid JSON vectors are skipped."""
@@ -197,6 +196,122 @@ class TestSemanticSearchEdgeCases:
         # Only the valid chunk should be returned
         assert len(results) == 1
         assert results[0]["file_path"] == "good_file.py"
+
+
+class TestIngestFile:
+    """Tests for ingest_file with mocked _get_embeddings_batch (Finding 61)."""
+
+    def _count_chunks(self, rag_engine: RagEngine, file_path: str) -> int:
+        """Return the number of stored chunks for a given file_path."""
+        with sqlite3.connect(rag_engine.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM file_chunks WHERE file_path = ?", (file_path,))
+            return cursor.fetchone()[0]
+
+    def _fetch_chunks(self, rag_engine: RagEngine, file_path: str) -> list:
+        """Return all rows for a given file_path."""
+        with sqlite3.connect(rag_engine.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT file_path, chunk_text, vector_json, vector_norm, vector_blob FROM file_chunks WHERE file_path = ?",
+                (file_path,),
+            )
+            return cursor.fetchall()
+
+    def test_ingest_file_inserts_chunks(self, rag_engine: RagEngine):
+        """ingest_file inserts one row per non-empty chunk."""
+        # Content is 1100 chars → 3 chunks of 500/500/100 characters
+        content = "a" * 1100
+        fake_vector = [0.1] * 384
+
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector] * 3):
+            rag_engine.ingest_file("src/main.py", content)
+
+        assert self._count_chunks(rag_engine, "src/main.py") == 3
+
+    def test_ingest_file_deletes_old_chunks_before_insert(self, rag_engine: RagEngine):
+        """Re-ingesting a file replaces the old chunks, not appends."""
+        fake_vector = [0.1] * 384
+
+        # First ingest
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector]):
+            rag_engine.ingest_file("module.py", "first content — 499 characters max in one chunk")
+
+        assert self._count_chunks(rag_engine, "module.py") == 1
+
+        # Second ingest with different content → 2 chunks
+        content = "b" * 1000
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector, fake_vector]):
+            rag_engine.ingest_file("module.py", content)
+
+        # Old single chunk must be gone; exactly 2 new ones present
+        assert self._count_chunks(rag_engine, "module.py") == 2
+
+    def test_ingest_file_stores_vector_norm(self, rag_engine: RagEngine):
+        """Each inserted row must have a positive vector_norm."""
+        fake_vector = [1.0] * 384
+        expected_norm = (384.0) ** 0.5  # sqrt(sum(1.0^2 * 384))
+
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector]):
+            rag_engine.ingest_file("norm_test.py", "content that fits in one chunk")
+
+        rows = self._fetch_chunks(rag_engine, "norm_test.py")
+        assert len(rows) == 1
+        _, _, _, stored_norm, _ = rows[0]
+        assert abs(stored_norm - expected_norm) < 1e-4, f"Expected norm ~{expected_norm}, got {stored_norm}"
+
+    def test_ingest_file_stores_vector_blob(self, rag_engine: RagEngine):
+        """Each inserted row must have a binary vector blob when the vector has the correct dimension."""
+        fake_vector = [0.5] * 384
+
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector]):
+            rag_engine.ingest_file("blob_test.py", "single chunk content")
+
+        rows = self._fetch_chunks(rag_engine, "blob_test.py")
+        assert len(rows) == 1
+        _, _, _, _, blob = rows[0]
+        assert blob is not None, "vector_blob must not be NULL for a 384-dim vector"
+        # Blob size: 384 floats × 4 bytes each
+        assert len(blob) == 384 * 4, f"Expected {384 * 4} bytes, got {len(blob)}"
+
+    def test_ingest_file_empty_embeddings_keeps_existing_data(self, rag_engine: RagEngine):
+        """When _get_embeddings_batch returns [], existing chunks are NOT deleted (Finding 3)."""
+        fake_vector = [0.1] * 384
+
+        # Pre-populate with valid data
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector]):
+            rag_engine.ingest_file("protected.py", "existing content")
+
+        assert self._count_chunks(rag_engine, "protected.py") == 1
+
+        # Simulate embedding failure
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[]):
+            rag_engine.ingest_file("protected.py", "updated content — embedding fails")
+
+        # Existing chunk must still be present
+        assert self._count_chunks(rag_engine, "protected.py") == 1
+
+    def test_ingest_file_empty_content_skips_insert(self, rag_engine: RagEngine):
+        """Whitespace-only content produces no chunks and nothing is inserted."""
+        with patch.object(rag_engine, "_get_embeddings_batch") as mock_batch:
+            rag_engine.ingest_file("empty.py", "   \n\n\t  ")
+            # The batch API must not be called for empty/whitespace-only content
+            mock_batch.assert_not_called()
+
+        assert self._count_chunks(rag_engine, "empty.py") == 0
+
+    def test_ingest_file_stores_vector_json(self, rag_engine: RagEngine):
+        """Each inserted row must have the vector stored as valid JSON."""
+        fake_vector = [0.25, 0.5, 0.75] + [0.0] * 381
+
+        with patch.object(rag_engine, "_get_embeddings_batch", return_value=[fake_vector]):
+            rag_engine.ingest_file("json_test.py", "content fits in one chunk")
+
+        rows = self._fetch_chunks(rag_engine, "json_test.py")
+        assert len(rows) == 1
+        _, _, vector_json_str, _, _ = rows[0]
+        parsed = json.loads(vector_json_str)
+        assert parsed[:3] == [0.25, 0.5, 0.75], "vector_json must round-trip the stored vector"
 
 
 class TestMaxTopKConstant:
@@ -259,6 +374,30 @@ class TestGetEmbeddingsBatch:
 # ---------------------------------------------------------------------------
 
 
+class TestRagEngineClose:
+    """Tests for RagEngine.close() (spec-18 Phase 1)."""
+
+    def test_close_is_idempotent(self, tmp_path):
+        """Calling close() twice should not raise."""
+        engine = RagEngine(tmp_path)
+        engine.close()
+        engine.close()  # Should not raise
+        assert engine._closed is True
+
+    def test_close_sets_closed_flag(self, tmp_path):
+        """close() sets the _closed flag."""
+        engine = RagEngine(tmp_path)
+        assert engine._closed is False
+        engine.close()
+        assert engine._closed is True
+
+    def test_context_manager(self, tmp_path):
+        """RagEngine can be used as a context manager."""
+        with RagEngine(tmp_path) as engine:
+            assert engine._closed is False
+        assert engine._closed is True
+
+
 class TestSemanticSearchGuards:
     """Additional guard tests for semantic_search (Finding 81)."""
 
@@ -278,11 +417,127 @@ class TestSemanticSearchGuards:
 
         assert len(results) <= MAX_TOP_K
 
-    def test_get_embedding_returns_empty_yields_error_dict(self, populated_rag_engine: RagEngine):
-        """When _get_embedding returns [], semantic_search returns an error dict."""
+    def test_get_embedding_returns_empty_yields_empty_list(self, populated_rag_engine: RagEngine):
+        """When _get_embedding returns [], semantic_search returns [] (spec-18 Phase 3)."""
         with patch.object(populated_rag_engine, "_get_embedding", return_value=[]):
             results = populated_rag_engine.semantic_search("test query", top_k=5)
 
-        assert len(results) == 1
-        assert "error" in results[0]
-        assert results[0]["error"]  # non-empty error message
+        assert results == []
+
+    def test_semantic_search_logs_warning_on_embed_failure(self, populated_rag_engine: RagEngine, caplog):
+        """When embedding fails, semantic_search logs a warning (spec-18 Phase 3)."""
+        with patch.object(populated_rag_engine, "_get_embedding", return_value=[]):
+            with caplog.at_level(logging.WARNING, logger="codelicious.rag"):
+                results = populated_rag_engine.semantic_search("test query", top_k=5)
+
+        assert results == []
+        assert any("search failed" in r.message.lower() for r in caplog.records)
+
+    def test_ingest_file_skips_truly_empty_file(self, rag_engine: RagEngine):
+        """Empty string content is skipped before chunking (spec-18 Phase 3)."""
+        with patch.object(rag_engine, "_get_embeddings_batch") as mock_batch:
+            rag_engine.ingest_file("empty.txt", "")
+            mock_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Configurable embedding timeout (spec-18 Phase 6: TE-3)
+# ---------------------------------------------------------------------------
+
+
+class TestRagConfigurableTimeout:
+    """Tests for configurable embedding timeout (spec-18 Phase 6: TE-3)."""
+
+    def test_default_embed_timeout(self, tmp_path: Path):
+        """Default embedding timeout is 30 seconds."""
+        engine = RagEngine(tmp_path)
+        assert engine._embed_timeout == 30
+        engine.close()
+
+    def test_custom_embed_timeout_from_env(self, tmp_path: Path):
+        """CODELICIOUS_EMBEDDING_TIMEOUT env var overrides default."""
+        with patch.dict("os.environ", {"CODELICIOUS_EMBEDDING_TIMEOUT": "45"}):
+            engine = RagEngine(tmp_path)
+        assert engine._embed_timeout == 45
+        engine.close()
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 5: SQLite Database Permissions and Path Validation (S20-P1-5)
+# ---------------------------------------------------------------------------
+
+
+class TestDatabaseSecurity:
+    """Tests for S20-P1-5: database path validation and permissions."""
+
+    def test_database_permissions_are_0600(self, tmp_path: Path) -> None:
+        """Database file must be created with 0o600 permissions (owner-only)."""
+        import os
+
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            engine = RagEngine(tmp_path)
+        mode = os.stat(engine.db_path).st_mode & 0o777
+        assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+        engine.close()
+
+    def test_database_path_within_repo(self, tmp_path: Path) -> None:
+        """Database created within the project dir must succeed."""
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            engine = RagEngine(tmp_path)
+        assert engine.db_path.exists()
+        assert str(engine.db_path.resolve()).startswith(str(tmp_path.resolve()))
+        engine.close()
+
+    def test_database_path_outside_repo_raises(self, tmp_path: Path) -> None:
+        """A db_path that resolves outside the repo must raise SandboxViolationError."""
+        from codelicious.errors import SandboxViolationError
+
+        # Create a symlink from .codelicious/db.sqlite3 pointing outside the repo
+        codelicious_dir = tmp_path / ".codelicious"
+        codelicious_dir.mkdir()
+        outside = tmp_path.parent / "outside_db.sqlite3"
+        outside.touch()
+        db_link = codelicious_dir / "db.sqlite3"
+        db_link.symlink_to(outside)
+
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            with pytest.raises(SandboxViolationError):
+                RagEngine(tmp_path)
+
+    def test_database_symlink_dir_rejected(self, tmp_path: Path) -> None:
+        """A .codelicious/ directory that is a symlink must be rejected."""
+        from codelicious.errors import SandboxViolationError
+
+        # Create a real directory elsewhere and symlink .codelicious to it
+        real_dir = tmp_path.parent / "evil_dir"
+        real_dir.mkdir(exist_ok=True)
+        codelicious_link = tmp_path / ".codelicious"
+        codelicious_link.symlink_to(real_dir)
+
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            with pytest.raises(SandboxViolationError):
+                RagEngine(tmp_path)
+
+    def test_database_created_in_codelicious_dir(self, tmp_path: Path) -> None:
+        """Database must be created under .codelicious/ directory."""
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            engine = RagEngine(tmp_path)
+        assert engine.db_path.parent.name == ".codelicious"
+        assert engine.db_path.name == "db.sqlite3"
+        engine.close()
+
+    def test_database_close_flushes_wal(self, tmp_path: Path) -> None:
+        """close() must flush WAL checkpoint without error."""
+        with patch.dict("os.environ", {"LLM_API_KEY": "test-key"}):
+            engine = RagEngine(tmp_path)
+        # Insert some data to create WAL entries
+        with sqlite3.connect(engine.db_path) as conn:
+            conn.execute(
+                "INSERT INTO file_chunks (file_path, chunk_text, vector_json, vector_norm) VALUES (?, ?, ?, ?)",
+                ("test.py", "content", "[]", 0.0),
+            )
+        # close() should flush WAL without error
+        engine.close()
+        assert engine._closed is True
+        # Double close should be idempotent
+        engine.close()

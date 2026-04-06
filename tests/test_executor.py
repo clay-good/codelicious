@@ -7,9 +7,11 @@ import time
 
 import pytest
 
-from codelicious.errors import ExecutionError, LLMClientError
+from codelicious.errors import ExecutionError, LLMClientError, SandboxViolationError
 from codelicious.executor import (
+    _normalize_file_path,
     _normalize_path,
+    _parse_markdown_with_filename,
     _parse_strict_format,
     execute_fix,
     execute_task,
@@ -514,6 +516,28 @@ def test_normalize_path_backslash() -> None:
     assert result == "src/main.py"
 
 
+# -- _normalize_file_path: path traversal detection (Finding 53) -------------
+
+
+def test_normalize_path_traversal_double_dot_raises() -> None:
+    """_normalize_file_path raises SandboxViolationError for '../../etc/passwd'."""
+    with pytest.raises(SandboxViolationError, match="Path traversal detected"):
+        _normalize_path("../../etc/passwd")
+
+
+def test_normalize_path_traversal_double_dot_in_middle_raises() -> None:
+    """_normalize_file_path raises SandboxViolationError when '..' appears mid-path."""
+    with pytest.raises(SandboxViolationError, match="Path traversal detected"):
+        _normalize_path("src/../../../etc/shadow")
+
+
+def test_normalize_path_traversal_via_parse_llm_response_raises() -> None:
+    """parse_llm_response raises SandboxViolationError for a traversal path in strict format."""
+    traversal_response = "--- FILE: ../../etc/passwd ---\nroot:x:0:0:root\n--- END FILE ---\n"
+    with pytest.raises(SandboxViolationError):
+        parse_llm_response(traversal_response)
+
+
 # -- _write_files path normalization (spec-v8 Phase 5, Issue 21) -------------
 
 
@@ -778,3 +802,116 @@ def test_parse_llm_response_double_dot_in_middle_raises() -> None:
 
     with pytest.raises(SandboxViolationError):
         parse_llm_response(traversal_response)
+
+
+# ---------------------------------------------------------------------------
+# spec-18 Phase 7: GD-3 — Truncation marker tests
+# ---------------------------------------------------------------------------
+
+
+class TestResponseTruncationMarker:
+    """Tests for truncation marker in LLM responses (spec-18 Phase 7: GD-3)."""
+
+    def test_truncation_marker_appended(self) -> None:
+        """When response exceeds max length, truncation marker is appended."""
+        from codelicious.errors import ExecutionError
+        from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+        # Create a response larger than the limit
+        huge_response = "x" * (_MAX_RESPONSE_LENGTH + 1000)
+        # parse_llm_response will raise ExecutionError because the garbage
+        # input has no parseable files, but it should truncate first without crashing
+        with pytest.raises(ExecutionError):
+            parse_llm_response(huge_response, [])
+
+    def test_truncation_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Truncation logs a WARNING with original and truncated sizes."""
+        import logging
+
+        from codelicious.errors import ExecutionError
+        from codelicious.executor import _MAX_RESPONSE_LENGTH
+
+        huge_response = "x" * (_MAX_RESPONSE_LENGTH + 500)
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(ExecutionError):
+                parse_llm_response(huge_response, [])
+
+        assert any("truncated" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 14: ReDoS-Safe Markdown Parsing (S20-P3-2, S20-P3-5)
+# ---------------------------------------------------------------------------
+
+
+class TestReDoSSafeMarkdownParsing:
+    """Tests for S20-P3-2: line-by-line state machine parser for code blocks."""
+
+    def test_parse_normal_code_block(self) -> None:
+        """A standard ```python filepath code block must be parsed correctly."""
+        text = "```python src/main.py\nprint('hello')\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/main.py"
+        assert "print('hello')" in result[0][1]
+
+    def test_parse_multiple_code_blocks(self) -> None:
+        """Multiple code blocks must all be extracted."""
+        text = "```python src/a.py\ncode_a\n```\nSome text\n```js src/b.js\ncode_b\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 2
+        assert result[0][0] == "src/a.py"
+        assert result[1][0] == "src/b.js"
+
+    def test_parse_nested_backticks_no_hang(self) -> None:
+        """Pathological nested backticks must not cause ReDoS (complete quickly)."""
+        # 2MB of backtick-heavy content that would cause quadratic backtracking with regex
+        payload = "```" * 10000 + "\n" + "x\n" * 1000 + "```" * 10000
+        start = time.monotonic()
+        _parse_markdown_with_filename(payload)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"Parser took {elapsed:.1f}s on pathological input (limit: 5s)"
+
+    def test_parse_empty_code_block(self) -> None:
+        """An empty code block with a filename must produce empty content."""
+        text = "```python src/empty.py\n```\n"
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/empty.py"
+        assert result[0][1] == ""
+
+    def test_parse_code_block_with_language(self) -> None:
+        """A code block with only a language (no filename) must be skipped."""
+        text = "```python\nprint('no filename')\n```\n"
+        result = _parse_markdown_with_filename(text)
+        # "python" has no dot in basename, so it should not be treated as a filename
+        assert len(result) == 0
+
+    def test_parse_code_block_with_filename(self) -> None:
+        """A code block with just a filename (no language) must be parsed."""
+        text = '```src/config.json\n{"key": "val"}\n```\n'
+        result = _parse_markdown_with_filename(text)
+        assert len(result) == 1
+        assert result[0][0] == "src/config.json"
+
+    def test_parse_large_input_completes_in_time(self) -> None:
+        """2MB of normal markdown must parse in under 5 seconds."""
+        # Generate 2MB+ of valid markdown with code blocks
+        blocks = []
+        for i in range(100):
+            blocks.append(f"```python src/file_{i}.py\n")
+            blocks.append("x = 1  # some padding to fill space\n" * 600)
+            blocks.append("```\n\n")
+        text = "".join(blocks)
+        assert len(text) > 2_000_000, f"Generated only {len(text)} bytes"
+
+        start = time.monotonic()
+        result = _parse_markdown_with_filename(text)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"Parser took {elapsed:.1f}s on 2MB input (limit: 5s)"
+        assert len(result) == 100
+
+    def test_path_normalization_comment_accuracy(self) -> None:
+        """_normalize_file_path must reject .. paths (early filter before sandbox)."""
+        with pytest.raises(SandboxViolationError):
+            _normalize_file_path("src/../../../etc/passwd")

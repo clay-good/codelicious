@@ -530,14 +530,11 @@ def test_concurrent_writes_respect_limit(tmp_path: pathlib.Path) -> None:
 
     assert not unexpected_errors, f"Unexpected exceptions during concurrent writes: {unexpected_errors}"
 
-    # The sandbox lock guarantees exactly `limit` successful writes — never more.
-    # The lower bound is limit-1 (one slot may be lost to a benign TOCTOU in the
-    # internal counter read before the lock, but the atomic lock prevents over-count).
+    # The sandbox lock guarantees exactly `limit` successful writes — the count
+    # check and increment are both performed atomically inside the lock, so
+    # neither over-count nor under-count is possible.
     success_count = sum(results)
-    assert success_count <= limit, f"Too many writes succeeded: {success_count} > {limit}"
-    assert success_count >= limit - 1, (
-        f"Too few writes succeeded: {success_count} < {limit - 1} (expected at least limit-1={limit - 1})"
-    )
+    assert success_count == limit, f"Expected exactly {limit} successful writes, got {success_count}"
 
 
 def test_symlink_attack_post_write_check(tmp_path: pathlib.Path) -> None:
@@ -654,21 +651,23 @@ def test_read_file_post_read_toctou_symlink_escape(tmp_path: pathlib.Path) -> No
 
     outside = str(tmp_path.parent / "outside_file.py")
     original_realpath = os.path.realpath
-    call_count = {"n": 0}
+    seen_paths: set[str] = set()
 
     def patched_realpath(path: str) -> str:
         result = original_realpath(path)
-        # The first several calls are from resolve_path (pre-read checks).
-        # After the file has been read, the post-read check calls realpath
-        # on the resolved file path.  We intercept that specific call and
-        # return a path outside the sandbox to simulate a symlink swap.
-        call_count["n"] += 1
-        if str(path).endswith("safe.py") and call_count["n"] > 2:
-            return outside
+        # resolve_path calls realpath once for the candidate path (pre-validation).
+        # The post-read check calls realpath a second time on the resolved path.
+        # We intercept the second call for "safe.py" specifically to simulate a
+        # symlink swap, using a per-path seen set instead of a global call count
+        # so that unrelated realpath calls on other paths do not affect the trigger.
+        if str(path).endswith("safe.py"):
+            if str(path) in seen_paths:
+                return outside
+            seen_paths.add(str(path))
         return result
 
     with unittest.mock.patch("os.path.realpath", side_effect=patched_realpath):
-        with pytest.raises(PathTraversalError, match="Post-read verification failed"):
+        with pytest.raises(PathTraversalError, match="post-read verification failed"):
             sb.read_file("safe.py")
 
 
@@ -682,6 +681,66 @@ def test_read_file_post_read_toctou_check_passes_for_normal_file(tmp_path: pathl
 
     content = sb.read_file("normal.py")
     assert content == "normal content"
+
+
+# -- Finding 76: Concurrent writes to same file ----------------------------
+
+
+def test_concurrent_overwrites_same_file(tmp_path: pathlib.Path) -> None:
+    """Multiple threads writing to the same path concurrently must leave
+    a consistent final state: the file must contain exactly one of the valid
+    inputs (no torn writes, no mixed content).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path, max_file_count=10)
+
+    payloads = [f"content_version_{i}" for i in range(8)]
+
+    def write_payload(payload: str) -> None:
+        sb.write_file("same.py", payload)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(write_payload, payloads))
+
+    final_content = (tmp_path / "same.py").read_text(encoding="utf-8")
+    assert final_content in payloads, f"File content '{final_content}' is not one of the expected payloads"
+
+
+# -- Finding 79: resolve_path with empty string ----------------------------
+
+
+def test_resolve_path_empty_string(tmp_path: pathlib.Path) -> None:
+    """resolve_path('') either resolves to the project_dir itself or raises
+    PathTraversalError — it must never return a path outside the sandbox.
+    """
+    from codelicious.errors import PathTraversalError
+    from codelicious.sandbox import Sandbox
+
+    sb = Sandbox(tmp_path)
+    try:
+        resolved = sb.resolve_path("")
+        # If it did not raise, the resolved path must be inside (or equal to) project_dir
+        assert str(resolved).startswith(str(tmp_path)), (
+            f"Empty-string resolved to '{resolved}' which is outside '{tmp_path}'"
+        )
+    except PathTraversalError:
+        # Raising PathTraversalError is also an acceptable outcome
+        pass
+
+
+# -- Phase 14: TOCTOU post-read verification tests -------------------------
+
+
+def test_written_paths_prevents_double_count(tmp_path: pathlib.Path) -> None:
+    """REV-P1-3: Second write to same path should not increment file count."""
+    sb = Sandbox(project_dir=tmp_path)
+    sb.write_file("test.py", "# first")
+    assert sb._files_created_count == 1
+    sb.write_file("test.py", "# second")
+    assert sb._files_created_count == 1  # Still 1, not 2
 
 
 def test_read_file_post_read_toctou_logs_warning_on_escape(
@@ -701,13 +760,18 @@ def test_read_file_post_read_toctou_logs_warning_on_escape(
 
     outside = str(tmp_path.parent / "outside.py")
     original_realpath = os.path.realpath
-    call_count = {"n": 0}
+    seen_paths: set[str] = set()
 
     def patched_realpath(path: str) -> str:
         result = original_realpath(path)
-        call_count["n"] += 1
-        if str(path).endswith("log_test.py") and call_count["n"] > 2:
-            return outside
+        # resolve_path calls realpath once for the candidate path (pre-validation).
+        # The post-read check calls realpath a second time on the resolved path.
+        # Filter on the specific path argument so unrelated realpath calls on
+        # other paths do not affect the trigger.
+        if str(path).endswith("log_test.py"):
+            if str(path) in seen_paths:
+                return outside
+            seen_paths.add(str(path))
         return result
 
     with unittest.mock.patch("os.path.realpath", side_effect=patched_realpath):

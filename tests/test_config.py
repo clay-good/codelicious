@@ -15,7 +15,7 @@ import pathlib
 
 import pytest
 
-from codelicious.config import PolicyConfig, _validate_endpoint_url, build_config
+from codelicious.config import Config, PolicyConfig, _validate_endpoint_url, build_config
 
 
 # ---------------------------------------------------------------------------
@@ -348,23 +348,23 @@ class TestValidateEndpointUrl:
 
     def test_https_url_is_accepted(self) -> None:
         """Standard HTTPS URL passes validation without raising."""
-        _validate_endpoint_url("https://api.example.com/v1/completions")
+        assert _validate_endpoint_url("https://api.example.com/v1/completions") is None
 
     def test_empty_string_is_accepted(self) -> None:
         """An empty string is accepted (feature may be disabled)."""
-        _validate_endpoint_url("")
+        assert _validate_endpoint_url("") is None
 
     def test_http_localhost_is_accepted(self) -> None:
         """HTTP to localhost is accepted for local development."""
-        _validate_endpoint_url("http://localhost:8080/v1")
+        assert _validate_endpoint_url("http://localhost:8080/v1") is None
 
     def test_http_127_0_0_1_is_accepted(self) -> None:
         """HTTP to 127.0.0.1 is accepted for local development."""
-        _validate_endpoint_url("http://127.0.0.1:9000/api")
+        assert _validate_endpoint_url("http://127.0.0.1:9000/api") is None
 
     def test_http_loopback_ipv6_is_accepted(self) -> None:
         """HTTP to ::1 (IPv6 loopback) is accepted for local development."""
-        _validate_endpoint_url("http://[::1]:8080/v1")
+        assert _validate_endpoint_url("http://[::1]:8080/v1") is None
 
     def test_http_remote_host_is_rejected(self) -> None:
         """Plain HTTP to a remote host raises ValueError."""
@@ -511,3 +511,258 @@ class TestBuildConfigUnknownProvider:
         for provider in PROVIDER_DEFAULTS:
             cfg = build_config(_minimal_ns(provider=provider))
             assert cfg.provider == provider
+
+
+# ---------------------------------------------------------------------------
+# Finding 59-60: _parse_env_int() and _parse_env_float() direct unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseEnvInt:
+    """Direct unit tests for the _parse_env_int() helper (Finding 59)."""
+
+    def test_absent_env_var_returns_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the env var is absent, _parse_env_int returns the given default."""
+        from codelicious.config import _parse_env_int
+
+        monkeypatch.delenv("_TEST_INT_VAR", raising=False)
+        assert _parse_env_int("_TEST_INT_VAR", default=42) == 42
+
+    def test_valid_int_string_returns_parsed_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A valid integer string is parsed and returned."""
+        from codelicious.config import _parse_env_int
+
+        monkeypatch.setenv("_TEST_INT_VAR", "99")
+        assert _parse_env_int("_TEST_INT_VAR", default=0) == 99
+
+    def test_invalid_string_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An invalid (non-integer) string logs a warning and returns the default."""
+        from codelicious.config import _parse_env_int
+
+        monkeypatch.setenv("_TEST_INT_VAR", "not-an-int")
+        with caplog.at_level("WARNING", logger="codelicious.config"):
+            result = _parse_env_int("_TEST_INT_VAR", default=7)
+        assert result == 7
+        assert any("_TEST_INT_VAR" in r.message for r in caplog.records)
+
+    def test_value_below_min_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An integer below min_val logs a warning and returns the default."""
+        from codelicious.config import _parse_env_int
+
+        monkeypatch.setenv("_TEST_INT_VAR", "3")
+        with caplog.at_level("WARNING", logger="codelicious.config"):
+            result = _parse_env_int("_TEST_INT_VAR", default=10, min_val=5)
+        assert result == 10
+        assert any("_TEST_INT_VAR" in r.message for r in caplog.records)
+
+    def test_value_at_min_returns_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An integer exactly at min_val is accepted and returned."""
+        from codelicious.config import _parse_env_int
+
+        monkeypatch.setenv("_TEST_INT_VAR", "5")
+        assert _parse_env_int("_TEST_INT_VAR", default=10, min_val=5) == 5
+
+
+class TestParseEnvFloat:
+    """Direct unit tests for the _parse_env_float() helper (Finding 60)."""
+
+    def test_absent_env_var_returns_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the env var is absent, _parse_env_float returns the given default."""
+        from codelicious.config import _parse_env_float
+
+        monkeypatch.delenv("_TEST_FLOAT_VAR", raising=False)
+        assert _parse_env_float("_TEST_FLOAT_VAR", default=3.14) == 3.14
+
+    def test_valid_float_string_returns_parsed_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A valid float string is parsed and returned."""
+        from codelicious.config import _parse_env_float
+
+        monkeypatch.setenv("_TEST_FLOAT_VAR", "2.718")
+        result = _parse_env_float("_TEST_FLOAT_VAR", default=0.0)
+        assert abs(result - 2.718) < 1e-9
+
+    def test_invalid_string_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-float string logs a warning and returns the default."""
+        from codelicious.config import _parse_env_float
+
+        monkeypatch.setenv("_TEST_FLOAT_VAR", "not-a-float")
+        with caplog.at_level("WARNING", logger="codelicious.config"):
+            result = _parse_env_float("_TEST_FLOAT_VAR", default=1.5)
+        assert result == 1.5
+        assert any("_TEST_FLOAT_VAR" in r.message for r in caplog.records)
+
+    def test_value_below_min_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A float below min_val logs a warning and returns the default."""
+        from codelicious.config import _parse_env_float
+
+        monkeypatch.setenv("_TEST_FLOAT_VAR", "0.1")
+        with caplog.at_level("WARNING", logger="codelicious.config"):
+            result = _parse_env_float("_TEST_FLOAT_VAR", default=50.0, min_val=1.0)
+        assert result == 50.0
+        assert any("_TEST_FLOAT_VAR" in r.message for r in caplog.records)
+
+    def test_value_at_min_returns_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A float exactly at min_val is accepted and returned."""
+        from codelicious.config import _parse_env_float
+
+        monkeypatch.setenv("_TEST_FLOAT_VAR", "1.0")
+        assert _parse_env_float("_TEST_FLOAT_VAR", default=50.0, min_val=1.0) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Finding 61: build_config() dry_run, stop_on_failure, verbose flags
+# ---------------------------------------------------------------------------
+
+
+class TestBuildConfigBooleanFlags:
+    """Tests that dry_run, stop_on_failure, and verbose CLI flags propagate (Finding 61)."""
+
+    def test_dry_run_true_propagates(self) -> None:
+        """dry_run=True is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(dry_run=True))
+        assert cfg.dry_run is True
+
+    def test_dry_run_false_propagates(self) -> None:
+        """dry_run=False is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(dry_run=False))
+        assert cfg.dry_run is False
+
+    def test_stop_on_failure_true_propagates(self) -> None:
+        """stop_on_failure=True is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(stop_on_failure=True))
+        assert cfg.stop_on_failure is True
+
+    def test_stop_on_failure_false_propagates(self) -> None:
+        """stop_on_failure=False is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(stop_on_failure=False))
+        assert cfg.stop_on_failure is False
+
+    def test_verbose_true_propagates(self) -> None:
+        """verbose=True is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(verbose=True))
+        assert cfg.verbose is True
+
+    def test_verbose_false_propagates(self) -> None:
+        """verbose=False is stored on the resulting Config."""
+        cfg = build_config(_minimal_ns(verbose=False))
+        assert cfg.verbose is False
+
+    def test_all_three_flags_set_together(self) -> None:
+        """dry_run, stop_on_failure, and verbose can all be set True simultaneously."""
+        cfg = build_config(_minimal_ns(dry_run=True, stop_on_failure=True, verbose=True))
+        assert cfg.dry_run is True
+        assert cfg.stop_on_failure is True
+        assert cfg.verbose is True
+
+
+# ---------------------------------------------------------------------------
+# Finding 62: CODELICIOUS_BUILD_MAX_TURNS with invalid string
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMaxTurnsEnvVar:
+    """Tests for CODELICIOUS_BUILD_MAX_TURNS env var handling (Finding 62)."""
+
+    def test_valid_max_turns_env_var_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A valid integer in CODELICIOUS_BUILD_MAX_TURNS is applied to Config.max_turns."""
+        monkeypatch.setenv("CODELICIOUS_BUILD_MAX_TURNS", "25")
+        cfg = build_config(_minimal_ns())
+        assert cfg.max_turns == 25
+
+    def test_invalid_max_turns_raises_value_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An invalid string in CODELICIOUS_BUILD_MAX_TURNS raises ValueError."""
+        monkeypatch.setenv("CODELICIOUS_BUILD_MAX_TURNS", "not-a-number")
+        with pytest.raises(ValueError, match="CODELICIOUS_BUILD_MAX_TURNS"):
+            build_config(_minimal_ns())
+
+    def test_cli_max_turns_overrides_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CLI max_turns takes precedence over CODELICIOUS_BUILD_MAX_TURNS env var."""
+        monkeypatch.setenv("CODELICIOUS_BUILD_MAX_TURNS", "100")
+        cfg = build_config(_minimal_ns(max_turns=5))
+        assert cfg.max_turns == 5
+
+    def test_absent_max_turns_env_var_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When CODELICIOUS_BUILD_MAX_TURNS is absent, Config.max_turns stays at default 0."""
+        monkeypatch.delenv("CODELICIOUS_BUILD_MAX_TURNS", raising=False)
+        cfg = build_config(_minimal_ns())
+        assert cfg.max_turns == 0
+
+
+# ---------------------------------------------------------------------------
+# spec-22 Phase 7: Config repr masks api_key
+# ---------------------------------------------------------------------------
+
+
+class TestConfigRepr:
+    """Config.__repr__ must mask api_key to prevent accidental exposure."""
+
+    def test_repr_masks_api_key_when_set(self) -> None:
+        cfg = Config(api_key="sk-secret-123")
+        r = repr(cfg)
+        assert "sk-secret-123" not in r
+        assert "****" in r
+        assert "api_key='****'" in r
+
+    def test_repr_shows_empty_api_key_when_unset(self) -> None:
+        cfg = Config(api_key="")
+        r = repr(cfg)
+        assert "api_key=''" in r
+        assert "****" not in r
+
+    def test_repr_shows_other_fields_normally(self) -> None:
+        cfg = Config(provider="openai", model="gpt-4o", api_key="secret")
+        r = repr(cfg)
+        assert "provider='openai'" in r
+        assert "model='gpt-4o'" in r
+
+    def test_str_also_masks_api_key(self) -> None:
+        """str(config) uses __repr__ for dataclasses, so it should also mask."""
+        cfg = Config(api_key="my-key")
+        assert "my-key" not in str(cfg)
+
+
+# ---------------------------------------------------------------------------
+# spec-21 Phase 13: _parse_env_bool coverage
+# ---------------------------------------------------------------------------
+
+
+class TestParseEnvBool:
+    """Direct unit tests for _parse_env_bool (spec-21 Phase 13)."""
+
+    def test_true_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """'true', '1', 'yes', 'on' (case-insensitive) must return True."""
+        from codelicious.config import _parse_env_bool
+
+        for val in ("true", "True", "TRUE", "1", "yes", "YES", "on", "ON"):
+            monkeypatch.setenv("_TEST_BOOL", val)
+            assert _parse_env_bool("_TEST_BOOL", default=False) is True, f"Failed for {val!r}"
+
+    def test_false_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """'false', '0', 'no', 'off', and random strings must return False."""
+        from codelicious.config import _parse_env_bool
+
+        for val in ("false", "False", "0", "no", "off", "random", ""):
+            monkeypatch.setenv("_TEST_BOOL", val)
+            assert _parse_env_bool("_TEST_BOOL", default=True) is False, f"Failed for {val!r}"
+
+    def test_absent_returns_default_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the env var is absent, the default is returned."""
+        from codelicious.config import _parse_env_bool
+
+        monkeypatch.delenv("_TEST_BOOL_ABSENT", raising=False)
+        assert _parse_env_bool("_TEST_BOOL_ABSENT", default=True) is True
+
+    def test_absent_returns_default_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the env var is absent and default is False, False is returned."""
+        from codelicious.config import _parse_env_bool
+
+        monkeypatch.delenv("_TEST_BOOL_ABSENT2", raising=False)
+        assert _parse_env_bool("_TEST_BOOL_ABSENT2", default=False) is False

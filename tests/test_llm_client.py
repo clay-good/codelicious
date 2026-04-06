@@ -4,11 +4,14 @@ import io
 import json
 import socket
 import ssl
+from datetime import datetime
 import pytest
 from unittest.mock import patch, call
 import urllib.error
 
-from codelicious.llm_client import LLMClient
+from codelicious.errors import ConfigurationError
+from codelicious.llm_client import LLMClient, _validate_endpoint_url
+from codelicious.logger import _REDACTED
 
 
 class TestLLMClientErrorSanitization:
@@ -223,9 +226,12 @@ class TestLLMClientInitialization:
         assert client.coder_model == "custom-coder"
 
     def test_custom_endpoint(self, monkeypatch):
-        """LLMClient should allow custom endpoint configuration."""
+        """LLMClient should allow custom HTTPS endpoint that resolves to a public IP."""
         monkeypatch.setenv("HF_TOKEN", "hf_test")
-        client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
+        # Mock DNS resolution to return a public IP for the custom endpoint
+        public_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=public_addrinfo):
+            client = LLMClient(endpoint_url="https://custom.api.com/v1/chat")
         assert client.endpoint_url == "https://custom.api.com/v1/chat"
 
     def test_llm_api_key_takes_priority_over_hf_token(self, monkeypatch):
@@ -275,7 +281,7 @@ class TestLLMClientErrorBodySanitization:
 
             # The API key should be redacted in the log
             assert "sk-proj-abc123def456xyz789" not in caplog.text
-            assert "***REDACTED***" in caplog.text
+            assert _REDACTED in caplog.text
 
     def test_error_body_hf_token_redacted_in_logs(self, client, caplog):
         """HuggingFace tokens in error body should be redacted."""
@@ -491,7 +497,7 @@ class TestLLMClientNetworkRetry:
                     def __exit__(self_inner, *a):
                         return False
 
-                    def read(self_inner):
+                    def read(self_inner, size=-1):
                         return json.dumps(success_response).encode("utf-8")
 
                 return _FakeResponse()
@@ -517,3 +523,132 @@ class TestLLMClientNetworkRetry:
             warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
             assert len(warning_records) == client._MAX_RETRIES
             assert all("Transient network error" in r.message for r in warning_records)
+
+
+class TestTimestampFormat:
+    """Tests that ISO-8601 UTC timestamps used across the project are well-formed."""
+
+    def test_utc_timestamp_is_valid_iso_with_utc_offset(self) -> None:
+        """datetime.now(timezone.utc).isoformat() must be parseable and carry a UTC offset.
+
+        The project uses this pattern in ProgressReporter and other event emitters.
+        A weak assertion like ``assert 'T' in ts`` misses malformed or naive timestamps.
+        """
+        from datetime import timezone
+
+        ts = datetime.now(timezone.utc).isoformat()
+
+        # Must be parseable as a valid ISO-8601 datetime — raises ValueError if not.
+        parsed = datetime.fromisoformat(ts)
+
+        # The parsed datetime must carry UTC timezone info (offset == 0).
+        assert parsed.tzinfo is not None, "timestamp must be timezone-aware"
+        assert parsed.utcoffset().total_seconds() == 0, "timestamp must have zero UTC offset"
+
+        # The serialised string must contain the UTC offset marker.
+        assert ts.endswith("+00:00"), f"expected '+00:00' suffix, got: {ts!r}"
+
+
+# ---------------------------------------------------------------------------
+# spec-18 Phase 10: LLM API call timing instrumentation
+# ---------------------------------------------------------------------------
+
+
+class TestLLMTimingInstrumentation:
+    """Tests for LLM API call timing log entries (spec-18 Phase 10)."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.setenv("LLM_API_KEY", "hf_test_key_123")
+        return LLMClient()
+
+    def test_llm_timing_logged(self, client, caplog):
+        """Successful LLM call logs INFO entry with 'completed in'."""
+        import logging
+
+        fake_response = json.dumps({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}).encode()
+
+        mock_resp = io.BytesIO(fake_response)
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        mock_resp.headers = {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            with caplog.at_level(logging.INFO, logger="codelicious.llm"):
+                client.chat_completion([{"role": "user", "content": "test"}])
+
+        assert any("completed in" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-20 Phase 1: SSRF Prevention in LLM Endpoint URL Validation (S20-P1-1)
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointURLValidation:
+    """Tests for _validate_endpoint_url SSRF prevention (S20-P1-1)."""
+
+    def test_rejects_http_scheme(self):
+        """HTTP scheme must be rejected — only HTTPS is permitted."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("http://api.example.com/v1/chat")
+
+    def test_rejects_ftp_scheme(self):
+        """FTP scheme must be rejected."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("ftp://files.example.com/model")
+
+    def test_rejects_file_scheme(self):
+        """file:// scheme must be rejected."""
+        with pytest.raises(ConfigurationError, match="Insecure LLM endpoint scheme"):
+            _validate_endpoint_url("file:///etc/passwd")
+
+    def test_rejects_localhost(self):
+        """HTTPS to localhost must be rejected (loopback IP)."""
+        loopback_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=loopback_addrinfo):
+            with pytest.raises(ConfigurationError, match="loopback"):
+                _validate_endpoint_url("https://localhost/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["10.0.0.1", "10.255.255.255"])
+    def test_rejects_private_10_range(self, ip):
+        """10.0.0.0/8 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["172.16.0.1", "172.31.255.255"])
+    def test_rejects_private_172_range(self, ip):
+        """172.16.0.0/12 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    @pytest.mark.parametrize("ip", ["192.168.0.1", "192.168.255.255"])
+    def test_rejects_private_192_range(self, ip):
+        """192.168.0.0/16 private range must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="private IP"):
+                _validate_endpoint_url(f"https://{ip}/v1/chat")
+
+    def test_accepts_valid_https_endpoint(self):
+        """A valid HTTPS endpoint resolving to a public IP must be accepted."""
+        public_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=public_addrinfo):
+            _validate_endpoint_url("https://api.example.com/v1/chat")
+
+    def test_accepts_allowlisted_endpoint(self):
+        """Known-good HuggingFace Router URLs bypass DNS resolution checks."""
+        # Should succeed without any DNS mock since it's allowlisted
+        _validate_endpoint_url("https://router.huggingface.co/sambanova/v1/chat/completions")
+
+    def test_rejects_link_local(self):
+        """Link-local addresses (169.254.x.x) must be rejected."""
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.1.1", 0))]
+        with patch("codelicious.llm_client.socket.getaddrinfo", return_value=addrinfo):
+            with pytest.raises(ConfigurationError, match="link-local"):
+                _validate_endpoint_url("https://169.254.1.1/v1/chat")

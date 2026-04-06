@@ -1,3 +1,4 @@
+import concurrent.futures
 import logging
 from typing import Any, Callable
 from codelicious.tools.fs_tools import FSTooling
@@ -18,8 +19,14 @@ class ToolCallLimitError(Exception):
 
 
 class ToolRegistry:
-    """
-    Central hub routing LLM JSON payloads to the corresponding native python deterministic tools.
+    """Central hub routing LLM JSON payloads to the corresponding native python deterministic tools.
+
+    Thread-safety note (Finding 30): ``dispatch()`` increments ``_call_count``
+    without a lock.  ToolRegistry.dispatch() is intentionally NOT thread-safe
+    and must only be called from a single thread per instance.  Adding a lock
+    here would introduce unnecessary overhead for the standard single-threaded
+    agent loop.  Callers that need concurrent dispatch must create one
+    ToolRegistry instance per thread.
     """
 
     def __init__(self, repo_path, config: dict, cache_manager: CacheManager):
@@ -43,6 +50,10 @@ class ToolRegistry:
             "semantic_search": self.rag.semantic_search,
         }
 
+    def close(self) -> None:
+        """Release resources held by sub-components (e.g. AuditLogger file handles)."""
+        self.audit.close()
+
     def reset_call_count(self) -> None:
         """Reset the per-iteration tool call counter.
 
@@ -51,6 +62,33 @@ class ToolRegistry:
         """
         self._call_count = 0
         logger.debug("Tool call counter reset (max=%d).", self._max_calls_per_iteration)
+
+    def _validate_tool_params(self, tool_name: str, kwargs: dict) -> None:
+        """Pre-validate tool kwargs against schema before dispatch (spec-18 Phase 9: DP-1)."""
+        schema = self._get_tool_schema(tool_name)
+        if schema is None:
+            return  # Unknown tool — dispatch() handles this separately
+
+        params_schema = schema.get("function", {}).get("parameters", {})
+        required = params_schema.get("required", [])
+        for param in required:
+            if param not in kwargs:
+                from codelicious.errors import ToolValidationError
+
+                raise ToolValidationError(f"Tool '{tool_name}' missing required parameter: {param}")
+
+        known = set(params_schema.get("properties", {}).keys())
+        if known:
+            unknown = set(kwargs.keys()) - known
+            if unknown:
+                logger.warning("Tool '%s' received unknown parameters: %s", tool_name, unknown)
+
+    def _get_tool_schema(self, tool_name: str) -> dict | None:
+        """Look up the schema for a single tool by name."""
+        for tool in self.generate_schema():
+            if tool.get("function", {}).get("name") == tool_name:
+                return tool
+        return None
 
     def dispatch(self, tool_name: str, kwargs: dict) -> dict[str, Any]:
         """
@@ -74,6 +112,9 @@ class ToolRegistry:
         # [AUDIT TRAIL] 1: Log Intent
         self.audit.log_tool_intent(tool_name, kwargs)
 
+        # [PARAM VALIDATION] Pre-validate required params before dispatch (spec-18 Phase 9: DP-1)
+        self._validate_tool_params(tool_name, kwargs)
+
         if tool_name not in self.registry:
             error_msg = f"Tool '{tool_name}' does not exist in registry."
             response = {"success": False, "stdout": "", "stderr": error_msg}
@@ -82,8 +123,16 @@ class ToolRegistry:
 
         try:
             func = self.registry[tool_name]
-            # Assumes kwargs matches the type hints defined exactly in the Prompts
-            response = func(**kwargs)
+            # Per-tool timeout prevents hanging tool calls (spec-18 Phase 6: TE-2)
+            _TOOL_TIMEOUT_S = 60
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(func, **kwargs)
+                try:
+                    response = future.result(timeout=_TOOL_TIMEOUT_S)
+                except concurrent.futures.TimeoutError:
+                    from codelicious.errors import ToolTimeoutError
+
+                    raise ToolTimeoutError(f"Tool '{tool_name}' timed out after {_TOOL_TIMEOUT_S}s")
 
             # [AUDIT TRAIL] 2: Log Result
             self.audit.log_tool_outcome(tool_name, response)

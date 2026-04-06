@@ -100,7 +100,7 @@ def scaffold(project_root: pathlib.Path, dry_run: bool = False) -> None:
                 return
 
             logger.info("Updating managed block in CLAUDE.md")
-            atomic_write_text(claude_md, updated)
+            atomic_write_text(claude_md, updated, project_root=project_root)
             return
 
         if dry_run:
@@ -108,14 +108,14 @@ def scaffold(project_root: pathlib.Path, dry_run: bool = False) -> None:
             return
 
         logger.info("Appending managed block to existing CLAUDE.md")
-        atomic_write_text(claude_md, existing + "\n\n" + _MANAGED_BLOCK)
+        atomic_write_text(claude_md, existing + "\n\n" + _MANAGED_BLOCK, project_root=project_root)
     else:
         if dry_run:
             logger.info("[dry-run] Would create CLAUDE.md with managed block")
             return
 
         logger.info("Creating CLAUDE.md with managed block")
-        atomic_write_text(claude_md, _MANAGED_BLOCK)
+        atomic_write_text(claude_md, _MANAGED_BLOCK, project_root=project_root)
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +546,9 @@ def scaffold_claude_dir(
         # Ensure parent directories exist.
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        atomic_write_text(target, content)
+        # Use restrictive permissions for settings.json (S20-P2-10)
+        file_mode = 0o600 if rel_path.endswith("settings.json") else 0o644
+        atomic_write_text(target, content, mode=file_mode, project_root=project_root)
         logger.info("Wrote %s", rel_path)
         written.append(rel_path)
 

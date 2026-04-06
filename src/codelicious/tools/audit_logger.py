@@ -31,12 +31,15 @@ class AuditFormatter(logging.Formatter):
         self.use_color = use_color
 
     def format(self, record: logging.LogRecord) -> str:
-        # Override the levelname with our custom format
+        # Save and restore levelname so downstream handlers are not corrupted (spec-22 Phase 6)
+        orig_levelname = record.levelname
         if self.use_color and record.levelno in self.COLORS:
             record.levelname = self.COLORS[record.levelno]
         elif record.levelno in self.PLAIN:
             record.levelname = self.PLAIN[record.levelno]
-        return super().format(record)
+        result = super().format(record)
+        record.levelname = orig_levelname
+        return result
 
 
 console_logger = logging.getLogger("codelicious.audit")
@@ -93,6 +96,37 @@ class AuditLogger:
         # Lock that serialises all file writes so concurrent threads cannot
         # interleave entries (Finding 51).
         self._write_lock = threading.Lock()
+        # Keep file handles open for the lifetime of the instance to avoid the
+        # overhead of open/close on every tool call (Finding 18).
+        # buffering=1 enables line-buffered mode so entries are flushed after
+        # each newline without needing explicit flushes.
+        self._audit_fh = open(self.log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        self._security_fh = open(self.security_log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+
+    def close(self) -> None:
+        """Close the persistent file handles.
+
+        Call this when the AuditLogger is no longer needed (e.g. at program
+        exit). After calling close(), further log calls will raise an error.
+        """
+        try:
+            self._audit_fh.close()
+        except Exception:
+            pass
+        try:
+            self._security_fh.close()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        """Best-effort cleanup of file handles on garbage collection."""
+        self.close()
+
+    def __enter__(self) -> "AuditLogger":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def set_iteration(self, iteration: int) -> None:
         """Set the current iteration number for security event logging."""
@@ -106,30 +140,42 @@ class AuditLogger:
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
             with self._write_lock:
-                with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(f"[{timestamp}] [{level}] [{tag}] {message}\n")
+                self._audit_fh.write(f"[{timestamp}] [{level}] [{tag}] {message}\n")
         except Exception as e:
             # Fallback if logging fails, at least print to stdout
             print(f"FATAL: Audit log write failed: {e}")
 
-    def _write_to_security_log(self, event: SecurityEvent, message: str) -> None:
+    def _write_to_security_log(
+        self,
+        event: SecurityEvent,
+        message: str,
+        *,
+        iteration: int | None = None,
+        tool: str | None = None,
+    ) -> None:
         """Write a security event to both audit.log and security.log.
 
         Security log format:
         2026-03-15T15:06:23Z [SECURITY] EVENT_NAME: message (iteration N, tool: tool_name)
+
+        Args:
+            event: The security event type.
+            message: Description of what happened.
+            iteration: Override iteration number. Falls back to _current_iteration.
+            tool: Override tool name. Falls back to _current_tool.
         """
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        context = f"iteration {self._current_iteration}, tool: {self._current_tool or 'unknown'}"
+        iter_val = iteration if iteration is not None else self._current_iteration
+        tool_val = tool if tool is not None else self._current_tool
+        context = f"iteration {iter_val}, tool: {tool_val or 'unknown'}"
         full_message = f"{message} ({context})"
         log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
 
         # Write to both logs under a single lock to keep entries atomic
         try:
             with self._write_lock:
-                with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(log_line)
-                with open(self.security_log_file, "a", encoding="utf-8") as f:
-                    f.write(log_line)
+                self._audit_fh.write(log_line)
+                self._security_fh.write(log_line)
         except Exception as e:
             print(f"FATAL: Security log write failed: {e}")
 
@@ -152,19 +198,9 @@ class AuditLogger:
             iteration: Override the current iteration number (optional).
             tool: Override the current tool name (optional).
         """
-        # Allow overriding iteration and tool for specific events
-        old_iteration = self._current_iteration
-        old_tool = self._current_tool
-        if iteration is not None:
-            self._current_iteration = iteration
-        if tool is not None:
-            self._current_tool = tool
-
-        self._write_to_security_log(event, message)
-
-        # Restore original values
-        self._current_iteration = old_iteration
-        self._current_tool = old_tool
+        # Pass iteration/tool as parameters to avoid thread-unsafe mutation
+        # of shared instance state (Finding 17).
+        self._write_to_security_log(event, message, iteration=iteration, tool=tool)
 
     def log_tool_intent(self, tool_name: str, kwargs: dict):
         """Called immediately when the LLM outputs a tool call JSON, before execution."""

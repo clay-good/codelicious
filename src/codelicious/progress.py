@@ -7,6 +7,7 @@ tooling that wants to monitor build progress.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -15,11 +16,15 @@ import threading
 from datetime import datetime, timezone
 from typing import IO, Any
 
+from codelicious._env import parse_env_int
+
 logger = logging.getLogger("codelicious.progress")
 
 __all__ = ["ProgressReporter"]
 
-_MAX_PROGRESS_BYTES: int = 10 * 1024 * 1024  # 10 MB rotation threshold
+_DEFAULT_MAX_PROGRESS_BYTES: int = 10 * 1024 * 1024  # 10 MB rotation threshold
+
+_MAX_PROGRESS_BYTES: int = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", _DEFAULT_MAX_PROGRESS_BYTES, min_val=1)
 
 
 class ProgressReporter:
@@ -34,6 +39,7 @@ class ProgressReporter:
         self._handle: IO[str] | None = None
         self._lock = threading.Lock()
         self._closed = False
+        atexit.register(self.close)
 
     def emit(self, event_type: str, **kwargs: Any) -> None:
         """Append one JSON event line to the progress file."""
@@ -91,6 +97,14 @@ class ProgressReporter:
                 self._handle.close()
                 self._handle = None
             self._closed = True
+
+    def __del__(self) -> None:
+        try:
+            if not self._closed and self._handle is not None:
+                logger.warning("ProgressReporter was not properly closed; cleaning up in __del__")
+                self.close()
+        except Exception:
+            pass
 
     def __enter__(self) -> "ProgressReporter":
         return self

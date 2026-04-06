@@ -1,6 +1,6 @@
 ---
 version: 1.2.0
-status: Draft
+status: Complete
 related_specs: ["00_master_spec.md", "01_feature_cli_tooling.md"]
 ---
 

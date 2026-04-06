@@ -11,10 +11,13 @@ from unittest import mock
 
 import pytest
 
+from codelicious.git.git_orchestrator import GitManager
 from codelicious.orchestrator import (
     Finding,
     Orchestrator,
     OrchestratorResult,
+    REVIEWER_PROMPTS,
+    ReviewRole,
     _abort_merge,
     _collect_review_findings,
     _commit_worktree_changes,
@@ -54,6 +57,22 @@ class TestTriageFindings:
 
     def test_empty_list(self):
         assert _triage_findings([]) == []
+
+    def test_unknown_severity_sorts_after_p3(self):
+        """Findings with non-standard severity values (P0, UNKNOWN) sort after P3 and are preserved."""
+        findings = [
+            Finding(role="qa", severity="P3", file="a.py", line=1, title="minor", description="", fix=""),
+            Finding(role="sec", severity="UNKNOWN", file="b.py", line=2, title="mystery", description="", fix=""),
+            Finding(role="perf", severity="P0", file="c.py", line=3, title="critical-plus", description="", fix=""),
+        ]
+        result = _triage_findings(findings)
+        # All three findings must be preserved (distinct file+line keys)
+        assert len(result) == 3
+        # P3 sorts before both unknowns (which fall into the default bucket, order=9)
+        assert result[0].severity == "P3"
+        # Both non-standard severities appear after P3
+        unknown_severities = {f.severity for f in result[1:]}
+        assert unknown_severities == {"UNKNOWN", "P0"}
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +120,17 @@ class TestCollectReviewFindings:
         review_file.write_text(json.dumps({"not": "an array"}))
         assert _collect_review_findings(tmp_path, "qa") == []
 
+    def test_permission_error_returns_empty(self, tmp_path: pathlib.Path):
+        """When read_text raises PermissionError (OSError subclass), return []."""
+        review_file = tmp_path / ".codelicious" / "review_security.json"
+        review_file.parent.mkdir(parents=True)
+        review_file.write_text("[]")
+
+        with mock.patch.object(pathlib.Path, "read_text", side_effect=PermissionError("access denied")):
+            result = _collect_review_findings(tmp_path, "security")
+
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # Fix prompt rendering
@@ -139,7 +169,7 @@ class TestOrchestratorRun:
 
     @pytest.fixture
     def mock_git_manager(self):
-        mgr = mock.MagicMock()
+        mgr = mock.MagicMock(spec=GitManager)
         mgr.commit_verified_changes.return_value = None
         mgr.push_to_origin.return_value = True
         mgr.ensure_draft_pr_exists.return_value = None
@@ -163,13 +193,15 @@ class TestOrchestratorRun:
 
         orch = Orchestrator(tmp_path, mock_git_manager, mock_config)
 
-        # Mock _phase_review and _phase_fix to avoid running actual agents
-        with mock.patch.object(orch, "_phase_review", return_value=[]):
-            with mock.patch.object(orch, "_phase_fix", return_value=True):
-                result = orch.run(specs=[spec], reviewers=[], max_build_cycles=5)
+        # Mock _phase_build, _phase_review and _phase_fix to avoid running actual agents
+        with mock.patch.object(orch, "_phase_build", return_value=[]) as mock_build:
+            with mock.patch.object(orch, "_phase_review", return_value=[]):
+                with mock.patch.object(orch, "_phase_fix", return_value=True):
+                    result = orch.run(specs=[spec], reviewers=[], max_build_cycles=5)
 
         assert result.success is True
         assert result.cycles_completed == 0
+        mock_build.assert_not_called()
 
     def test_consecutive_failures_abort(self, tmp_path: pathlib.Path, mock_git_manager, mock_config):
         """3 consecutive build failures cause the loop to abort."""
@@ -260,7 +292,7 @@ class TestPhaseBuildConcurrentCounter:
 
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path):
-        git_manager = mock.MagicMock()
+        git_manager = mock.MagicMock(spec=GitManager)
         git_manager.push_to_origin.return_value = True
 
         class C:
@@ -414,6 +446,32 @@ class TestCommitWorktreeChanges:
             result = _commit_worktree_changes(tmp_path, "spec.md")
         assert result is False
 
+    def test_gpg_fallback_succeeds_returns_true(self, tmp_path: pathlib.Path):
+        """When the first commit fails with a GPG error and the --no-gpg-sign retry succeeds, returns True."""
+        add_ok = mock.MagicMock(returncode=0)
+        diff_dirty = mock.MagicMock(returncode=1)  # 1 = staged changes exist
+        gpg_fail = mock.MagicMock(returncode=1, stderr="gpg: signing failed: secret key not available")
+        unsigned_ok = mock.MagicMock(returncode=0)
+
+        calls = iter([add_ok, diff_dirty, gpg_fail, unsigned_ok])
+
+        with mock.patch("codelicious.orchestrator.subprocess.run", side_effect=lambda *a, **kw: next(calls)):
+            result = _commit_worktree_changes(tmp_path, "spec.md")
+        assert result is True
+
+    def test_gpg_fallback_also_fails_returns_false(self, tmp_path: pathlib.Path):
+        """When both the initial commit and the --no-gpg-sign fallback fail, returns False."""
+        add_ok = mock.MagicMock(returncode=0)
+        diff_dirty = mock.MagicMock(returncode=1)  # 1 = staged changes exist
+        gpg_fail = mock.MagicMock(returncode=1, stderr="gpg: signing failed: secret key not available")
+        unsigned_fail = mock.MagicMock(returncode=1, stderr="error: commit failed")
+
+        calls = iter([add_ok, diff_dirty, gpg_fail, unsigned_fail])
+
+        with mock.patch("codelicious.orchestrator.subprocess.run", side_effect=lambda *a, **kw: next(calls)):
+            result = _commit_worktree_changes(tmp_path, "spec.md")
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # Finding 8 — data-loss guard: commit fails after successful build
@@ -425,7 +483,7 @@ class TestDataLossGuard:
 
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path):
-        git_manager = mock.MagicMock()
+        git_manager = mock.MagicMock(spec=GitManager)
 
         class C:
             model = ""
@@ -577,7 +635,7 @@ class TestOrchestratorRunLoop:
 
     @pytest.fixture
     def mock_git_manager(self):
-        mgr = mock.MagicMock()
+        mgr = mock.MagicMock(spec=GitManager)
         mgr.commit_verified_changes.return_value = None
         mgr.push_to_origin.return_value = True
         mgr.ensure_draft_pr_exists.return_value = None
@@ -640,7 +698,7 @@ class TestSpecNotInWorktreeFallback:
 
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path):
-        git_manager = mock.MagicMock()
+        git_manager = mock.MagicMock(spec=GitManager)
 
         class C:
             model = ""
@@ -788,7 +846,8 @@ class TestPhaseMerge:
 
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
-        git_manager = mock.MagicMock()
+        # Finding 82: use spec=GitManager so attribute access is validated
+        git_manager = mock.MagicMock(spec=GitManager)
 
         class C:
             model = ""
@@ -885,6 +944,73 @@ class TestPhaseReviewParallelPath:
 
 
 # ---------------------------------------------------------------------------
+# Finding 6 — push_pr=True code path
+# ---------------------------------------------------------------------------
+
+
+class TestPushPrPath:
+    """Tests for the push_pr=True branch in Orchestrator.run()."""
+
+    @pytest.fixture
+    def mock_config(self):
+        class C:
+            model = ""
+            effort = ""
+            max_turns = 0
+            agent_timeout_s = 30
+            dry_run = True
+
+        return C()
+
+    def test_push_pr_true_calls_ensure_draft_pr_exists(self, tmp_path: pathlib.Path, mock_config):
+        """When push_pr=True, ensure_draft_pr_exists() is called with spec_id and spec_summary."""
+        from codelicious.git.git_orchestrator import GitManager
+
+        git_manager = mock.MagicMock(spec=GitManager)
+        git_manager.commit_verified_changes.return_value = None
+        git_manager.push_to_origin.return_value = True
+        git_manager.ensure_draft_pr_exists.return_value = None
+
+        spec = tmp_path / "16_test_spec.md"
+        spec.write_text("- [x] already done\n")
+
+        orch = Orchestrator(tmp_path, git_manager, mock_config)
+
+        with mock.patch.object(orch, "_phase_review", return_value=[]):
+            with mock.patch.object(orch, "_phase_fix", return_value=True):
+                orch.run(specs=[spec], reviewers=[], max_build_cycles=5, push_pr=True)
+
+        git_manager.ensure_draft_pr_exists.assert_called_once()
+        call_kwargs = git_manager.ensure_draft_pr_exists.call_args.kwargs
+        assert call_kwargs["spec_id"] == "16"
+        assert "spec_summary" in call_kwargs
+
+    def test_push_pr_true_exception_logs_warning_and_run_returns(self, tmp_path: pathlib.Path, mock_config, caplog):
+        """When ensure_draft_pr_exists() raises, a warning is logged and run() does not crash."""
+        from codelicious.git.git_orchestrator import GitManager
+
+        git_manager = mock.MagicMock(spec=GitManager)
+        git_manager.commit_verified_changes.return_value = None
+        git_manager.push_to_origin.return_value = True
+        git_manager.ensure_draft_pr_exists.side_effect = RuntimeError("gh CLI not found")
+
+        spec = tmp_path / "22_test_spec.md"
+        spec.write_text("- [x] already done\n")
+
+        orch = Orchestrator(tmp_path, git_manager, mock_config)
+
+        with mock.patch.object(orch, "_phase_review", return_value=[]):
+            with mock.patch.object(orch, "_phase_fix", return_value=True):
+                with caplog.at_level("WARNING", logger="codelicious.orchestrator"):
+                    result = orch.run(specs=[spec], reviewers=[], max_build_cycles=5, push_pr=True)
+
+        # run() must return a valid result despite the PR creation failure
+        assert isinstance(result, OrchestratorResult)
+        warning_msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("PR creation" in m or "gh CLI not found" in m for m in warning_msgs)
+
+
+# ---------------------------------------------------------------------------
 # Finding 71 — _phase_fix
 # ---------------------------------------------------------------------------
 
@@ -894,7 +1020,8 @@ class TestPhaseFix:
 
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
-        git_manager = mock.MagicMock()
+        # Finding 82: use spec=GitManager so attribute access is validated
+        git_manager = mock.MagicMock(spec=GitManager)
 
         class C:
             model = ""
@@ -937,3 +1064,234 @@ class TestPhaseFix:
                     result = orch._phase_fix([p1_finding])
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Finding 63 — _create_worktree failure/fallback paths
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWorktreeFailurePaths:
+    """Finding 63: _create_worktree fallback and double-failure paths."""
+
+    def test_fallback_non_zero_raises_runtime_error(self, tmp_path: pathlib.Path):
+        """When both primary add (-b) and fallback add (no -b) return non-zero,
+        RuntimeError is raised."""
+        primary_fail = mock.MagicMock(returncode=1, stderr="fatal: cannot create branch")
+        fallback_fail = mock.MagicMock(returncode=1, stderr="fatal: worktree already exists")
+
+        responses = iter([primary_fail, fallback_fail])
+
+        with mock.patch(
+            "codelicious.orchestrator.subprocess.run",
+            side_effect=lambda *a, **kw: next(responses),
+        ):
+            with pytest.raises(RuntimeError, match="Failed to create worktree"):
+                _create_worktree(tmp_path, "codelicious/my-branch")
+
+    def test_fallback_timeout_raises_runtime_error(self, tmp_path: pathlib.Path):
+        """When the fallback (no -b) worktree add times out, RuntimeError is raised."""
+        primary_fail = mock.MagicMock(returncode=1, stderr="already exists")
+
+        def _fake_run(cmd, **kwargs):
+            if "-b" in cmd:
+                return primary_fail
+            # fallback — no -b
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
+
+        with mock.patch("codelicious.orchestrator.subprocess.run", side_effect=_fake_run):
+            with pytest.raises(RuntimeError, match="Timed out creating worktree"):
+                _create_worktree(tmp_path, "codelicious/my-branch")
+
+    def test_primary_fails_fallback_succeeds_returns_path(self, tmp_path: pathlib.Path):
+        """When the primary (-b) add fails and the fallback succeeds, the worktree path
+        is returned without raising."""
+        primary_fail = mock.MagicMock(returncode=1, stderr="already exists")
+        fallback_ok = mock.MagicMock(returncode=0)
+
+        responses = iter([primary_fail, fallback_ok])
+
+        with mock.patch(
+            "codelicious.orchestrator.subprocess.run",
+            side_effect=lambda *a, **kw: next(responses),
+        ):
+            result = _create_worktree(tmp_path, "codelicious/my-branch")
+
+        expected = tmp_path / ".codelicious" / "worktrees" / "codelicious/my-branch"
+        assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Finding 64 — _delete_branch
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteBranch:
+    """Finding 64: _delete_branch happy path, timeout, and non-zero exit."""
+
+    def test_happy_path_succeeds_silently(self, tmp_path: pathlib.Path):
+        """When git branch -d returns zero, _delete_branch returns without raising."""
+        ok = mock.MagicMock(returncode=0)
+        with mock.patch("codelicious.orchestrator.subprocess.run", return_value=ok):
+            # Should not raise
+            from codelicious.orchestrator import _delete_branch
+
+            _delete_branch(tmp_path, "codelicious/my-branch")
+
+    def test_timeout_logs_warning_and_returns(self, tmp_path: pathlib.Path, caplog):
+        """A timeout on git branch -d logs a warning and does not raise."""
+        from codelicious.orchestrator import _delete_branch
+
+        with mock.patch(
+            "codelicious.orchestrator.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["git", "branch", "-d"], timeout=120),
+        ):
+            with caplog.at_level("WARNING", logger="codelicious.orchestrator"):
+                _delete_branch(tmp_path, "codelicious/timed-out-branch")
+
+        warning_msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("timed out" in m.lower() or "timeout" in m.lower() for m in warning_msgs)
+
+    def test_non_zero_exit_logs_warning_and_returns(self, tmp_path: pathlib.Path, caplog):
+        """A non-zero exit from git branch -d logs a warning and does not raise."""
+        from codelicious.orchestrator import _delete_branch
+
+        fail = mock.MagicMock(returncode=1, stderr="error: branch not fully merged")
+        with mock.patch("codelicious.orchestrator.subprocess.run", return_value=fail):
+            with caplog.at_level("WARNING", logger="codelicious.orchestrator"):
+                _delete_branch(tmp_path, "codelicious/un-merged-branch")
+
+        warning_msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("failed to delete" in m.lower() or "un-merged-branch" in m.lower() for m in warning_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Finding 65 — _phase_build KeyboardInterrupt handling
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseBuildKeyboardInterrupt:
+    """Finding 65: KeyboardInterrupt inside _phase_build shuts the pool down and re-raises."""
+
+    @pytest.fixture
+    def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
+        git_manager = mock.MagicMock()
+        git_manager.push_to_origin.return_value = True
+
+        class C:
+            model = ""
+            effort = ""
+            max_turns = 0
+            agent_timeout_s = 30
+            dry_run = True
+
+        return Orchestrator(tmp_path, git_manager, C())
+
+    def test_keyboard_interrupt_re_raises_and_pool_is_shut_down(self, tmp_path: pathlib.Path, orch: Orchestrator):
+        """When concurrent.futures.as_completed raises KeyboardInterrupt,
+        the exception is re-raised after cancelling pending futures."""
+        spec_a = tmp_path / "spec_a.md"
+        spec_b = tmp_path / "spec_b.md"
+        spec_a.write_text("")
+        spec_b.write_text("")
+
+        with mock.patch(
+            "concurrent.futures.as_completed",
+            side_effect=KeyboardInterrupt,
+        ):
+            with mock.patch.object(orch, "_build_spec_in_worktree", return_value=("branch", True)):
+                with pytest.raises(KeyboardInterrupt):
+                    orch._phase_build([spec_a, spec_b], max_workers=2)
+
+
+# ---------------------------------------------------------------------------
+# Finding 66 — commit_ok=False, success=True data-loss prevention path
+# ---------------------------------------------------------------------------
+
+
+class TestCommitFailureAfterSuccessPreservesWorktree:
+    """Finding 66: when _commit_worktree_changes returns False and the build
+    was successful, the worktree is preserved and success becomes False."""
+
+    @pytest.fixture
+    def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
+        git_manager = mock.MagicMock()
+
+        class C:
+            model = ""
+            effort = ""
+            max_turns = 0
+            agent_timeout_s = 30
+            dry_run = True
+
+        return Orchestrator(tmp_path, git_manager, C())
+
+    def test_commit_false_success_true_sets_success_false_and_preserves_worktree(
+        self, tmp_path: pathlib.Path, orch: Orchestrator, caplog
+    ):
+        """If _commit_worktree_changes returns False after a successful build,
+        success is flipped to False and the worktree is NOT removed."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("- [ ] some task\n")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".codelicious").mkdir()
+        (worktree / ".codelicious" / "BUILD_COMPLETE").write_text("DONE")
+        (worktree / "spec.md").write_text("- [x] some task\n")
+
+        remove_worktree = mock.MagicMock()
+
+        with mock.patch.object(orch, "_run_agent", return_value=mock.MagicMock(success=True)):
+            with mock.patch("codelicious.orchestrator._create_worktree", return_value=worktree):
+                with mock.patch("codelicious.orchestrator._remove_worktree", remove_worktree):
+                    with mock.patch("codelicious.orchestrator._commit_worktree_changes", return_value=False):
+                        with caplog.at_level("ERROR", logger="codelicious.orchestrator"):
+                            _, success = orch._build_spec_in_worktree(spec)
+
+        assert success is False
+        remove_worktree.assert_not_called()
+        error_msgs = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("data loss" in m.lower() or "commit" in m.lower() for m in error_msgs)
+
+
+# ---------------------------------------------------------------------------
+# spec-21 Phase 14: REVIEWER_PROMPTS and ReviewRole coverage
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerPromptsStructure:
+    """Tests for REVIEWER_PROMPTS dict structure (spec-21 Phase 14)."""
+
+    def test_reviewer_prompts_is_dict_with_string_values(self) -> None:
+        """REVIEWER_PROMPTS must be a dict[str, str]."""
+        assert isinstance(REVIEWER_PROMPTS, dict)
+        assert len(REVIEWER_PROMPTS) > 0
+        for key, value in REVIEWER_PROMPTS.items():
+            assert isinstance(key, str), f"Key {key!r} is not a string"
+            assert isinstance(value, str), f"Value for {key!r} is not a string"
+
+    def test_reviewer_prompts_has_security_role(self) -> None:
+        """REVIEWER_PROMPTS must include a 'security' role."""
+        assert "security" in REVIEWER_PROMPTS
+
+    def test_reviewer_prompts_contain_template_vars(self) -> None:
+        """Each prompt must contain the {{project_name}} template variable."""
+        for key, prompt in REVIEWER_PROMPTS.items():
+            assert "{{project_name}}" in prompt, f"Role {key!r} missing {{{{project_name}}}}"
+
+
+class TestReviewRoleDataclass:
+    """Tests for ReviewRole dataclass (spec-21 Phase 14)."""
+
+    def test_review_role_fields(self) -> None:
+        """ReviewRole must have name and prompt fields."""
+        role = ReviewRole(name="security", prompt="Review for vulnerabilities.")
+        assert role.name == "security"
+        assert role.prompt == "Review for vulnerabilities."
+
+    def test_review_role_is_frozen(self) -> None:
+        """ReviewRole must be frozen (immutable)."""
+        role = ReviewRole(name="test", prompt="test prompt")
+        with pytest.raises(AttributeError):
+            role.name = "modified"

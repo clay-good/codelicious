@@ -46,14 +46,39 @@ _REQUIRED_TASK_KEYS: frozenset[str] = frozenset(
 
 DENIED_PATH_SEGMENTS: frozenset[str] = frozenset({".git", ".env", "__pycache__", ".codelicious"})
 
-_INJECTION_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"SYSTEM:", re.IGNORECASE),
-    re.compile(r"IGNORE\s+PREVIOUS", re.IGNORECASE),
-    re.compile(r"\bFORGET\b", re.IGNORECASE),
-    re.compile(r"NEW\s+INSTRUCTIONS", re.IGNORECASE),
-    re.compile(r"\bOVERRIDE\b", re.IGNORECASE),
-    re.compile(r"\bDISREGARD\b", re.IGNORECASE),
+_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("SYSTEM:", re.compile(r"SYSTEM:", re.IGNORECASE)),
+    ("IGNORE PREVIOUS", re.compile(r"IGNORE\s+PREVIOUS", re.IGNORECASE)),
+    ("FORGET", re.compile(r"\bFORGET\b", re.IGNORECASE)),
+    ("NEW INSTRUCTIONS", re.compile(r"NEW\s+INSTRUCTIONS", re.IGNORECASE)),
+    ("OVERRIDE", re.compile(r"\bOVERRIDE\b", re.IGNORECASE)),
+    ("DISREGARD", re.compile(r"\bDISREGARD\b", re.IGNORECASE)),
 ]
+
+_MAX_JSON_SIZE = 5 * 1024 * 1024  # 5 MB
+_MAX_JSON_DEPTH = 50
+
+
+def _check_json_depth(obj: Any, max_depth: int = _MAX_JSON_DEPTH, _current: int = 0) -> None:
+    """Raise ValueError if JSON structure exceeds max nesting depth."""
+    if _current > max_depth:
+        raise ValueError(f"JSON nesting depth exceeds limit of {max_depth}")
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _check_json_depth(v, max_depth, _current + 1)
+    elif isinstance(obj, list):
+        for item in obj:
+            _check_json_depth(item, max_depth, _current + 1)
+
+
+def _safe_json_loads(text: str, max_size: int = _MAX_JSON_SIZE, max_depth: int = _MAX_JSON_DEPTH) -> Any:
+    """Parse JSON with size and depth limits to prevent DoS."""
+    if len(text) > max_size:
+        raise ValueError(f"JSON payload size {len(text)} exceeds limit of {max_size}")
+    data = json.loads(text)
+    _check_json_depth(data, max_depth)
+    return data
+
 
 _SYSTEM_PROMPT: str = """\
 You are a senior software architect. Your job is to decompose a \
@@ -188,22 +213,18 @@ class Task:
 
 
 def _check_injection(spec_text: str) -> None:
-    """Scan for prompt injection patterns and raise if detected.
+    """Reject specs with prompt injection patterns.
 
-    This guard is BLOCKING — the build must not proceed when adversarial
-    patterns are found.  Raises PromptInjectionError with details about
-    which pattern matched and where.
+    Always checks ALL patterns to prevent timing side-channel (REV-P2-5).
     """
     logger.debug("Scanning for injection patterns (%d patterns)", len(_INJECTION_PATTERNS))
-    for pattern in _INJECTION_PATTERNS:
-        match = pattern.search(spec_text)
-        if match:
-            # Find approximate line number for the match
-            line_num = spec_text[: match.start()].count("\n") + 1
-            raise PromptInjectionError(
-                f"Prompt injection detected: '{match.group()}' at line {line_num}. "
-                f"Build rejected — spec contains adversarial content."
-            )
+    matches = []
+    for label, pattern in _INJECTION_PATTERNS:
+        if pattern.search(spec_text):
+            matches.append(label)
+
+    if matches:
+        raise PromptInjectionError(f"Build rejected — spec contains adversarial content: {', '.join(matches)}")
     logger.debug("No injection patterns detected")
 
 
@@ -211,17 +232,9 @@ def classify_intent(spec_text: str, llm_call: Callable[[str, str], str]) -> bool
     """Return True if safe to build, False if rejected.
 
     Uses sampling from the spec to handle large specs - checks beginning,
-    middle, and end sections. Fails CLOSED on network/auth errors (rejects),
-    but fails OPEN on parsing/other errors.
+    middle, and end sections. Fails CLOSED by default on all errors except
+    json.JSONDecodeError (S20-P3-1).
     """
-    from codelicious.errors import (
-        LLMAuthenticationError,
-        LLMClientError,
-        LLMProviderError,
-        LLMRateLimitError,
-        LLMTimeoutError,
-    )
-
     logger.info("Running intent classification on spec (%d chars)", len(spec_text))
 
     # Sample strategy: if short enough, use all; otherwise sample beginning, middle, end
@@ -242,31 +255,26 @@ def classify_intent(spec_text: str, llm_call: Callable[[str, str], str]) -> bool
         len(combined_sample),
     )
 
+    # S20-P3-1: Fail-closed by default.  The only exception that fails OPEN
+    # is json.JSONDecodeError (we got an LLM response but could not parse the
+    # classification).  Every other exception — including KeyError, ValueError,
+    # AttributeError, RuntimeError, and unexpected programming errors — results
+    # in rejecting the spec.  This prevents a broken or compromised classifier
+    # from silently allowing a malicious spec through.
     try:
         response = llm_call(_CLASSIFIER_SYSTEM_PROMPT, combined_sample)
         result = response.strip().upper() != "REJECT"
         logger.info("Intent classification result: %s", "ALLOW" if result else "REJECT")
         return result
-    except (
-        LLMAuthenticationError,
-        LLMRateLimitError,
-        LLMTimeoutError,
-        LLMProviderError,
-        LLMClientError,
-    ) as exc:
-        # Fail CLOSED on network/auth errors - reject the build
-        logger.warning("Intent classifier failed with LLM error, rejecting build: %s", exc)
-        logger.debug("LLM error details: %r", exc)
-        return False
-    except Exception as exc:
-        logger.warning("Intent classifier error: %s", exc)
-        # Fail closed for connection/auth errors
-        if isinstance(exc, (OSError, ConnectionError, TimeoutError)):
-            logger.error("Intent classifier network failure -- rejecting spec as precaution")
-            return False
-        # Fail open for LLM response parsing errors
-        logger.warning("Intent classifier non-network failure, allowing build: %s", exc)
+    except json.JSONDecodeError as exc:
+        # Fail OPEN: we got a response but could not parse it as JSON.
+        # The LLM likely returned plain text — treat as non-rejection.
+        logger.warning("Intent classifier JSON parse error, allowing build: %s", exc)
         return True
+    except Exception as exc:
+        # Fail CLOSED: all other errors → reject the spec as a precaution.
+        logger.error("Intent classifier failed, rejecting build: %s: %s", type(exc).__name__, exc)
+        return False
 
 
 _MAX_TASK_COUNT: int = 100
@@ -442,7 +450,7 @@ def _parse_json_response(response: str) -> list[dict[str, Any]]:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
 
-    data = json.loads(text)
+    data = _safe_json_loads(text)
     if not isinstance(data, list):
         raise ValueError("Response is not a JSON array")
     return data
@@ -617,8 +625,9 @@ def load_plan(project_dir: pathlib.Path) -> list[Task]:
         raise PlanningError(f"Plan file not found: {plan_file}", path=str(plan_file))
 
     try:
-        data = json.loads(plan_file.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        raw = plan_file.read_text(encoding="utf-8")
+        data = _safe_json_loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise PlanningError(f"Invalid plan JSON: {exc}", path=str(plan_file)) from exc
 
     if not isinstance(data, list):

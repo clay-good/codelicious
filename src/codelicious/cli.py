@@ -1,3 +1,5 @@
+import shutil
+import signal
 import sys
 import logging
 import time
@@ -9,9 +11,72 @@ from codelicious.context.cache_engine import CacheManager
 from codelicious.engines import select_engine
 from codelicious.engines.claude_engine import _discover_incomplete_specs, _walk_for_specs, _CHECKED_RE, _UNCHECKED_RE
 
+# Graceful shutdown flag (spec-18 Phase 1: GS-1)
+_shutdown_requested: bool = False
+
+
+def _handle_sigterm(signum: int, frame: object) -> None:
+    """Handle SIGTERM for graceful shutdown in container/orchestrator environments."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    logging.getLogger("codelicious").warning("Received SIGTERM (signal %d), shutting down gracefully", signum)
+    raise SystemExit(143)
+
+
+def _validate_dependencies(engine_name: str) -> str:
+    """Validate external dependencies at startup (spec-18 Phase 4: SV-1, SV-2, SV-3).
+
+    Returns the effective engine name (may change from "auto" to "huggingface"
+    if claude is not found).
+    """
+    _logger = logging.getLogger("codelicious")
+
+    # SV-1: git is always required
+    if shutil.which("git") is None:
+        print("Error: git is required but not found on PATH. Install git and try again.", file=sys.stderr)
+        sys.exit(1)
+
+    # SV-2: claude binary check
+    if engine_name in ("claude", "auto"):
+        if shutil.which("claude") is None:
+            if engine_name == "claude":
+                print(
+                    "Error: claude binary not found on PATH. Install Claude Code CLI and try again.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            else:
+                _logger.info("claude binary not found, falling back to HuggingFace engine")
+                engine_name = "huggingface"
+
+    # SV-3: HF token check
+    if engine_name == "huggingface":
+        import os
+
+        hf_token = os.environ.get("HF_TOKEN", "") or os.environ.get("LLM_API_KEY", "")
+        if not hf_token:
+            print(
+                "Error: HF_TOKEN or LLM_API_KEY environment variable is required for HuggingFace engine.\n"
+                "Get a token at https://huggingface.co/settings/tokens",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not hf_token.startswith("hf_"):
+            _logger.warning("HF_TOKEN does not start with 'hf_' -- this may not be a valid HuggingFace token")
+
+    return engine_name
+
 
 def setup_logger():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    # Attach SanitizingFilter to root logger and each of its handlers to ensure
+    # third-party library secrets are redacted at both the logger and handler level (Finding 44)
+    from codelicious.logger import SanitizingFilter
+
+    root = logging.getLogger()
+    root.addFilter(SanitizingFilter())
+    for handler in logging.root.handlers:
+        handler.addFilter(SanitizingFilter())
     return logging.getLogger("codelicious")
 
 
@@ -212,6 +277,9 @@ def _parse_args(argv: list[str]) -> dict:
 def main():
     logger = setup_logger()
 
+    # Register SIGTERM handler for graceful shutdown (spec-18 Phase 1: GS-1)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     opts = _parse_args(sys.argv)
 
     repo_path = Path(opts["repo_path"]).resolve()
@@ -220,6 +288,9 @@ def main():
         sys.exit(1)
 
     logger.info("Starting Codelicious workflow in %s", repo_path)
+
+    # 0. Validate external dependencies before anything else (spec-18 Phase 4)
+    opts["engine"] = _validate_dependencies(opts["engine"])
 
     # 1. Select build engine
     try:
@@ -294,6 +365,8 @@ def main():
             sys.exit(1)
 
     except KeyboardInterrupt:
+        global _shutdown_requested
+        _shutdown_requested = True
         elapsed = time.monotonic() - build_start
         logger.warning("\nExecution interrupted by user after %.1fs.", elapsed)
         sys.exit(130)
