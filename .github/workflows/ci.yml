@@ -84,5 +84,5 @@ jobs:
         # --strict: fail on warnings in addition to errors
         # CVE-2026-4539: pygments <=2.19.2 ReDoS in AdlLexer — no fix released yet, local-only attack vector
         run: |
-          pip freeze | grep -iv '^codelicious==' > /tmp/audit-requirements.txt
+          pip freeze | grep -iv 'codelicious' > /tmp/audit-requirements.txt
           pip-audit --strict --desc --ignore-vuln CVE-2026-4539 -r /tmp/audit-requirements.txt
