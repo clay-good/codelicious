@@ -6,24 +6,23 @@ from unittest import mock
 
 import pytest
 
+from codelicious.errors import LLMResponseFormatError, LLMResponseTooLargeError
 from codelicious.loop_controller import (
+    _LLM_MAX_CONSECUTIVE_ERRORS,
+    _LLM_MAX_RETRIES,
     MAX_HISTORY_TOKENS,
     MAX_RESPONSE_BYTES,
     BuildLoop,
-    truncate_history,
     parse_json_response,
-    _LLM_MAX_CONSECUTIVE_ERRORS,
-    _LLM_MAX_RETRIES,
+    truncate_history,
 )
-from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_chat_response(content: str = "", tool_calls: list = None) -> dict:
+def _make_chat_response(content: str = "", tool_calls: list | None = None) -> dict:
     """Build a minimal OpenAI-compatible chat completion response dict."""
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:

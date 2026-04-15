@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import warnings  # noqa: F401 — re-exported for convenience
-
 __all__ = [
     "APIKeyMissingError",
     "AgentTimeout",
-    "BuildTimeoutError",
     "BudgetExhaustedError",
+    "BuildTimeoutError",
     "CICheckError",
     "ClaudeAuthError",
     "ClaudeRateLimitError",
+    "CodeliciousError",
     "ConcurrentBuildError",
     "ConfigurationError",
     "ContextBudgetError",
@@ -44,8 +43,6 @@ __all__ = [
     "PlanningError",
     "PolicyViolationError",
     "PromptInjectionError",
-    "PromptInjectionWarning",
-    "CodeliciousError",
     "ReplanningError",
     "SandboxViolationError",
     "SpecFileNotFoundError",
@@ -331,11 +328,4 @@ class PromptInjectionError(CodeliciousError):
     The injection guard is blocking — the build must not proceed when
     adversarial patterns like 'IGNORE PREVIOUS INSTRUCTIONS' or 'SYSTEM:'
     are found in the spec text.
-    """
-
-
-class PromptInjectionWarning(UserWarning):
-    """Warning issued when potential prompt injection is detected.
-
-    .. deprecated:: Use PromptInjectionError instead. Kept for backward compat.
     """

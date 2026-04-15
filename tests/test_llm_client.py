@@ -4,10 +4,11 @@ import io
 import json
 import socket
 import ssl
-from datetime import datetime
-import pytest
-from unittest.mock import patch, call
 import urllib.error
+from datetime import datetime
+from unittest.mock import call, patch
+
+import pytest
 
 from codelicious.errors import ConfigurationError
 from codelicious.llm_client import LLMClient, _validate_endpoint_url
@@ -119,9 +120,8 @@ class TestLLMClientErrorSanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # The full body should appear in debug logs
             assert "secret_acct_999" in caplog.text
@@ -275,9 +275,8 @@ class TestLLMClientErrorBodySanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # The API key should be redacted in the log
             assert "sk-proj-abc123def456xyz789" not in caplog.text
@@ -300,9 +299,8 @@ class TestLLMClientErrorBodySanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # HF token should be redacted
             assert "hf_abcdefghijklmnopqrstuvwxyz1234567890" not in caplog.text
@@ -325,9 +323,8 @@ class TestLLMClientErrorBodySanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # JWT should be redacted
             assert jwt not in caplog.text
@@ -353,9 +350,8 @@ class TestLLMClientErrorBodySanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # All secrets should be redacted
             assert "sk-ant-somekey12345678901234" not in caplog.text
@@ -380,9 +376,8 @@ class TestLLMClientErrorBodySanitization:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = http_error
 
-            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.DEBUG, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # Non-sensitive data should be preserved
             assert "model_not_found" in caplog.text
@@ -416,7 +411,7 @@ class TestLLMClientNetworkRetry:
     def test_socket_timeout_retries_and_raises(self, client):
         """socket.timeout should be retried with exponential backoff."""
         with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
-            mock_urlopen.side_effect = socket.timeout("timed out")
+            mock_urlopen.side_effect = TimeoutError("timed out")
 
             with pytest.raises(RuntimeError) as exc_info:
                 client.chat_completion([{"role": "user", "content": "test"}])
@@ -515,9 +510,8 @@ class TestLLMClientNetworkRetry:
         with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep"):
             mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
 
-            with caplog.at_level(logging.WARNING, logger="codelicious.llm"):
-                with pytest.raises(RuntimeError):
-                    client.chat_completion([{"role": "user", "content": "test"}])
+            with caplog.at_level(logging.WARNING, logger="codelicious.llm"), pytest.raises(RuntimeError):
+                client.chat_completion([{"role": "user", "content": "test"}])
 
             # A warning should appear for each retry attempt
             warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -531,7 +525,7 @@ class TestTimestampFormat:
     def test_utc_timestamp_is_valid_iso_with_utc_offset(self) -> None:
         """datetime.now(timezone.utc).isoformat() must be parseable and carry a UTC offset.
 
-        The project uses this pattern in ProgressReporter and other event emitters.
+        The project uses this pattern in event emitters and audit logging.
         A weak assertion like ``assert 'T' in ts`` misses malformed or naive timestamps.
         """
         from datetime import timezone

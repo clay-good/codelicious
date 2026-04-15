@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codelicious.agent_runner import (
-    FORBIDDEN_CLI_FLAGS,
-    AgentResult,
     _MAX_PROMPT_LENGTH,
     _POLL_INTERVAL_S,
+    FORBIDDEN_CLI_FLAGS,
+    AgentResult,
     _build_agent_command,
     _check_agent_errors,
     _enforce_timeout,
@@ -573,13 +573,13 @@ class TestProcessStreamEvent:
     def test_process_stream_event_tool_use(self) -> None:
         """Assistant event with a tool_use block includes the tool name in display."""
         event = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}}
-        sid, display = _process_stream_event(event)
+        _sid, display = _process_stream_event(event)
         assert "[tool_use: read_file]" in display
 
     def test_process_stream_event_system_init(self) -> None:
         """System init event returns the session_id and empty display text."""
         event = {"type": "system", "subtype": "init", "session_id": "sess-abc-123"}
-        sid, display = _process_stream_event(event)
+        sid, _display = _process_stream_event(event)
         assert sid == "sess-abc-123"
 
     def test_process_stream_event_unknown_type(self) -> None:

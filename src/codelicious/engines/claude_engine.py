@@ -1,193 +1,21 @@
-"""Claude Code CLI build engine.
+"""Claude Code CLI build engine (spec-27 Phase 3.2).
 
-Spawns the `claude` binary as a subprocess, orchestrating the full build
-lifecycle: scaffold → analyze → build → verify → reflect → commit → PR.
-
-Supports continuous mode (``--auto``): repeats the build cycle with fresh
-agent sessions until every spec task is checked off or a hard iteration
-cap is reached.  Token exhaustion and rate limits trigger automatic
-backoff and retry with a new session context.
+Delegates to the ``claude`` binary in headless mode for chunk execution.
+The v2 orchestrator (``V2Orchestrator``) drives the chunk loop — this
+engine only implements ``execute_chunk``, ``verify_chunk``, ``fix_chunk``,
+and a ``run_build_cycle`` that delegates to ``V2Orchestrator``.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
-import re
-import subprocess
 import sys
 import time
 
-from codelicious.engines.base import BuildEngine, BuildResult
+from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
 
 logger = logging.getLogger("codelicious.engines.claude")
-
-# Continuous-mode defaults
-_DEFAULT_MAX_CYCLES = 50  # Hard cap on build→verify cycles
-_DEFAULT_RATE_LIMIT_BACKOFF_S = 65.0  # Wait after rate limit before retry
-_DEFAULT_TOKEN_EXHAUST_BACKOFF_S = 10.0  # Wait after token exhaustion before retry
-_DEFAULT_PARALLEL_WORKERS = 1  # Default: serial execution
-
-# Filename patterns that indicate a spec/task file (case-insensitive match).
-_SPEC_FILENAME_RE = re.compile(
-    r"(^spec[\w\-]*\.md$"  # spec.md, spec-v1.md, spec_foo.md
-    r"|\.spec\.md$"  # foo.spec.md
-    r"|^roadmap\.md$"  # ROADMAP.md
-    r"|^todo\.md$)",  # TODO.md
-    re.IGNORECASE,
-)
-
-# Directories that should never be searched (even if not in .gitignore).
-_SKIP_DIRS: set[str] = {
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "env",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    "dist",
-    "build",
-    "target",
-    ".next",
-    ".nuxt",
-    ".codelicious",
-    ".claude",
-}
-
-_UNCHECKED_RE = re.compile(r"^\s*-\s*\[\s*\]", re.MULTILINE)
-_CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]", re.MULTILINE)
-
-# Characters allowed in spec_filter values (S20-P1-4).
-# Everything else is stripped to prevent prompt injection.
-_SAFE_PATH_RE = re.compile(r"[^a-zA-Z0-9/_.\- ]")
-_MAX_SPEC_FILTER_LEN = 256
-
-
-def _sanitize_spec_filter(value: str) -> str:
-    """Sanitize a spec_filter value to prevent prompt injection (S20-P1-4).
-
-    Strips all characters except alphanumeric, forward slash, hyphen,
-    underscore, period, and space.  Enforces a 256 character limit.
-    """
-    sanitized = _SAFE_PATH_RE.sub("", value)
-    return sanitized[:_MAX_SPEC_FILTER_LEN]
-
-
-def _check_deadline(deadline: float, phase_name: str, max_time: int) -> None:
-    """Raise BuildTimeoutError if the build deadline has passed."""
-    if time.monotonic() > deadline:
-        from codelicious.errors import BuildTimeoutError
-
-        raise BuildTimeoutError(f"Build exceeded {max_time}s deadline before {phase_name} phase")
-
-
-def _git_tracked_files(repo_path: pathlib.Path) -> set[pathlib.Path] | None:
-    """Return the set of tracked files, or None if not a git repo."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        return {(repo_path / f).resolve() for f in result.stdout.split("\0") if f}
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return None
-
-
-def _walk_for_specs(repo_path: pathlib.Path) -> list[pathlib.Path]:
-    """Walk the entire repo tree and return files whose names match spec patterns."""
-    matches: list[pathlib.Path] = []
-    tracked = _git_tracked_files(repo_path)
-
-    for dirpath_str, dirnames, filenames in os.walk(repo_path):
-        # Prune skipped directories in-place
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
-
-        for fname in filenames:
-            if _SPEC_FILENAME_RE.search(fname):
-                full = (pathlib.Path(dirpath_str) / fname).resolve()
-                # If we have git info, only consider tracked files
-                if tracked is not None and full not in tracked:
-                    continue
-                matches.append(full)
-
-    return sorted(matches)
-
-
-def _discover_incomplete_specs(
-    repo_path: pathlib.Path,
-    all_specs: list[pathlib.Path] | None = None,
-) -> list[pathlib.Path]:
-    """Find spec files anywhere in the repo that still need work.
-
-    Walks the entire repository (respecting .gitignore via git ls-files)
-    and matches filenames like spec.md, spec-v1.md, ROADMAP.md, TODO.md,
-    etc.
-
-    A spec is *incomplete* when it has unchecked ``- [ ]`` checkboxes or
-    no checkboxes at all. A spec is *complete* only when every checkbox
-    is checked.
-
-    Parameters
-    ----------
-    repo_path:
-        Root of the repository to scan.
-    all_specs:
-        Optional pre-computed list of spec paths from ``_walk_for_specs``.
-        When provided the repository walk is skipped entirely, avoiding a
-        duplicate filesystem traversal on startup.
-    """
-    if all_specs is None:
-        all_specs = _walk_for_specs(repo_path)
-    incomplete: list[pathlib.Path] = []
-    complete: list[pathlib.Path] = []
-
-    for path in all_specs:
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-            has_unchecked = bool(_UNCHECKED_RE.search(content))
-            has_checked = bool(_CHECKED_RE.search(content))
-
-            if has_unchecked:
-                incomplete.append(path)
-            elif not has_checked:
-                incomplete.append(path)
-            else:
-                complete.append(path)
-        except OSError:
-            pass
-
-    # Log discovery summary
-    total = len(all_specs)
-    if total:
-
-        def rel(p):
-            return p.relative_to(repo_path) if p.is_relative_to(repo_path) else p
-
-        logger.info(
-            "Spec discovery: found %d spec file(s) — %d incomplete, %d complete.",
-            total,
-            len(incomplete),
-            len(complete),
-        )
-        for s in incomplete:
-            logger.info("  [incomplete] %s", rel(s))
-        for s in complete:
-            logger.info("  [complete]   %s", rel(s))
-    else:
-        logger.warning("Spec discovery: no spec files found in %s", repo_path)
-
-    return incomplete
 
 
 class ClaudeCodeEngine(BuildEngine):
@@ -198,288 +26,231 @@ class ClaudeCodeEngine(BuildEngine):
         return "Claude Code CLI"
 
     # ------------------------------------------------------------------
-    # Single-cycle build (the original 6-phase pipeline)
+    # spec-27 Phase 3.2: Chunk-level interface
     # ------------------------------------------------------------------
 
-    def _run_single_cycle(
+    def execute_chunk(
         self,
+        chunk: object,
         repo_path: pathlib.Path,
-        git_manager: object,
-        project_name: str,
-        config: object,
-        session_id: str,
-        spec_filter: str | None,
-        verify_passes: int,
-        reflect: bool,
-        push_pr: bool,
-    ) -> BuildResult:
-        """Execute one scaffold→build→verify→reflect→commit→PR cycle.
+        context: EngineContext,
+    ) -> ChunkResult:
+        """Execute a single work chunk by delegating to Claude Code CLI.
 
-        Returns a BuildResult.  On recoverable errors (rate limit, token
-        exhaustion) the result has ``success=False`` and a message starting
-        with ``"RATE_LIMIT:"`` or ``"TOKEN_EXHAUSTED:"`` so the outer loop
-        can decide whether to retry.
+        Spawns ``claude`` in headless mode with a focused prompt built from
+        the chunk description and repo context.  Collects the list of files
+        modified from ``git diff --name-only`` after the agent completes.
         """
         from codelicious.agent_runner import run_agent
-        from codelicious.scaffolder import scaffold, scaffold_claude_dir
-        from codelicious.prompts import (
-            AGENT_BUILD_SPEC,
-            AGENT_VERIFY,
-            check_build_complete,
-            clear_build_complete,
-            render,
+        from codelicious.errors import AgentTimeout, ClaudeAuthError, ClaudeRateLimitError
+
+        chunk_id = getattr(chunk, "id", "unknown")
+        chunk_title = getattr(chunk, "title", "")
+        chunk_description = getattr(chunk, "description", "")
+        chunk_validation = getattr(chunk, "validation", "")
+
+        # Build the focused prompt
+        previous_work = ""
+        if context.previous_chunks:
+            previous_work = "\n".join(f"- {s}" for s in context.previous_chunks)
+        else:
+            previous_work = "(none — this is the first chunk)"
+
+        prompt = (
+            f"You are working in {repo_path}.\n\n"
+            f"## Spec Context\n{context.spec_content[:3000]}\n\n"
+            f"## Your Task (Chunk {chunk_id})\n{chunk_description}\n\n"
+            f"## Constraints\n"
+            f"- Only modify files relevant to this specific task\n"
+            f"- Run tests after making changes to verify correctness\n"
+            f"- Run linting (ruff check) to ensure code quality\n"
+            f"- Do not modify files outside the scope of this task\n\n"
+            f"## Previous Work\nThese chunks have already been completed:\n{previous_work}\n\n"
+            f"## Validation\nThis task is complete when: {chunk_validation or chunk_title}\n"
         )
-        from codelicious.errors import (
-            AgentTimeout,
-            ClaudeAuthError,
-            ClaudeRateLimitError,
-            CodeliciousError,
-        )
 
-        start = time.monotonic()
+        # Build config for agent_runner
+        class _ChunkConfig:
+            pass
 
-        # Build deadline enforcement (spec-18 Phase 6: TE-1)
-        max_build_time = getattr(config, "agent_timeout_s", 3600)
-        build_deadline = start + max_build_time
-
-        # Extract spec_id from spec_filter for deterministic branch naming (spec-22)
-        spec_id: str | None = None
-        if spec_filter:
-            import re as _re
-
-            _m = _re.match(r"^(\d+)", pathlib.Path(spec_filter).stem)
-            spec_id = _m.group(1) if _m else pathlib.Path(spec_filter).stem
-
-        # Sanitize spec_filter before rendering into any prompt (S20-P1-4)
-        safe_spec_filter = _sanitize_spec_filter(spec_filter) if spec_filter else ""
-
-        _check_deadline(build_deadline, "SCAFFOLD", max_build_time)
-        # ── Phase 1: SCAFFOLD ──────────────────────────────────────
-        logger.info("Phase 1/6: SCAFFOLD — writing CLAUDE.md + .claude/")
-        try:
-            scaffold(repo_path)
-            scaffold_claude_dir(repo_path)
-        except Exception as e:
-            logger.warning("Scaffolding failed (non-fatal): %s", e)
-
-        _check_deadline(build_deadline, "BUILD", max_build_time)
-        # ── Phase 2: BUILD ─────────────────────────────────────────
-        logger.info("Phase 2/6: BUILD — autonomous implementation")
-        clear_build_complete(repo_path)
-
-        build_prompt = render(
-            AGENT_BUILD_SPEC,
-            project_name=project_name,
-            spec_filter=safe_spec_filter
-            or "No specific spec assigned — find the first incomplete spec file in the repo.",
-        )
+        config = _ChunkConfig()
+        config.model = ""
+        config.effort = ""
+        config.max_turns = 50
+        config.agent_timeout_s = max(int(context.deadline - time.monotonic()), 60) if context.deadline else 1800
+        config.dry_run = False
 
         try:
             result = run_agent(
-                prompt=build_prompt,
+                prompt=prompt,
                 project_root=repo_path,
                 config=config,
                 tee_to=sys.stdout,
-                resume_session_id=session_id,
             )
-            session_id = result.session_id or session_id
             logger.info(
-                "BUILD phase complete: success=%s, elapsed=%.1fs",
-                result.success,
-                result.elapsed_s,
+                "Chunk %s agent complete: success=%s, elapsed=%.1fs", chunk_id, result.success, result.elapsed_s
             )
         except AgentTimeout as e:
-            logger.error("BUILD phase timed out: %s", e)
-            return BuildResult(
-                success=False,
-                message=f"Build timed out after {getattr(config, 'agent_timeout_s', '?')}s",
-                session_id=session_id,
-                elapsed_s=time.monotonic() - start,
-            )
+            logger.error("Chunk %s timed out: %s", chunk_id, e)
+            return ChunkResult(success=False, message=f"Chunk timed out: {e}")
         except ClaudeAuthError as e:
-            logger.error("Authentication failed: %s", e)
-            return BuildResult(success=False, message=str(e), session_id=session_id, elapsed_s=time.monotonic() - start)
+            logger.error("Auth failed during chunk %s: %s", chunk_id, e)
+            return ChunkResult(success=False, message=str(e))
         except ClaudeRateLimitError as e:
-            logger.warning("Rate limited during BUILD: %s", e)
-            return BuildResult(
-                success=False,
-                message=f"RATE_LIMIT:{e.retry_after_s}",
-                session_id=session_id,
-                elapsed_s=time.monotonic() - start,
-            )
-        except CodeliciousError as e:
-            # Detect token exhaustion from Claude CLI error messages
-            msg_lower = str(e).lower()
-            if "token" in msg_lower and ("limit" in msg_lower or "exhaust" in msg_lower or "exceed" in msg_lower):
-                logger.warning("Token exhaustion detected: %s", e)
-                return BuildResult(
-                    success=False,
-                    message="TOKEN_EXHAUSTED:",
-                    session_id=session_id,
-                    elapsed_s=time.monotonic() - start,
-                )
-            raise
-
-        _check_deadline(build_deadline, "VERIFY", max_build_time)
-        # ── Phase 3: VERIFY ────────────────────────────────────────
-        verified_green = False
-        for verify_pass in range(1, verify_passes + 1):
-            logger.info("Phase 3/6: VERIFY — pass %d/%d", verify_pass, verify_passes)
-            try:
-                from codelicious.verifier import verify
-
-                vresult = verify(repo_path)
-                if vresult.all_passed:
-                    logger.info("Verification passed (all checks green).")
-                    verified_green = True
-                    break
-                failed = [c for c in vresult.checks if not c.passed]
-                logger.warning(
-                    "Verification failed: %s",
-                    ", ".join(f"{c.name}: {c.message}" for c in failed),
-                )
-                fix_prompt = render(
-                    AGENT_VERIFY,
-                    project_name=project_name,
-                    verify_pass=str(verify_pass),
-                    max_verify_passes=str(verify_passes),
-                )
-                try:
-                    run_agent(
-                        prompt=fix_prompt,
-                        project_root=repo_path,
-                        config=config,
-                        tee_to=sys.stdout,
-                        resume_session_id=session_id,
-                    )
-                except Exception as e:
-                    logger.warning("Verify-fix agent failed: %s", e)
-            except ImportError:
-                logger.debug("Verifier not available, skipping deterministic checks.")
-                break
-            except Exception as e:
-                logger.warning("Verification error: %s", e)
-                break
-
-        _check_deadline(build_deadline, "REFLECT", max_build_time)
-        # ── Phase 4: REFLECT (optional) ────────────────────────────
-        if reflect:
-            logger.info("Phase 4/6: REFLECT — quality review (read-only)")
-            try:
-                from codelicious.prompts import AGENT_REFLECT
-
-                reflect_prompt = render(AGENT_REFLECT, project_name=project_name)
-                run_agent(
-                    prompt=reflect_prompt,
-                    project_root=repo_path,
-                    config=config,
-                    tee_to=sys.stdout,
-                    resume_session_id=session_id,
-                )
-            except Exception as e:
-                logger.warning("Reflect phase failed (non-fatal): %s", e)
-        else:
-            logger.info("Phase 4/6: REFLECT — skipped (--no-reflect)")
-
-        _check_deadline(build_deadline, "GIT COMMIT", max_build_time)
-        # ── Phase 5: GIT COMMIT + PUSH ─────────────────────────────
-        logger.info("Phase 5/6: GIT — committing and pushing changes")
-        commit_prefix = f"[spec-{spec_id}] " if spec_id else ""
-        try:
-            git_manager.commit_verified_changes(
-                commit_message=f"{commit_prefix}codelicious: build {project_name} from specs"
-            )
-            git_manager.push_to_origin()
-            logger.info("Changes committed and pushed.")
+            logger.warning("Rate limited during chunk %s: %s", chunk_id, e)
+            return ChunkResult(success=False, message=f"Rate limited: {e}")
         except Exception as e:
-            logger.warning("Git commit/push failed: %s", e)
+            logger.error("Chunk %s failed: %s", chunk_id, e)
+            return ChunkResult(success=False, message=str(e))
 
-        _check_deadline(build_deadline, "PR", max_build_time)
-        # ── Phase 6: PR (ensure exactly one exists) ────────────────
-        if push_pr:
-            logger.info("Phase 6/6: PR — ensuring draft PR exists for branch")
-            try:
-                git_manager.ensure_draft_pr_exists(
-                    spec_id=spec_id or "",
-                    spec_summary=f"build {project_name}",
-                )
-                logger.info("PR ensured.")
-                # Transition to ready-for-review only when verification passed (spec-22 Phase 4)
-                if verified_green:
-                    logger.info("Verification green — transitioning PR to ready-for-review.")
-                    git_manager.transition_pr_to_review(spec_id=spec_id or "")
-            except Exception as e:
-                logger.warning("PR creation/transition failed: %s", e)
-        else:
-            logger.info("Phase 6/6: PR — skipped (use --push-pr to enable)")
+        # Collect modified files from git
+        import subprocess
 
-        elapsed = time.monotonic() - start
-        build_complete = check_build_complete(repo_path)
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            staged_result = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            # Untracked files the agent may have created
+            untracked_result = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            all_names = set()
+            for r in (diff_result, staged_result, untracked_result):
+                if r.returncode == 0 and r.stdout.strip():
+                    all_names.update(r.stdout.strip().splitlines())
 
-        return BuildResult(
-            success=build_complete,
-            message=f"Build cycle complete in {elapsed:.1f}s",
-            session_id=session_id,
-            elapsed_s=elapsed,
+            files_modified = [pathlib.Path(f) for f in sorted(all_names) if f]
+        except Exception as e:
+            logger.warning("Could not collect modified files: %s", e)
+            files_modified = []
+
+        return ChunkResult(
+            success=result.success,
+            files_modified=files_modified,
+            message=f"Chunk {chunk_id} complete" if result.success else f"Chunk {chunk_id} agent failed",
+        )
+
+    def verify_chunk(
+        self,
+        chunk: object,
+        repo_path: pathlib.Path,
+    ) -> ChunkResult:
+        """Run verification checks (lint, test, security) on the repo.
+
+        Uses the existing ``verifier.verify()`` function to run all
+        applicable checks and returns the result as a ``ChunkResult``.
+        """
+        chunk_id = getattr(chunk, "id", "unknown")
+
+        try:
+            from codelicious.verifier import verify
+
+            vresult = verify(repo_path)
+            if vresult.all_passed:
+                logger.info("Verification passed for chunk %s.", chunk_id)
+                return ChunkResult(success=True, message="All checks passed.")
+
+            failed = [c for c in vresult.checks if not c.passed]
+            failure_details = "; ".join(f"{c.name}: {c.message}" for c in failed)
+            logger.warning("Verification failed for chunk %s: %s", chunk_id, failure_details)
+            return ChunkResult(success=False, message=failure_details)
+
+        except ImportError:
+            logger.debug("Verifier not available, treating as passed.")
+            return ChunkResult(success=True, message="Verifier not available — skipped.")
+        except Exception as e:
+            logger.warning("Verification error for chunk %s: %s", chunk_id, e)
+            return ChunkResult(success=False, message=str(e))
+
+    def fix_chunk(
+        self,
+        chunk: object,
+        repo_path: pathlib.Path,
+        failures: list[str],
+    ) -> ChunkResult:
+        """Spawn a Claude agent to fix verification failures.
+
+        Gives the agent the failure messages and asks it to fix them.
+        """
+        from codelicious.agent_runner import run_agent
+        from codelicious.errors import AgentTimeout
+
+        chunk_id = getattr(chunk, "id", "unknown")
+
+        failure_text = "\n".join(f"- {f}" for f in failures)
+        prompt = (
+            f"You are working in {repo_path}.\n\n"
+            f"## Fix Verification Failures (Chunk {chunk_id})\n\n"
+            f"The following verification checks failed after your changes:\n\n"
+            f"{failure_text}\n\n"
+            f"Please fix these issues. Run tests and linting after your fixes "
+            f"to confirm they pass.\n"
+        )
+
+        class _FixConfig:
+            pass
+
+        config = _FixConfig()
+        config.model = ""
+        config.effort = ""
+        config.max_turns = 30
+        config.agent_timeout_s = 600
+        config.dry_run = False
+
+        try:
+            result = run_agent(
+                prompt=prompt,
+                project_root=repo_path,
+                config=config,
+                tee_to=sys.stdout,
+            )
+        except (AgentTimeout, Exception) as e:
+            logger.warning("Fix agent for chunk %s failed: %s", chunk_id, e)
+            return ChunkResult(success=False, message=str(e), retries_used=1)
+
+        # Collect modified files
+        import subprocess
+
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            files = (
+                [pathlib.Path(f) for f in diff_result.stdout.strip().splitlines() if f]
+                if diff_result.returncode == 0
+                else []
+            )
+        except Exception:
+            files = []
+
+        return ChunkResult(
+            success=result.success,
+            files_modified=files,
+            message=f"Fix attempt for chunk {chunk_id}",
+            retries_used=1,
         )
 
     # ------------------------------------------------------------------
-    # Parallel execution
-    # ------------------------------------------------------------------
-
-    def _run_parallel_cycle(
-        self,
-        repo_path: pathlib.Path,
-        git_manager: object,
-        project_name: str,
-        config: object,
-        verify_passes: int,
-        reflect: bool,
-        push_pr: bool,
-        max_workers: int,
-    ) -> list[BuildResult]:
-        """Discover incomplete specs and run them serially with spec focus.
-
-        Each spec gets its own agent session (no session sharing) and is
-        told to only build tasks from its assigned spec file.
-
-        Note: This method does NOT use worktree isolation (unlike the
-        orchestrator). Running agents in parallel against the same repo
-        causes data races. Specs are run serially to avoid conflicts.
-        Use orchestrate mode for true parallel builds with isolation.
-        """
-        specs = _discover_incomplete_specs(repo_path)
-
-        if not specs:
-            return [BuildResult(success=True, message="No incomplete specs found.")]
-
-        if max_workers > 1 and len(specs) > 1:
-            logger.warning(
-                "PARALLEL mode without orchestrator runs specs serially to avoid "
-                "data races. Use orchestrate=True for parallel builds with worktree isolation."
-            )
-
-        results: list[BuildResult] = []
-        for spec in specs:
-            logger.info("Building spec: %s", spec.name)
-            result = self._run_single_cycle(
-                repo_path=repo_path,
-                git_manager=git_manager,
-                project_name=project_name,
-                config=config,
-                session_id="",
-                spec_filter=str(spec),
-                verify_passes=verify_passes,
-                reflect=reflect,
-                push_pr=push_pr,
-            )
-            logger.info("Spec %s: success=%s", spec.name, result.success)
-            results.append(result)
-
-        return results
-
-    # ------------------------------------------------------------------
-    # Public entry point
+    # Legacy interface — delegates to V2Orchestrator
     # ------------------------------------------------------------------
 
     def run_build_cycle(
@@ -490,254 +261,35 @@ class ClaudeCodeEngine(BuildEngine):
         spec_filter: str | None = None,
         **kwargs,
     ) -> BuildResult:
-        """Run the Claude Code build lifecycle.
+        """Run the build lifecycle by delegating to V2Orchestrator.
 
-        In single-shot mode (default) this behaves identically to before:
-        one scaffold→build→verify→reflect→commit→PR pass.
-
-        In continuous mode (``auto_mode=True``), the cycle repeats with
-        fresh agent sessions until all spec tasks are complete or the
-        iteration cap is reached.  Rate limits and token exhaustion
-        trigger automatic backoff and retry.
+        This method exists for backward compatibility with the ``BuildEngine``
+        interface.  The ``cli.py`` main entry point now calls ``V2Orchestrator``
+        directly, so this path is only used if an external caller invokes the
+        engine directly.
         """
+        from codelicious.orchestrator import V2Orchestrator
+        from codelicious.spec_discovery import discover_incomplete_specs
+
         start = time.monotonic()
         repo_path = pathlib.Path(repo_path).resolve()
-        build_deadline = start + kwargs.get("agent_timeout_s", 3600)
-
-        # Extract config kwargs
-        model = kwargs.get("model", "")
         agent_timeout_s = kwargs.get("agent_timeout_s", 1800)
-        verify_passes = kwargs.get("verify_passes", 3)
-        reflect = kwargs.get("reflect", True)
         push_pr = kwargs.get("push_pr", False)
-        resume_session_id = kwargs.get("resume_session_id", "")
-        dry_run = kwargs.get("dry_run", False)
-        effort = kwargs.get("effort", "")
-        max_turns = kwargs.get("max_turns", 0)
-        auto_mode = kwargs.get("auto_mode", False)
-        max_cycles = kwargs.get("max_cycles", _DEFAULT_MAX_CYCLES)
-        parallel = kwargs.get("parallel", _DEFAULT_PARALLEL_WORKERS)
-        orchestrate = kwargs.get("orchestrate", False)
-        reviewers_str = kwargs.get("reviewers", "")
-        build_workers = kwargs.get("build_workers", 3)
-        review_workers = kwargs.get("review_workers", 4)
+        max_commits_per_pr = kwargs.get("max_commits_per_pr", 50)
 
-        allow_dangerous = kwargs.get("allow_dangerous", False)
+        specs = discover_incomplete_specs(repo_path)
+        if not specs:
+            return BuildResult(success=True, message="No incomplete specs found.", elapsed_s=time.monotonic() - start)
 
-        # Build a simple config object for agent_runner
-        class _AgentConfig:
-            pass
-
-        config = _AgentConfig()
-        config.model = model
-        config.effort = effort
-        config.max_turns = max_turns
-        config.agent_timeout_s = agent_timeout_s
-        config.dry_run = dry_run
-        config.allow_dangerous = allow_dangerous
-
-        project_name = repo_path.name
-        session_id = resume_session_id
-
-        # ── Orchestrate mode: phase-based pipeline ────────────────
-        if orchestrate:
-            from codelicious.orchestrator import Orchestrator
-            from codelicious.prompts import clear_build_complete
-
-            # Clear stale BUILD_COMPLETE from previous runs so we
-            # actually re-scan for incomplete specs.
-            clear_build_complete(repo_path)
-
-            specs = _discover_incomplete_specs(repo_path)
-            if not specs:
-                return BuildResult(
-                    success=True,
-                    message="No incomplete specs found.",
-                    elapsed_s=time.monotonic() - start,
-                )
-
-            reviewer_roles: list[str] | None = None
-            if reviewers_str:
-                reviewer_roles = [r.strip() for r in reviewers_str.split(",") if r.strip()]
-
-            orch = Orchestrator(repo_path, git_manager, config)
-            orch_result = orch.run(
-                specs=specs,
-                reviewers=reviewer_roles,
-                max_build_workers=build_workers,
-                max_review_workers=review_workers,
-                max_build_cycles=max_cycles,
-                push_pr=push_pr,
-            )
-
-            return BuildResult(
-                success=orch_result.success,
-                message=orch_result.message,
-                elapsed_s=orch_result.elapsed_s,
-            )
-
-        if not auto_mode:
-            # ── Single-shot mode (original behavior) ──────────────
-            return self._run_single_cycle(
-                repo_path=repo_path,
-                git_manager=git_manager,
-                project_name=project_name,
-                config=config,
-                session_id=session_id,
-                spec_filter=spec_filter,
-                verify_passes=verify_passes,
-                reflect=reflect,
-                push_pr=push_pr,
-            )
-
-        # ── Continuous mode: loop until all specs are done ────────
-        from codelicious.prompts import check_build_complete, scan_remaining_tasks
-
-        use_parallel = parallel > 1
-        logger.info(
-            "CONTINUOUS MODE: max_cycles=%d, parallel=%d, until all specs complete.",
-            max_cycles,
-            parallel,
+        orch = V2Orchestrator(repo_path, git_manager, self, max_commits_per_pr=max_commits_per_pr)
+        result = orch.run(
+            specs=specs,
+            deadline=start + agent_timeout_s,
+            push_pr=push_pr,
         )
 
-        consecutive_failures = 0
-        max_consecutive_failures = 5
-        last_result: BuildResult | None = None
-
-        for cycle in range(1, max_cycles + 1):
-            _check_deadline(build_deadline, f"cycle {cycle}", kwargs.get("agent_timeout_s", 3600))
-            logger.info("═══ Continuous cycle %d/%d ═══", cycle, max_cycles)
-
-            if use_parallel and not spec_filter:
-                # Parallel mode: discover specs and fan out
-                parallel_results = self._run_parallel_cycle(
-                    repo_path=repo_path,
-                    git_manager=git_manager,
-                    project_name=project_name,
-                    config=config,
-                    verify_passes=verify_passes,
-                    reflect=reflect,
-                    push_pr=push_pr,
-                    max_workers=parallel,
-                )
-                # Aggregate: success if any worker succeeded
-                any_success = any(r.success for r in parallel_results)
-                cycle_result = BuildResult(
-                    success=any_success,
-                    message=f"Parallel cycle: {sum(r.success for r in parallel_results)}/{len(parallel_results)} succeeded",
-                    session_id="",
-                    elapsed_s=max((r.elapsed_s for r in parallel_results), default=0.0),
-                )
-                # Check for rate limit / token exhaustion in any result
-                for r in parallel_results:
-                    if r.message.startswith("RATE_LIMIT:") or r.message.startswith("TOKEN_EXHAUSTED:"):
-                        cycle_result = r
-                        break
-            else:
-                # Serial mode
-                cycle_session = session_id if cycle == 1 else ""
-                cycle_result = self._run_single_cycle(
-                    repo_path=repo_path,
-                    git_manager=git_manager,
-                    project_name=project_name,
-                    config=config,
-                    session_id=cycle_session,
-                    spec_filter=spec_filter,
-                    verify_passes=verify_passes,
-                    reflect=reflect,
-                    push_pr=push_pr,
-                )
-
-            last_result = cycle_result
-
-            # Track the latest session for logging
-            if cycle_result.session_id:
-                session_id = cycle_result.session_id
-
-            # Handle recoverable errors with backoff
-            if not cycle_result.success and cycle_result.message.startswith("RATE_LIMIT:"):
-                try:
-                    backoff = float(cycle_result.message.split(":")[1])
-                except (IndexError, ValueError):
-                    backoff = _DEFAULT_RATE_LIMIT_BACKOFF_S
-                # S21-P2-2: Clamp backoff to prevent adversarial sleep durations
-                backoff = min(max(backoff, 1.0), 300.0)
-                logger.warning("Rate limited — backing off %.0fs before retry...", backoff)
-                time.sleep(backoff)
-                # Don't count rate limits as consecutive failures
-                continue
-
-            if not cycle_result.success and cycle_result.message.startswith("TOKEN_EXHAUSTED:"):
-                logger.warning(
-                    "Token exhaustion — starting fresh session after %.0fs backoff...",
-                    _DEFAULT_TOKEN_EXHAUST_BACKOFF_S,
-                )
-                time.sleep(_DEFAULT_TOKEN_EXHAUST_BACKOFF_S)
-                session_id = ""  # Force fresh session
-                # Don't count token exhaustion as failure — it just means the task was big
-                continue
-
-            # Check for completion via two signals:
-            # 1. Agent wrote BUILD_COMPLETE with "DONE"
-            # 2. No unchecked "- [ ]" items remain in spec files
-            remaining = scan_remaining_tasks(repo_path)
-            agent_done = check_build_complete(repo_path)
-
-            if agent_done and remaining == 0:
-                logger.info(
-                    "All specs complete after %d cycle(s) (%.1fs total).",
-                    cycle,
-                    time.monotonic() - start,
-                )
-                return BuildResult(
-                    success=True,
-                    message=f"All specs complete after {cycle} cycle(s) in {time.monotonic() - start:.1f}s",
-                    session_id=session_id,
-                    elapsed_s=time.monotonic() - start,
-                )
-
-            if agent_done and remaining > 0:
-                logger.info(
-                    "Agent signaled DONE but %d unchecked tasks remain. Continuing...",
-                    remaining,
-                )
-            elif remaining == 0 and cycle_result.success:
-                logger.info(
-                    "All tasks checked off (no BUILD_COMPLETE file). Treating as complete.",
-                )
-                return BuildResult(
-                    success=True,
-                    message=f"All tasks complete after {cycle} cycle(s) in {time.monotonic() - start:.1f}s",
-                    session_id=session_id,
-                    elapsed_s=time.monotonic() - start,
-                )
-
-            # Track consecutive hard failures
-            if not cycle_result.success:
-                consecutive_failures += 1
-                logger.warning(
-                    "Cycle %d failed (%d/%d consecutive): %s",
-                    cycle,
-                    consecutive_failures,
-                    max_consecutive_failures,
-                    cycle_result.message,
-                )
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.error("Aborting: %d consecutive failures.", consecutive_failures)
-                    break
-            else:
-                consecutive_failures = 0
-                logger.info(
-                    "Cycle %d succeeded but more work remains. Continuing...",
-                    cycle,
-                )
-
-        # Loop exhausted or too many failures
-        elapsed = time.monotonic() - start
-        final_msg = last_result.message if last_result else "No cycles completed"
         return BuildResult(
-            success=False,
-            message=f"Continuous mode ended after {elapsed:.1f}s: {final_msg}",
-            session_id=session_id,
-            elapsed_s=elapsed,
+            success=result.success,
+            message=result.message,
+            elapsed_s=result.elapsed_s,
         )

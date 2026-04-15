@@ -6,52 +6,8 @@ import pathlib
 
 import pytest
 
-from codelicious.errors import FileReadError, SandboxViolationError
-from codelicious.executor import _normalize_file_path
+from codelicious.errors import FileReadError
 from codelicious.verifier import _strip_string_literals
-
-
-# -- EC-1: executor.py _normalize_file_path rejects triple-dot and UNC paths --
-
-
-class TestNormalizeFilePathEdgeCases:
-    """Verify triple-dot and UNC path rejection."""
-
-    def test_rejects_triple_dot_component(self) -> None:
-        """Path component '...' (three dots) should be rejected."""
-        with pytest.raises(SandboxViolationError, match="not allowed"):
-            _normalize_file_path("src/.../main.py")
-
-    def test_rejects_quad_dot_component(self) -> None:
-        """Path component '....' (four dots) should also be rejected."""
-        with pytest.raises(SandboxViolationError, match="not allowed"):
-            _normalize_file_path("src/..../main.py")
-
-    def test_rejects_unc_path_forward_slashes(self) -> None:
-        """UNC paths starting with // should be rejected."""
-        with pytest.raises(SandboxViolationError, match="UNC"):
-            _normalize_file_path("//server/share/file.py")
-
-    def test_rejects_unc_path_backslashes(self) -> None:
-        r"""UNC paths starting with \\ should be rejected."""
-        with pytest.raises(SandboxViolationError, match="UNC"):
-            _normalize_file_path("\\\\server\\share\\file.py")
-
-    def test_allows_single_dot_component(self) -> None:
-        """Single dot is fine (stripped by normalization)."""
-        result = _normalize_file_path("./src/main.py")
-        assert result == "src/main.py"
-
-    def test_allows_dotfile_names(self) -> None:
-        """Dotfiles like .gitignore should not be rejected."""
-        result = _normalize_file_path(".gitignore")
-        assert result == ".gitignore"
-
-    def test_allows_ellipsis_in_filename(self) -> None:
-        """Triple dots as part of a filename (not a standalone component) are OK."""
-        result = _normalize_file_path("src/data...csv")
-        assert result == "src/data...csv"
-
 
 # -- EC-2: context_manager.py estimate_tokens docstring accuracy ----------------
 

@@ -1,8 +1,0 @@
-[
-  {"name": "scaffold", "status": "success", "duration_s": 0.3, "error": null},
-  {"name": "build", "status": "success", "duration_s": 45.2, "error": null},
-  {"name": "verify", "status": "success", "duration_s": 12.8, "error": null},
-  {"name": "reflect", "status": "skipped", "duration_s": 0.0, "error": null},
-  {"name": "git_commit", "status": "success", "duration_s": 1.1, "error": null},
-  {"name": "pr_create", "status": "success", "duration_s": 2.4, "error": null}
-]

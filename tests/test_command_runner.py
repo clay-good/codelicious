@@ -1,13 +1,14 @@
 """Tests for command_runner.py security enforcement."""
 
 import signal
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
 from codelicious.tools.command_runner import CommandRunner
-from codelicious.security_constants import DENIED_COMMANDS, BLOCKED_METACHARACTERS
 
 
 @pytest.fixture

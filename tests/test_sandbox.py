@@ -3,6 +3,7 @@
 import logging
 import os
 import pathlib
+import threading
 import unittest.mock
 
 import pytest
@@ -780,3 +781,101 @@ def test_read_file_post_read_toctou_logs_warning_on_escape(
                 sb.read_file("log_test.py")
 
     assert any("TOCTOU" in r.message or "escapes" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# spec-15 Phase 9: Concurrent write safety tests
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentWriteSafety:
+    """Verify sandbox thread safety under concurrent access (spec-15 Phase 9)."""
+
+    def test_concurrent_writes_different_paths(self, tmp_path):
+        """4 threads writing to 4 different .py files must all succeed."""
+        sb = Sandbox(project_dir=tmp_path)
+        errors: list[Exception] = []
+
+        def writer(idx: int) -> None:
+            try:
+                sb.write_file(f"file_{idx}.py", f"# content from thread {idx}")
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Unexpected errors: {errors}"
+        for i in range(4):
+            path = tmp_path / f"file_{i}.py"
+            assert path.exists(), f"file_{i}.py was not written"
+            assert f"thread {i}" in path.read_text()
+
+    def test_concurrent_writes_same_path(self, tmp_path):
+        """4 threads writing to the same .py file must not corrupt it."""
+        sb = Sandbox(project_dir=tmp_path)
+        errors: list[Exception] = []
+
+        def writer(idx: int) -> None:
+            try:
+                sb.write_file("shared.py", f"# content from thread {idx}\n")
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Unexpected errors: {errors}"
+        content = (tmp_path / "shared.py").read_text()
+        # Content should be from one of the 4 threads (atomic replace), not partial
+        assert content.startswith("# content from thread ")
+
+    def test_concurrent_file_count_limit(self, tmp_path):
+        """File count limit is enforced globally across concurrent writes."""
+        sb = Sandbox(project_dir=tmp_path, max_file_count=10)
+        results: list[tuple[int, bool]] = []
+        lock = threading.Lock()
+
+        def writer(idx: int) -> None:
+            success = True
+            try:
+                sb.write_file(f"file_{idx}.py", f"# thread {idx}")
+            except FileCountLimitError:
+                success = False
+            with lock:
+                results.append((idx, success))
+
+        # 4 threads, each tries to write 5 files = 20 total, limit is 10
+        threads = []
+        counter = [0]
+        counter_lock = threading.Lock()
+
+        def batch_writer(thread_id: int) -> None:
+            for j in range(5):
+                with counter_lock:
+                    idx = counter[0]
+                    counter[0] += 1
+                success = True
+                try:
+                    sb.write_file(f"file_{idx}.py", f"# thread {thread_id} item {j}")
+                except FileCountLimitError:
+                    success = False
+                with lock:
+                    results.append((idx, success))
+
+        threads = [threading.Thread(target=batch_writer, args=(t,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        succeeded = sum(1 for _, ok in results if ok)
+        failed = sum(1 for _, ok in results if not ok)
+        assert succeeded == 10, f"Expected 10 successes, got {succeeded}"
+        assert failed == 10, f"Expected 10 failures, got {failed}"

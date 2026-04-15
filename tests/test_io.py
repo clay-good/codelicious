@@ -11,7 +11,6 @@ import pytest
 
 from codelicious._io import atomic_write_text
 
-
 # ---------------------------------------------------------------------------
 # Basic write behaviour
 # ---------------------------------------------------------------------------
@@ -80,9 +79,8 @@ def test_atomic_write_cleans_up_on_error(tmp_path: pathlib.Path) -> None:
     generic_error = OSError("generic failure")
     generic_error.errno = errno.EIO  # not EXDEV
 
-    with patch("os.replace", side_effect=generic_error):
-        with pytest.raises(OSError, match="generic failure"):
-            atomic_write_text(target, "content")
+    with patch("os.replace", side_effect=generic_error), pytest.raises(OSError, match="generic failure"):
+        atomic_write_text(target, "content")
 
     # No .tmp file should linger in the directory
     tmp_files = list(tmp_path.glob("*.tmp"))
@@ -103,10 +101,8 @@ def test_atomic_write_cross_filesystem_fallback(tmp_path: pathlib.Path) -> None:
 
     # Patch os.chmod as well because shutil.move is mocked (file never appears
     # at target), so the subsequent os.chmod call would raise FileNotFoundError.
-    with patch("os.replace", side_effect=exdev_error):
-        with patch("shutil.move") as mock_move:
-            with patch("os.chmod"):
-                atomic_write_text(target, "content")
+    with patch("os.replace", side_effect=exdev_error), patch("shutil.move") as mock_move, patch("os.chmod"):
+        atomic_write_text(target, "content")
 
     # shutil.move must have been called exactly once
     assert mock_move.call_count == 1

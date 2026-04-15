@@ -1,11 +1,13 @@
 import concurrent.futures
 import logging
-from typing import Any, Callable
-from codelicious.tools.fs_tools import FSTooling
-from codelicious.tools.command_runner import CommandRunner
-from codelicious.tools.audit_logger import AuditLogger
+from collections.abc import Callable
+from typing import Any
+
 from codelicious.context.cache_engine import CacheManager
 from codelicious.context.rag_engine import RagEngine
+from codelicious.tools.audit_logger import AuditLogger
+from codelicious.tools.command_runner import CommandRunner
+from codelicious.tools.fs_tools import FSTooling
 
 logger = logging.getLogger("codelicious.tools.registry")
 
@@ -129,10 +131,10 @@ class ToolRegistry:
                 future = pool.submit(func, **kwargs)
                 try:
                     response = future.result(timeout=_TOOL_TIMEOUT_S)
-                except concurrent.futures.TimeoutError:
+                except concurrent.futures.TimeoutError as exc:
                     from codelicious.errors import ToolTimeoutError
 
-                    raise ToolTimeoutError(f"Tool '{tool_name}' timed out after {_TOOL_TIMEOUT_S}s")
+                    raise ToolTimeoutError(f"Tool '{tool_name}' timed out after {_TOOL_TIMEOUT_S}s") from exc
 
             # [AUDIT TRAIL] 2: Log Result
             self.audit.log_tool_outcome(tool_name, response)
@@ -164,13 +166,16 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Reads the text content of a file within the sandbox.",
+                    "description": (
+                        "Read the text content of a file. Use this to understand existing code "
+                        'before making changes. Example: read_file({"rel_path": "src/main.py"})'
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "rel_path": {
                                 "type": "string",
-                                "description": "The relative path to the file to read.",
+                                "description": "Relative path to the file, e.g. 'src/main.py' or 'tests/test_app.py'.",
                             }
                         },
                         "required": ["rel_path"],
@@ -181,13 +186,17 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "write_file",
-                    "description": "Atomically writes content to a file. Used to generate or modify code.",
+                    "description": (
+                        "Create or overwrite a file with the given content. The write is atomic "
+                        "(safe against partial writes). Always provide the COMPLETE file content. "
+                        'Example: write_file({"rel_path": "src/utils.py", "content": "def helper():\\n    return 42\\n"})'
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "rel_path": {
                                 "type": "string",
-                                "description": "The relative path to write the file to.",
+                                "description": "Relative path for the file, e.g. 'src/utils.py'.",
                             },
                             "content": {
                                 "type": "string",
@@ -202,13 +211,16 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "list_directory",
-                    "description": "Lists the directory structure safely. Identifies specs and repos.",
+                    "description": (
+                        "List files and subdirectories at the given path. Use this to explore "
+                        'the project structure. Example: list_directory({"rel_path": "src"})'
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "rel_path": {
                                 "type": "string",
-                                "description": "The relative path of the directory. Defaults to '.' (root).",
+                                "description": "Relative directory path. Use '.' for the project root.",
                             }
                         },
                     },
@@ -218,13 +230,17 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "run_command",
-                    "description": "Executes an allowlisted terminal command (e.g., tests, linters).",
+                    "description": (
+                        "Run a shell command such as tests or linters. Do NOT run git or gh commands. "
+                        'Examples: run_command({"command": "pytest tests/"}) or '
+                        'run_command({"command": "ruff check src/"})'
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "command": {
                                 "type": "string",
-                                "description": "The shell command to run (must be configured in allowlist).",
+                                "description": "The shell command to execute, e.g. 'pytest', 'ruff check src/'.",
                             }
                         },
                         "required": ["command"],
@@ -235,13 +251,17 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "semantic_search",
-                    "description": "Performs a vector database similarity search to instantly find relevant codebase context. Use this instead of guessing file paths.",
+                    "description": (
+                        "Search the codebase by meaning to find relevant files and functions. "
+                        "Use this instead of guessing file paths. "
+                        'Example: semantic_search({"query": "authentication middleware"})'
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "The natural language query describing the architecture or logic you need to locate (e.g., 'authentication middleware flow').",
+                                "description": "Natural language query, e.g. 'user authentication flow' or 'database connection setup'.",
                             }
                         },
                         "required": ["query"],

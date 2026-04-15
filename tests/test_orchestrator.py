@@ -13,10 +13,10 @@ import pytest
 
 from codelicious.git.git_orchestrator import GitManager
 from codelicious.orchestrator import (
+    REVIEWER_PROMPTS,
     Finding,
     Orchestrator,
     OrchestratorResult,
-    REVIEWER_PROMPTS,
     ReviewRole,
     _abort_merge,
     _collect_review_findings,
@@ -26,7 +26,6 @@ from codelicious.orchestrator import (
     _render_fix_prompt,
     _triage_findings,
 )
-
 
 # ---------------------------------------------------------------------------
 # Finding triage
@@ -171,7 +170,7 @@ class TestOrchestratorRun:
     def mock_git_manager(self):
         mgr = mock.MagicMock(spec=GitManager)
         mgr.commit_verified_changes.return_value = None
-        mgr.push_to_origin.return_value = True
+        mgr.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
         mgr.ensure_draft_pr_exists.return_value = None
         return mgr
 
@@ -257,7 +256,7 @@ class TestOrchestratorRun:
                         # Copy spec into worktree
                         (wt / "spec.md").write_text("- [ ] not built\n")
 
-                        branch, success = orch._build_spec_in_worktree(spec)
+                        _, success = orch._build_spec_in_worktree(spec)
 
         # Agent exited ok, but no BUILD_COMPLETE → should be False
         assert success is False
@@ -293,7 +292,7 @@ class TestPhaseBuildConcurrentCounter:
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path):
         git_manager = mock.MagicMock(spec=GitManager)
-        git_manager.push_to_origin.return_value = True
+        git_manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
 
         class C:
             model = ""
@@ -576,12 +575,14 @@ class TestAbortMerge:
 
     def test_timeout_logs_critical_dirty_state(self, tmp_path: pathlib.Path, caplog):
         """A timeout on git merge --abort logs a CRITICAL warning about dirty state."""
-        with mock.patch(
-            "codelicious.orchestrator.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="git merge", timeout=30),
+        with (
+            mock.patch(
+                "codelicious.orchestrator.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="git merge", timeout=30),
+            ),
+            caplog.at_level("CRITICAL", logger="codelicious.orchestrator"),
         ):
-            with caplog.at_level("CRITICAL", logger="codelicious.orchestrator"):
-                _abort_merge(tmp_path)
+            _abort_merge(tmp_path)
 
         assert any("dirty state" in r.message.lower() for r in caplog.records)
 
@@ -614,12 +615,14 @@ class TestMergeWorktreeBranch:
 
     def test_timeout_calls_abort_and_returns_false(self, tmp_path: pathlib.Path):
         """A timeout on git merge calls _abort_merge and returns False."""
-        with mock.patch(
-            "codelicious.orchestrator.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="git merge", timeout=120),
+        with (
+            mock.patch(
+                "codelicious.orchestrator.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="git merge", timeout=120),
+            ),
+            mock.patch("codelicious.orchestrator._abort_merge") as mock_abort,
         ):
-            with mock.patch("codelicious.orchestrator._abort_merge") as mock_abort:
-                result = _merge_worktree_branch(tmp_path, "codelicious/feat")
+            result = _merge_worktree_branch(tmp_path, "codelicious/feat")
 
         assert result is False
         mock_abort.assert_called_once_with(tmp_path)
@@ -637,7 +640,7 @@ class TestOrchestratorRunLoop:
     def mock_git_manager(self):
         mgr = mock.MagicMock(spec=GitManager)
         mgr.commit_verified_changes.return_value = None
-        mgr.push_to_origin.return_value = True
+        mgr.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
         mgr.ensure_draft_pr_exists.return_value = None
         return mgr
 
@@ -788,7 +791,7 @@ class TestPhaseBuildParallelErrorPath:
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
         git_manager = mock.MagicMock()
-        git_manager.push_to_origin.return_value = True
+        git_manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
 
         class C:
             model = ""
@@ -968,7 +971,7 @@ class TestPushPrPath:
 
         git_manager = mock.MagicMock(spec=GitManager)
         git_manager.commit_verified_changes.return_value = None
-        git_manager.push_to_origin.return_value = True
+        git_manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
         git_manager.ensure_draft_pr_exists.return_value = None
 
         spec = tmp_path / "16_test_spec.md"
@@ -991,7 +994,7 @@ class TestPushPrPath:
 
         git_manager = mock.MagicMock(spec=GitManager)
         git_manager.commit_verified_changes.return_value = None
-        git_manager.push_to_origin.return_value = True
+        git_manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
         git_manager.ensure_draft_pr_exists.side_effect = RuntimeError("gh CLI not found")
 
         spec = tmp_path / "22_test_spec.md"
@@ -1082,12 +1085,14 @@ class TestCreateWorktreeFailurePaths:
 
         responses = iter([primary_fail, fallback_fail])
 
-        with mock.patch(
-            "codelicious.orchestrator.subprocess.run",
-            side_effect=lambda *a, **kw: next(responses),
+        with (
+            mock.patch(
+                "codelicious.orchestrator.subprocess.run",
+                side_effect=lambda *a, **kw: next(responses),
+            ),
+            pytest.raises(RuntimeError, match="Failed to create worktree"),
         ):
-            with pytest.raises(RuntimeError, match="Failed to create worktree"):
-                _create_worktree(tmp_path, "codelicious/my-branch")
+            _create_worktree(tmp_path, "codelicious/my-branch")
 
     def test_fallback_timeout_raises_runtime_error(self, tmp_path: pathlib.Path):
         """When the fallback (no -b) worktree add times out, RuntimeError is raised."""
@@ -1142,12 +1147,14 @@ class TestDeleteBranch:
         """A timeout on git branch -d logs a warning and does not raise."""
         from codelicious.orchestrator import _delete_branch
 
-        with mock.patch(
-            "codelicious.orchestrator.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "branch", "-d"], timeout=120),
+        with (
+            mock.patch(
+                "codelicious.orchestrator.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "branch", "-d"], timeout=120),
+            ),
+            caplog.at_level("WARNING", logger="codelicious.orchestrator"),
         ):
-            with caplog.at_level("WARNING", logger="codelicious.orchestrator"):
-                _delete_branch(tmp_path, "codelicious/timed-out-branch")
+            _delete_branch(tmp_path, "codelicious/timed-out-branch")
 
         warning_msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
         assert any("timed out" in m.lower() or "timeout" in m.lower() for m in warning_msgs)
@@ -1176,7 +1183,7 @@ class TestPhaseBuildKeyboardInterrupt:
     @pytest.fixture
     def orch(self, tmp_path: pathlib.Path) -> Orchestrator:
         git_manager = mock.MagicMock()
-        git_manager.push_to_origin.return_value = True
+        git_manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
 
         class C:
             model = ""
@@ -1195,13 +1202,15 @@ class TestPhaseBuildKeyboardInterrupt:
         spec_a.write_text("")
         spec_b.write_text("")
 
-        with mock.patch(
-            "concurrent.futures.as_completed",
-            side_effect=KeyboardInterrupt,
+        with (
+            mock.patch(
+                "concurrent.futures.as_completed",
+                side_effect=KeyboardInterrupt,
+            ),
+            mock.patch.object(orch, "_build_spec_in_worktree", return_value=("branch", True)),
         ):
-            with mock.patch.object(orch, "_build_spec_in_worktree", return_value=("branch", True)):
-                with pytest.raises(KeyboardInterrupt):
-                    orch._phase_build([spec_a, spec_b], max_workers=2)
+            with pytest.raises(KeyboardInterrupt):
+                orch._phase_build([spec_a, spec_b], max_workers=2)
 
 
 # ---------------------------------------------------------------------------

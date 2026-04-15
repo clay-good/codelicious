@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import pathlib
 import tempfile
@@ -11,54 +10,6 @@ import unittest.mock
 import pytest
 
 from codelicious._io import atomic_write_text
-from codelicious.progress import ProgressReporter
-
-
-# -- RC-1: ProgressReporter.__del__ logs warning when not properly closed ----
-
-
-class TestProgressReporterDel:
-    """Verify __del__ logs a warning if the reporter was not closed."""
-
-    def test_del_logs_warning_when_not_closed(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
-        """__del__ should log a WARNING when close() was never called."""
-        log_path = tmp_path / "progress.jsonl"
-        reporter = ProgressReporter(log_path=log_path)
-        reporter.emit("test_event")  # open the file handle
-
-        # Ensure the handle is open
-        assert reporter._handle is not None
-
-        # Call __del__ without calling close() first
-        with caplog.at_level(logging.WARNING, logger="codelicious.progress"):
-            reporter.__del__()
-
-        assert any("not properly closed" in record.message for record in caplog.records)
-        # Verify it actually closed the handle
-        assert reporter._closed
-
-    def test_del_no_warning_when_already_closed(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
-        """__del__ should NOT log a warning when close() was already called."""
-        log_path = tmp_path / "progress.jsonl"
-        reporter = ProgressReporter(log_path=log_path)
-        reporter.emit("test_event")
-        reporter.close()
-
-        with caplog.at_level(logging.WARNING, logger="codelicious.progress"):
-            reporter.__del__()
-
-        assert not any("not properly closed" in record.message for record in caplog.records)
-
-    def test_del_no_warning_for_none_path(self, caplog: pytest.LogCaptureFixture) -> None:
-        """__del__ should NOT warn for a reporter that never opened a file."""
-        reporter = ProgressReporter(log_path=None)
-        reporter.emit("noop_event")  # no-op since path is None
-
-        with caplog.at_level(logging.WARNING, logger="codelicious.progress"):
-            reporter.__del__()
-
-        assert not any("not properly closed" in record.message for record in caplog.records)
-
 
 # -- RC-2: _io.py atomic_write_text cleans up fd on fdopen failure ----------
 
@@ -123,12 +74,14 @@ class TestSandboxTmpNameInit:
         sb = Sandbox(tmp_path)
         (tmp_path / "test.py").write_text("# placeholder", encoding="utf-8")
 
-        with unittest.mock.patch(
-            "codelicious.sandbox.tempfile.NamedTemporaryFile",
-            side_effect=OSError("mock tempfile failure"),
+        with (
+            unittest.mock.patch(
+                "codelicious.sandbox.tempfile.NamedTemporaryFile",
+                side_effect=OSError("mock tempfile failure"),
+            ),
+            pytest.raises(OSError, match="mock tempfile failure"),
         ):
-            with pytest.raises(OSError, match="mock tempfile failure"):
-                sb.write_file("test.py", "new content")
+            sb.write_file("test.py", "new content")
 
     def test_write_file_succeeds_normally(self, tmp_path: pathlib.Path) -> None:
         """Baseline: write_file works end-to-end when no errors occur."""

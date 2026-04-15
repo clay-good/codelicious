@@ -11,7 +11,6 @@ from codelicious.context_manager import (
     build_fix_prompt,
     build_task_prompt,
     estimate_tokens,
-    truncate_to_tokens,
 )
 from codelicious.errors import ContextBudgetError
 
@@ -57,28 +56,6 @@ def test_available_tokens_default() -> None:
 def test_available_tokens_with_system() -> None:
     b = ContextBudget(max_tokens=50_000, response_reservation=2000, system_prompt_tokens=1000)
     assert b.available_tokens == 50_000 - 2000 - 1000
-
-
-# -- truncate_to_tokens ----------------------------------------------------
-
-
-def test_truncate_under_limit() -> None:
-    text = "short text"
-    assert truncate_to_tokens(text, 1000) == text
-
-
-def test_truncate_over_limit() -> None:
-    text = "x" * 1000
-    result = truncate_to_tokens(text, 10)
-    # max_chars = 10 * 4 = 40
-    assert len(result) < len(text)
-    assert result.endswith("[truncated]")
-
-
-def test_truncate_exact_limit() -> None:
-    text = "a" * 40  # 10 tokens * 4 chars
-    result = truncate_to_tokens(text, 10)
-    assert result == text  # exactly at limit, no truncation
 
 
 # -- build_task_prompt -----------------------------------------------------
@@ -371,7 +348,7 @@ def test_build_task_prompt_truncates_large_file_content() -> None:
     budget = ContextBudget(max_tokens=200, response_reservation=0)
     large_content = "x" * 10_000  # Way more than 100 tokens
 
-    sys_prompt, user_prompt = build_task_prompt(
+    _, user_prompt = build_task_prompt(
         task=task,
         existing_file_contents={"src/big.py": large_content},
         completed_tasks=[],

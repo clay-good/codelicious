@@ -33,13 +33,11 @@ from codelicious.planner import (
     _validate_no_circular_dependencies,
     _validate_task_count,
     _validate_unique_task_ids,
-    analyze_spec_drift,
     classify_intent,
     create_plan,
     load_plan,
     replan,
 )
-
 
 # ---------------------------------------------------------------------------
 # Tests for Task.from_dict validation logic (Finding 68)
@@ -430,7 +428,7 @@ class TestValidateFilePathsDeniedSegments:
     def test_denied_segments_constant_has_expected_values(self) -> None:
         """Verify DENIED_PATH_SEGMENTS contains exactly the expected values."""
         expected = frozenset({".git", ".env", "__pycache__", ".codelicious"})
-        assert DENIED_PATH_SEGMENTS == expected
+        assert expected == DENIED_PATH_SEGMENTS
 
 
 # ---------------------------------------------------------------------------
@@ -1089,49 +1087,6 @@ class TestLoadPlan:
         plan_file.write_text(json.dumps({}), encoding="utf-8")
         with pytest.raises(PlanningError, match="does not contain a JSON array"):
             load_plan(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Finding 62 — analyze_spec_drift() tests
-# ---------------------------------------------------------------------------
-
-
-class TestAnalyzeSpecDrift:
-    """Tests for analyze_spec_drift()."""
-
-    def test_empty_summaries_returns_original_spec(self) -> None:
-        """When failure_summaries is empty, the original spec is returned unchanged."""
-        original = "## Build a REST API\n\nAdd endpoints for CRUD."
-        llm_call = MagicMock()
-        result = analyze_spec_drift(original, [], llm_call)
-        assert result == original
-        llm_call.assert_not_called()
-
-    def test_mock_llm_call_returns_revised_spec(self) -> None:
-        """When llm_call returns a revised spec, that revised spec is returned."""
-        original = "## Build a REST API\n\nAdd endpoints for CRUD."
-        revised = "## Build a REST API\n\nAdd GET /items and POST /items endpoints."
-        summaries = ["Task 2 failed: endpoint returned 404"]
-        llm_call = MagicMock(return_value=revised)
-        result = analyze_spec_drift(original, summaries, llm_call)
-        assert result == revised
-        llm_call.assert_called_once()
-
-    def test_llm_call_exception_returns_original_spec(self) -> None:
-        """When llm_call raises any exception, the original spec is returned (fail safe)."""
-        original = "## Build a REST API\n\nAdd endpoints for CRUD."
-        summaries = ["Task 1 failed: import error"]
-        llm_call = MagicMock(side_effect=RuntimeError("LLM unavailable"))
-        result = analyze_spec_drift(original, summaries, llm_call)
-        assert result == original
-
-    def test_llm_returns_empty_string_falls_back_to_original(self) -> None:
-        """When llm_call returns an empty/whitespace response, original spec is returned."""
-        original = "## Build a REST API\n\nAdd endpoints for CRUD."
-        summaries = ["Task 1 failed"]
-        llm_call = MagicMock(return_value="   ")
-        result = analyze_spec_drift(original, summaries, llm_call)
-        assert result == original
 
 
 # ---------------------------------------------------------------------------

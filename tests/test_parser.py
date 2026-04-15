@@ -223,7 +223,7 @@ def test_crlf_line_endings_parsed_correctly(tmp_path: pathlib.Path) -> None:
     sections_crlf = parse_spec(f_crlf)
 
     assert len(sections_lf) == len(sections_crlf)
-    for s_lf, s_crlf in zip(sections_lf, sections_crlf):
+    for s_lf, s_crlf in zip(sections_lf, sections_crlf, strict=True):
         assert s_lf.title == s_crlf.title
         assert s_lf.body == s_crlf.body
         assert s_lf.level == s_crlf.level

@@ -1,5 +1,9 @@
 # Codelicious
 
+[![CI](https://github.com/clay-good/codelicious/actions/workflows/ci.yml/badge.svg)](https://github.com/clay-good/codelicious/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **Outcome as a Service.** Write specs. Run `codelicious /path/to/repo`. Get a green, review-ready Pull Request.
 
 Codelicious is a headless, autonomous developer CLI that transforms markdown specifications into production-ready Pull Requests with zero human intervention. It orchestrates a dual-engine architecture powered by Claude Code and HuggingFace (DeepSeek for reasoning, Qwen for coding).
@@ -13,11 +17,10 @@ Spec -> Code -> Test -> Commit -> PR
 ## Quick Start
 
 ```bash
-# 1. Clone and install (includes dev tools: pytest, ruff, bandit, pip-audit)
+# 1. Clone and install
 git clone https://github.com/clay-good/codelicious.git
 cd codelicious
 pip install -e ".[dev]"
-# Or minimal install without dev tools: pip install -e .
 
 # 2. Run against your repo
 codelicious /path/to/your/repo
@@ -39,7 +42,7 @@ codelicious /path/to/your/repo --engine huggingface
 ```bash
 pip install -e ".[dev]"    # Install with dev dependencies (pytest, ruff, bandit, pip-audit, pre-commit)
 pre-commit install          # Set up pre-commit hooks (ruff lint, ruff format, bandit)
-pytest                      # Run tests
+pytest                      # Run tests (~1,900 tests)
 ruff check src/ tests/      # Lint
 bandit -r src/              # Security scan
 pip-audit                   # Dependency vulnerability check
@@ -49,7 +52,7 @@ pip-audit                   # Dependency vulnerability check
 
 ## How Git, Commits, and PRs Work
 
-This is the part you need to understand. Codelicious works **inside a git repo you provide**. Here's the full workflow:
+Codelicious works **inside a git repo you provide**. Here's the full workflow:
 
 ### Prerequisites
 
@@ -68,67 +71,33 @@ cd /path/to/your/repo
 git checkout main
 git pull origin main
 
-# 3. Run codelicious with --push-pr to get the full pipeline
-codelicious /path/to/your/repo --push-pr
+# 3. Run codelicious to get the full pipeline
+codelicious /path/to/your/repo
 ```
 
 **What happens automatically:**
 
-1. Codelicious detects you're on `main` and creates a deterministic feature branch per spec: `codelicious/spec-{N}` (derived from the spec filename, e.g., `codelicious/spec-16` for `16_reliability_test_coverage_v1.md`)
+1. Codelicious creates a deterministic feature branch per spec: `codelicious/spec-{N}`
 2. It reads your specs from `docs/specs/*.md`
 3. It implements the code, runs tests, verifies
-4. It commits changes to the spec branch with a `[spec-{N}]` prefix in the commit message
-5. With `--push-pr`, it pushes the branch and creates exactly **one Draft PR** per spec, titled `[spec-{N}] <summary>`. If a PR already exists for that spec, commits are appended to it.
-6. When all verification passes, the Python orchestrator marks the PR as **Ready for Review**
-7. The LLM agent handles code, tests, commits, and push. The orchestrator handles all PR creation and lifecycle transitions.
-
-### Manual Git Push (if you skip --push-pr)
-
-If you run without `--push-pr`, codelicious still commits locally but does NOT push. You handle it:
-
-```bash
-# After codelicious finishes:
-cd /path/to/your/repo
-git log --oneline -5           # See what codelicious committed
-git push -u origin HEAD        # Push the feature branch
-
-# Create the PR yourself:
-gh pr create --title "feat: autonomous implementation" --body "Built by Codelicious"
-# Or for GitLab:
-glab mr create --title "feat: autonomous implementation" --description "Built by Codelicious"
-```
+4. It commits changes with a `[spec-{N}]` prefix in the commit message
+5. It pushes and creates exactly **one Draft PR** per spec
+6. When all verification passes, the PR is marked **Ready for Review**
 
 ### Spec-as-PR Lifecycle
 
 Each spec maps to exactly one branch and one PR:
 
 - **Branch naming:** `codelicious/spec-{N}` (derived from spec filename)
-- **PR naming:** `[spec-{N}] <summary>` (one PR per spec, deduplicated by title prefix)
+- **PR naming:** `[spec-{N}] <summary>`
 - **Re-runs:** Append commits to the same branch and PR
-- **Orchestrator-managed:** The Python orchestrator handles all PR creation and lifecycle transitions. The LLM agent is responsible for code, tests, commits, and push only.
-
-### Recommended Workflow for Iterative Builds
-
-```bash
-# First run — builds and creates draft PR per spec
-codelicious /path/to/your/repo --push-pr
-
-# Subsequent runs — appends commits to the same branch/PR
-codelicious /path/to/your/repo --push-pr
-
-# When you're happy, the PR is already open — just review and merge
-```
-
-### Summary of Commands
+- **Idempotent:** Safe to run multiple times
 
 | Step | Command | When |
 |------|---------|------|
 | Install | `pip install -e .` | Once |
-| Build + auto PR | `codelicious /path/to/repo --push-pr` | Each build cycle |
-| Build only (no push) | `codelicious /path/to/repo` | When you want to review locally first |
-| Push manually | `git push -u origin HEAD` | After a no-push build |
-| Create PR (GitHub) | `gh pr create --draft` | After manual push |
-| Create MR (GitLab) | `glab mr create` | After manual push |
+| Build + PR | `codelicious /path/to/repo` | Each build cycle |
+| Dry run | `codelicious /path/to/repo --dry-run` | Preview what would be built |
 
 ---
 
@@ -143,7 +112,7 @@ Codelicious auto-detects the best available engine at startup:
 
 Auto-detection priority: Claude Code CLI > HuggingFace > error with setup instructions.
 
-> **Note:** Engine selection happens at startup, not mid-build. If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path — not a degraded mode.
+> **Note:** If you hit Claude token limits, re-run with `--engine huggingface` to use the free HuggingFace backend. The HuggingFace engine is a fully independent code path, not a degraded mode.
 
 ---
 
@@ -156,33 +125,39 @@ Options:
   --engine ENGINE          Force engine: claude, huggingface, auto (default: auto)
   --model MODEL            Model name (e.g. claude-sonnet-4-20250514)
   --agent-timeout SECS     Max seconds per agent run (default: 1800)
+  --spec PATH              Build a single spec file (skip discovery)
+  --dry-run                Discover specs and print plan, no execution
+  --max-commits-per-pr N   PR commit cap (default: 50, max: 100)
+  --platform PLATFORM      github, gitlab, or auto (default: auto)
+  --parallel N             Concurrent agentic loops, HF engine only (default: 1)
+  --skip-auth-check        Skip gh/glab auth validation (for CI with GITHUB_TOKEN)
   --resume SESSION_ID      Resume a previous Claude session (Claude engine only)
-  --allow-dangerous        Pass --dangerously-skip-permissions to claude CLI (Claude engine only)
 
 Environment variables:
-  CODELICIOUS_ENGINE             Same as --engine (CLI flag takes precedence)
-  CODELICIOUS_ALLOW_DANGEROUS    Same as --allow-dangerous (set to 1/true/yes)
+  CODELICIOUS_ENGINE       Same as --engine (CLI flag takes precedence)
+  GITHUB_TOKEN             Auto-skips auth check when set (for CI)
+  HF_TOKEN                 HuggingFace API token (required for HF engine)
+  ANTHROPIC_API_KEY        Anthropic API key (used by Claude engine)
 ```
 
-> **Note:** The orchestrate mode hardcodes `push_pr=True`, `verify_passes=3`, `reflect=True`,
-> `build_workers=3`, and `review_workers=4`. These are not currently exposed as CLI flags.
+---
 
 ## Claude Code Engine Phases
 
 When using the Claude Code engine, codelicious runs a 6-phase lifecycle:
 
-1. **SCAFFOLD** — writes `CLAUDE.md` and `.claude/` directory (agents, skills, rules, settings) into the target project
-2. **BUILD** — spawns Claude Code CLI with an autonomous build prompt. Claude reads specs, implements code, runs tests, commits.
-3. **VERIFY** — runs deterministic verification: Python syntax check, test suite, security pattern scan
-4. **REFLECT** — optional read-only quality review by Claude (can skip with `--no-reflect`)
-5. **GIT** — commits all changes to the feature branch
-6. **PR** — pushes and creates/updates a draft PR (requires `--push-pr`)
+1. **SCAFFOLD** -- writes `CLAUDE.md` and `.claude/` directory into the target project
+2. **BUILD** -- spawns Claude Code CLI with an autonomous build prompt
+3. **VERIFY** -- runs deterministic verification: syntax check, test suite, security scan
+4. **REFLECT** -- optional read-only quality review
+5. **GIT** -- commits all changes to the feature branch
+6. **PR** -- pushes and creates/updates a draft PR
 
 ---
 
 ## Writing Specs
 
-Place markdown specs in `docs/specs/` in your target repo. Codelicious will find and build them in order.
+Place markdown specs in `docs/specs/` in your target repo. Codelicious finds and builds them in order.
 
 ```markdown
 # Feature: User Authentication
@@ -199,18 +174,23 @@ Place markdown specs in `docs/specs/` in your target repo. Codelicious will find
 - Rate limiting on login endpoint
 ```
 
+Use `- [ ]` checkboxes. Codelicious marks them `- [x]` as it completes each task.
+
 ---
 
 ## Security Model
 
 Codelicious enforces defense-in-depth security, all hardcoded in Python (not configurable by the LLM):
 
-- **Command denylist** — 96 dangerous commands blocked (`rm`, `sudo`, `dd`, `kill`, `curl`, `git`, `python`, `docker`, etc.)
-- **Shell injection prevention** — `shell=False` + metacharacter blocking (`|`, `&`, `;`, `$`, etc.)
-- **File write protection** — LLM cannot modify its own tool source code or security config
-- **File extension allowlist** — 31 safe file types can be written
-- **Path traversal defense** — null byte detection, `..` rejection, symlink resolution
-- **Security scanning** — pre-commit scan for `eval()`, `exec()`, `shell=True`, hardcoded secrets
+- **Command denylist** -- 96 dangerous commands blocked (`rm`, `sudo`, `dd`, `kill`, `curl`, `git`, `docker`, etc.)
+- **Shell injection prevention** -- `shell=False` + metacharacter blocking (`|`, `&`, `;`, `$`, etc.)
+- **File write protection** -- LLM cannot modify its own tool source code or security config
+- **File extension allowlist** -- 31 safe file types can be written
+- **Path traversal defense** -- null byte detection, `..` rejection, symlink resolution
+- **Security scanning** -- pre-commit scan for `eval()`, `exec()`, `shell=True`, hardcoded secrets
+- **Credential redaction** -- 30+ regex patterns redact secrets from logs (AWS, OpenAI, GitHub, SSH keys, JWT, etc.)
+- **SSRF protection** -- LLM endpoint URLs validated for HTTPS and non-private IPs
+- **Prompt injection detection** -- 6 injection patterns blocked in spec text
 
 ---
 
@@ -219,8 +199,8 @@ Codelicious enforces defense-in-depth security, all hardcoded in Python (not con
 ```
 src/codelicious/
   cli.py                    # Entry point with engine selection
+  orchestrator.py           # 4-phase orchestration (BUILD -> MERGE -> REVIEW -> FIX)
   engines/
-    __init__.py             # select_engine() auto-detection
     base.py                 # BuildEngine ABC + BuildResult
     claude_engine.py        # Claude Code CLI 6-phase engine
     huggingface_engine.py   # HuggingFace tool-dispatch engine
@@ -237,24 +217,33 @@ src/codelicious/
     git_orchestrator.py     # Branch safety + PR management
   context/
     cache_engine.py         # State persistence
-    rag_engine.py           # SQLite vector search
-  errors.py                 # Typed exceptions
+    rag_engine.py           # SQLite vector search (zero-dep RAG)
+  sandbox.py                # Filesystem isolation (TOCTOU-safe)
+  security_constants.py     # Frozen denylist (cannot be overridden)
+  errors.py                 # 40+ typed exceptions
   config.py                 # Environment + file config loading
+  logger.py                 # Credential sanitization
+  llm_client.py             # HTTP LLM client
+  loop_controller.py        # Iteration and deadline management
+  planner.py                # Task planning with injection detection
+  chunker.py                # Spec decomposition into WorkChunks
+  spec_discovery.py         # Spec file discovery engine
+  context_manager.py        # Prompt budget and token management
+  _env.py                   # Environment variable parsing
+  _io.py                    # Atomic file I/O utilities
 ```
 
-## Runtime Files
+### Runtime Files
 
 Codelicious creates a `.codelicious/` directory in the target repo (gitignored):
 
 | File | Purpose |
 |------|---------|
-| `state.json` | Task progress and memory |
-| `cache.json` | File hash index |
+| `config.json` | Build configuration |
 | `db.sqlite3` | Vector embeddings for RAG |
 | `audit.log` | Full agent interaction log |
 | `security.log` | Security events only |
-| `STATE.md` | Human-readable build status |
-| `BUILD_COMPLETE` | Sentinel file (contains "DONE" when finished) |
+| `build.log` | Structured JSON Lines build log |
 
 ---
 
@@ -325,31 +314,21 @@ flowchart TB
     L9 --> FS["Filesystem\n(safe writes only)"]
 ```
 
----
+### Parallel Execution
 
-## Security Findings Resolution
-
-```mermaid
-pie title Security Findings Resolution (Spec-07 through Spec-14)
-    "Resolved by Spec-07 (sandbox)" : 16
-    "Resolved by Spec-08 (reliability)" : 2
-    "Resolved by Spec-13 (bulletproof)" : 42
-    "Resolved by Spec-14 (hardening v2)" : 20
-```
-
-### Spec-15 Parallel Execution Architecture
+When using `--parallel N` with the HuggingFace engine, codelicious distributes specs across N concurrent agentic loops:
 
 ```mermaid
 flowchart TB
     CLI["codelicious /repo --parallel 4"]
-    Engine["HuggingFaceEngine.run_build_cycle()"]
+    Engine["HuggingFaceEngine"]
     PE["ParallelExecutor(max_workers=4)"]
 
     subgraph Workers["ThreadPoolExecutor"]
-        W1["LoopWorker loop-001\nspec: 01_feature_cli.md"]
-        W2["LoopWorker loop-002\nspec: 02_feature_agent.md"]
-        W3["LoopWorker loop-003\nspec: 03_feature_git.md"]
-        W4["LoopWorker loop-004\nspec: 04_feature_ext.md"]
+        W1["Worker 1\nspec: 01_feature_cli.md"]
+        W2["Worker 2\nspec: 02_feature_agent.md"]
+        W3["Worker 3\nspec: 03_feature_git.md"]
+        W4["Worker 4\nspec: 04_feature_ext.md"]
     end
 
     subgraph Shared["Shared Resources (Thread-Safe)"]
@@ -357,344 +336,57 @@ flowchart TB
         SB["Sandbox\n(Lock)"]
         AL["AuditLogger\n(Lock)"]
         CM["CacheManager\n(Lock)"]
-        SL["StructuredLogger\n(Lock)"]
-    end
-
-    subgraph PerLoop["Per-Loop Resources (No Sharing)"]
-        TR["ToolRegistry\n(per instance)"]
-        MH["Message History\n(per list)"]
     end
 
     CLI --> Engine --> PE
     PE --> Workers
     W1 & W2 & W3 & W4 --> Shared
-    W1 & W2 & W3 & W4 --> PerLoop
     Workers --> Result["BuildResult\n(aggregated)"]
-
-    style Shared fill:#228B22,color:#fff
-    style PerLoop fill:#4169E1,color:#fff
 ```
 
-### Structured Logging Flow (Spec-15)
+| Resource | Protection | Granularity |
+|----------|-----------|-------------|
+| LLMClient | Stateless after init | No lock needed |
+| Sandbox | `_write_lock` | Per-operation |
+| AuditLogger | `_write_lock` | Per-write |
+| CacheManager | Three locks | Per-operation |
+| ToolRegistry | Per-loop instance | N/A |
 
-```mermaid
-flowchart LR
-    subgraph Loops["Concurrent Agentic Loops"]
-        L1["loop-001"]
-        L2["loop-002"]
-        L3["loop-003"]
-        L4["loop-004"]
-    end
+---
 
-    SL["StructuredLogger\n(thread-safe)"]
+## Zero Dependencies
 
-    subgraph Output["Dual Output Streams"]
-        File["build.log\nJSON Lines\n(machine-readable)"]
-        Term["Terminal\n[loop-id] formatted\n(human-readable)"]
-    end
+The core engine uses only Python standard library (`urllib`, `json`, `sqlite3`, `subprocess`). No pip packages required at runtime.
 
-    L1 & L2 & L3 & L4 --> SL
-    SL --> File
-    SL --> Term
+Dev dependencies: `pytest`, `ruff`, `bandit`, `pip-audit`, `pre-commit`.
+
+---
+
+## Contributing
+
+```bash
+# Setup
+git clone https://github.com/clay-good/codelicious.git
+cd codelicious
+pip install -e ".[dev]"
+pre-commit install
+
+# Run tests
+pytest
+
+# Lint and format
+ruff check src/ tests/
+ruff format src/ tests/
+
+# Security scan
+bandit -r src/
 ```
 
-### Thread Safety Model (Spec-15)
+---
 
-```mermaid
-flowchart TB
-    subgraph Global["Global Resources (Lock-Protected)"]
-        direction LR
-        S1["Sandbox\nFile count: global 200 limit\nLock: full validate-write cycle"]
-        S2["AuditLogger\nLock: per file write\naudit.log + security.log"]
-        S3["CacheManager\nLock: load-modify-flush\ncache.json + state.json"]
-        S4["StructuredLogger\nLock: per JSON line write\nbuild.log"]
-    end
+## Operational Resilience
 
-    subgraph Stateless["Stateless (No Lock Needed)"]
-        direction LR
-        S5["LLMClient\nImmutable config after init\nurllib creates new conn per call"]
-    end
-
-    subgraph Isolated["Per-Loop Instances (No Sharing)"]
-        direction LR
-        S6["ToolRegistry\nOwn tool schema + dispatch"]
-        S7["Message History\nOwn list per loop"]
-        S8["Iteration Counter\nOwn int per loop"]
-    end
-
-    style Global fill:#DAA520,color:#000
-    style Stateless fill:#228B22,color:#fff
-    style Isolated fill:#4169E1,color:#fff
-```
-
-### Spec-15 Throughput Scaling Projection
-
-```mermaid
-xychart-beta
-    title "Estimated Tokens Per Second by Parallelism Level"
-    x-axis ["1 loop", "2 loops", "4 loops", "8 loops"]
-    y-axis "Tokens/Second (SambaNova via HF Router)" 0 --> 1800
-    bar [125, 250, 500, 1000]
-```
-
-### Spec-16 CI Quality Gate Pipeline
-
-```mermaid
-flowchart LR
-    A[Push / PR] --> B[Lint\nruff check]
-    B --> C[Format\nruff format]
-    C --> D[Tests\npytest]
-    D --> E[Coverage\n90% minimum]
-    E --> F[Security\nbandit]
-    F --> G[Audit\npip-audit]
-    G --> H{All Pass?}
-    H -->|Yes| I[Merge Ready]
-    H -->|No| J[Block Merge]
-
-    style I fill:#228B22,color:#fff
-    style J fill:#DC143C,color:#fff
-```
-
-### Spec-16 Security Defense Layers
-
-```mermaid
-flowchart TB
-    subgraph L1["Layer 1: Input Validation"]
-        A1["Command denylist\n96 blocked commands"]
-        A2["Shell metacharacter filter\n12 blocked chars"]
-        A3["Path traversal defense\niterative decode + sandbox"]
-    end
-
-    subgraph L2["Layer 2: Execution Safety"]
-        B1["shell=False enforcement"]
-        B2["Process group timeout"]
-        B3["Prompt sanitization"]
-    end
-
-    subgraph L3["Layer 3: Output Protection"]
-        C1["File extension allowlist"]
-        C2["File count/size limits"]
-        C3["Atomic writes + symlink check"]
-    end
-
-    subgraph L4["Layer 4: Audit and Detection"]
-        D1["Security event logging"]
-        D2["Credential sanitization"]
-        D3["Secret pattern scanning"]
-    end
-
-    L1 --> L2 --> L3 --> L4
-
-    style L1 fill:#DAA520,color:#000
-    style L2 fill:#4169E1,color:#fff
-    style L3 fill:#228B22,color:#fff
-    style L4 fill:#8B008B,color:#fff
-```
-
-### Spec-16 Module Test Coverage Map
-
-```mermaid
-block-beta
-    columns 5
-    sandbox["sandbox.py\n50+ tests"]:1
-    verifier["verifier.py\n60+ tests"]:1
-    executor["executor.py\n45+ tests"]:1
-    cmd_runner["command_runner\n30+ tests"]:1
-    parser["parser.py\n31 tests"]:1
-    context_mgr["context_mgr\n35+ tests"]:1
-    fs_tools["fs_tools.py\n20+ tests"]:1
-    security["security_audit\n35+ tests"]:1
-    llm_client["llm_client\n17 tests"]:1
-    cache["cache_engine\n16 tests"]:1
-    cli["cli.py\nNEW"]:1
-    agent_runner["agent_runner\nNEW"]:1
-    planner["planner.py\nNEW"]:1
-    config["config.py\nNEW"]:1
-    budget["budget_guard\nNEW"]:1
-
-    style sandbox fill:#228B22,color:#fff
-    style verifier fill:#228B22,color:#fff
-    style executor fill:#228B22,color:#fff
-    style cmd_runner fill:#228B22,color:#fff
-    style parser fill:#228B22,color:#fff
-    style context_mgr fill:#228B22,color:#fff
-    style fs_tools fill:#228B22,color:#fff
-    style security fill:#228B22,color:#fff
-    style llm_client fill:#228B22,color:#fff
-    style cache fill:#228B22,color:#fff
-    style cli fill:#4169E1,color:#fff
-    style agent_runner fill:#4169E1,color:#fff
-    style planner fill:#4169E1,color:#fff
-    style config fill:#4169E1,color:#fff
-    style budget fill:#4169E1,color:#fff
-```
-
-Green = existing coverage, Blue = new in spec-16
-
-### Spec-17 Security Finding Resolution Flow
-
-```mermaid
-flowchart TB
-    subgraph P1["P1 Critical (6 Findings)"]
-        P14["P1-4: File count race"]
-        P15["P1-5: Overwrite count bug"]
-        P16["P1-6: Symlink TOCTOU"]
-        P18["P1-8: Silent exception"]
-        P19["P1-9: JSON deser DoS"]
-        P111["P1-11: Prompt injection"]
-    end
-
-    subgraph P2["P2 Important (11 Findings)"]
-        P25["P2-5: Dir listing DoS"]
-        P26["P2-6: mkdir race"]
-        P27["P2-7: Silent chmod"]
-        P28["P2-8: Verifier injection"]
-        P29["P2-9: Secret detection gaps"]
-        P210["P2-10: Timeout overrun"]
-        P211["P2-11: Regex backtrack"]
-        P212["P2-12: Log file perms"]
-        P213["P2-13: Incomplete redaction"]
-        P2N1["P2-NEW-1: Git push timeout"]
-        P2N2["P2-NEW-2: Verifier proc group"]
-    end
-
-    subgraph Phases["Implementation Phases"]
-        Ph1["Phase 1: cli.py"]
-        Ph2["Phase 2: sandbox count"]
-        Ph3["Phase 3: sandbox symlink"]
-        Ph4["Phase 4: JSON limits"]
-        Ph5["Phase 5: prompt sanitize"]
-        Ph6["Phase 6: dir limits"]
-        Ph7["Phase 7: race fixes"]
-        Ph8["Phase 8: verifier + git"]
-        Ph9["Phase 9: credentials"]
-        Ph10["Phase 10: regex fix"]
-        Ph11["Phase 11: timeout fix"]
-    end
-
-    P18 --> Ph1
-    P14 --> Ph2
-    P15 --> Ph2
-    P16 --> Ph3
-    P19 --> Ph4
-    P111 --> Ph5
-    P25 --> Ph6
-    P26 --> Ph7
-    P27 --> Ph7
-    P212 --> Ph7
-    P28 --> Ph8
-    P2N1 --> Ph8
-    P2N2 --> Ph8
-    P29 --> Ph9
-    P213 --> Ph9
-    P211 --> Ph10
-    P210 --> Ph11
-
-    Ph1 & Ph2 & Ph3 & Ph4 & Ph5 & Ph6 & Ph7 & Ph8 & Ph9 & Ph10 & Ph11 --> ZeroFindings["Zero Open Findings"]
-
-    style P1 fill:#DC143C,color:#fff
-    style P2 fill:#DAA520,color:#000
-    style ZeroFindings fill:#228B22,color:#fff
-```
-
-### Spec-17 Atomic File Write Sequence (Post-Fix)
-
-```mermaid
-sequenceDiagram
-    participant Thread as Worker Thread
-    participant Lock as Sandbox Lock
-    participant Set as Written Paths Set
-    participant Counter as File Counter
-    participant FS as Filesystem
-    participant Check as Post-Write Check
-
-    Thread->>Lock: acquire()
-    Lock-->>Thread: granted
-
-    Thread->>Set: path in _written_paths?
-    alt New file
-        Set-->>Thread: No (new file)
-        Thread->>Counter: count < max_files?
-        alt Under limit
-            Counter-->>Thread: Yes
-            Counter->>Counter: increment
-            Set->>Set: add(path)
-            Thread->>FS: tempfile.write(content)
-            Thread->>FS: os.replace(temp, target)
-            alt Write fails
-                FS-->>Thread: OSError
-                Counter->>Counter: decrement
-                Set->>Set: remove(path)
-                Thread->>Lock: release()
-                Thread-->>Thread: raise FileWriteError
-            else Write succeeds
-                FS-->>Thread: OK
-                Thread->>Check: os.lstat(target)
-                alt Symlink detected
-                    Check-->>Thread: is_symlink=True
-                    Thread->>FS: os.unlink(target)
-                    Counter->>Counter: decrement
-                    Set->>Set: remove(path)
-                    Thread->>Lock: release()
-                    Thread-->>Thread: raise SandboxViolationError
-                else Normal file
-                    Check-->>Thread: is_symlink=False
-                    Thread->>Lock: release()
-                    Thread-->>Thread: return success
-                end
-            end
-        else Over limit
-            Counter-->>Thread: No (at max)
-            Thread->>Lock: release()
-            Thread-->>Thread: raise FileCountLimitError
-        end
-    else Existing file (overwrite)
-        Set-->>Thread: Yes (overwrite)
-        Thread->>FS: tempfile.write(content)
-        Thread->>FS: os.replace(temp, target)
-        Thread->>Check: os.lstat(target)
-        Check-->>Thread: is_symlink=False
-        Thread->>Lock: release()
-        Thread-->>Thread: return success
-    end
-```
-
-### Spec-17 Credential Redaction Coverage
-
-```mermaid
-flowchart LR
-    subgraph Existing["Existing Patterns (Pre-Spec-17)"]
-        E1["OpenAI (sk-)"]
-        E2["GitHub (ghp_, gho_, ghu_, ghs_, ghr_)"]
-        E3["AWS (AKIA, ABIA, ACCA, ASIA)"]
-        E4["Anthropic (sk-ant-)"]
-        E5["JWT (eyJ...)"]
-        E6["Database URLs"]
-        E7["Bearer tokens"]
-        E8["Azure credentials"]
-        E9["GCP service accounts"]
-        E10["HuggingFace (hf_)"]
-    end
-
-    subgraph New["New Patterns (Spec-17 Phase 9)"]
-        N1["SSH Private Keys"]
-        N2["NPM Tokens (npm_)"]
-        N3["Slack (xoxb-, xoxp-, xoxs-, xoxa-)"]
-        N4["Stripe (sk_live_, pk_live_, rk_live_)"]
-        N5["Twilio (AC, SK + 32 hex)"]
-        N6["Webhook URLs with tokens"]
-    end
-
-    Existing --> Redactor["sanitize_message()"]
-    New --> Redactor
-    Redactor --> Safe["Safe Log Output\n(all credentials replaced\nwith REDACTED)"]
-
-    style Existing fill:#228B22,color:#fff
-    style New fill:#4169E1,color:#fff
-    style Safe fill:#228B22,color:#fff
-```
-
-### Spec-18 LLM API Retry Flow
+### Retry Logic
 
 ```mermaid
 flowchart TB
@@ -722,7 +414,7 @@ flowchart TB
     style Backoff fill:#DAA520,color:#000
 ```
 
-### Spec-18 Startup Validation Flow
+### Startup Validation
 
 ```mermaid
 flowchart TB
@@ -759,26 +451,21 @@ flowchart TB
     style HTTPSErr fill:#DC143C,color:#fff
 ```
 
-### Spec-18 Graceful Shutdown Sequence
+### Graceful Shutdown
 
 ```mermaid
 sequenceDiagram
     participant OS as Orchestrator (Docker/K8s)
     participant CLI as cli.py (main)
     participant Handler as SIGTERM Handler
-    participant Progress as ProgressReporter
     participant RAG as RagEngine
     participant Exit as atexit hooks
 
     OS->>CLI: SIGTERM (signal 15)
     CLI->>Handler: _handle_sigterm()
-    Handler->>Handler: Set _shutdown_requested = True
     Handler->>Handler: Log WARNING "Received SIGTERM"
     Handler->>CLI: Raise SystemExit(143)
     CLI->>Exit: atexit hooks triggered
-    Exit->>Progress: close()
-    Progress->>Progress: Flush progress file
-    Progress->>Progress: Set _closed = True
     Exit->>RAG: close()
     RAG->>RAG: Flush SQLite WAL
     RAG->>RAG: Close connection
@@ -786,7 +473,7 @@ sequenceDiagram
     Exit->>OS: Exit code 143
 ```
 
-### Spec-18 Cumulative Build Timeout Enforcement
+### Cumulative Timeout Enforcement
 
 ```mermaid
 flowchart LR
@@ -816,837 +503,7 @@ flowchart LR
     style Timeout fill:#DC143C,color:#fff
 ```
 
-### Spec-18 Plan Validation Pipeline
-
-```mermaid
-flowchart TB
-    LLM["LLM Generates Plan JSON"]
-    Parse["json.loads()"]
-    Schema["Schema Validation\n- Is dict?\n- Has 'tasks' list?\n- Each task has title, description?"]
-    Cycle["Cycle Detection\n- Build adjacency graph\n- DFS with gray/black sets\n- Report cycle path"]
-    Valid["Valid Plan\nProceed to execution"]
-    Invalid["InvalidPlanError\nSpecific message\n(missing key, cycle path)"]
-
-    LLM --> Parse --> Schema
-    Schema -->|Pass| Cycle
-    Schema -->|Fail| Invalid
-    Cycle -->|No cycles| Valid
-    Cycle -->|Cycle found| Invalid
-
-    style Valid fill:#228B22,color:#fff
-    style Invalid fill:#DC143C,color:#fff
-```
-
-### Spec-19 Code Quality Improvement Areas
-
-```mermaid
-flowchart TB
-    subgraph T1["Tier 1: Foundation (Sequential)"]
-        P1["Phase 1\nConfig Constants\nEnv Var Overrides"]
-        P2["Phase 2\nError Message\nQuality"]
-        P3["Phase 3\nResource Cleanup\nFile Handle Leaks"]
-        P4["Phase 4\nEdge Case\nClosure"]
-        P1 --> P2 --> P3 --> P4
-    end
-
-    subgraph T2["Tier 2: Docs and Testing (Parallel)"]
-        P5["Phase 5\nREADME-CLI\nAccuracy"]
-        P6["Phase 6\nTest Fixture\nExpansion"]
-        P7["Phase 7\nDependency\nPinning"]
-        P8["Phase 8\nCI Workflow\nHardening"]
-    end
-
-    subgraph T3["Tier 3: Code Quality (Parallel)"]
-        P9["Phase 9\nShared Utility\nExtraction"]
-        P10["Phase 10\nType Safety\nHints"]
-        P11["Phase 11\nPrompt Template\nSafety"]
-        P12["Phase 12\nDry-Run\nPurity"]
-    end
-
-    subgraph T4["Tier 4: Hardening (Sequential)"]
-        P13["Phase 13\nConfig Validation\nat Startup"]
-        P14["Phase 14\nLogger Permission\nFixes"]
-        P15["Phase 15\nError Handling\nConsistency"]
-        P13 --> P14 --> P15
-    end
-
-    T1 --> T2
-    T1 --> T3
-    T2 --> T4
-    T3 --> T4
-    T4 --> Done["47 Gaps Closed\n650+ Tests\nZero Quality Findings"]
-
-    style T1 fill:#4169E1,color:#fff
-    style T2 fill:#228B22,color:#fff
-    style T3 fill:#DAA520,color:#000
-    style T4 fill:#8B008B,color:#fff
-    style Done fill:#228B22,color:#fff
-```
-
-### Spec-19 Finding Distribution by Category
-
-```mermaid
-pie title Code Quality Findings by Category (47 Total)
-    "Configuration Hardening" : 4
-    "Error Messages" : 5
-    "Resource Cleanup" : 3
-    "Edge Cases" : 4
-    "Documentation Drift" : 6
-    "Test Fixtures" : 4
-    "Dependency Pinning" : 4
-    "CI Workflow" : 5
-    "Code Duplication" : 3
-    "Type Safety" : 5
-    "Template Safety" : 2
-    "Dry-Run Purity" : 3
-    "Config Validation" : 3
-    "Logger Fixes" : 2
-    "Error Handling" : 3
-```
-
-### Spec-19 Configuration Override Flow
-
-```mermaid
-flowchart LR
-    Env["Environment Variable\nCODELICIOUS_TIMEOUT_TEST=120"]
-    Parse["_env.parse_env_int()\nValidate: > 0\nLog: DEBUG override active"]
-    Default["Hardcoded Default\n_TIMEOUT_TEST = 60"]
-    Module["verifier.py\nUses effective value"]
-
-    Env -->|Set and valid| Parse --> Module
-    Env -->|Not set| Default --> Module
-    Env -->|Invalid value| Parse
-    Parse -->|"WARNING: invalid, using default"| Default
-
-    style Env fill:#4169E1,color:#fff
-    style Default fill:#DAA520,color:#000
-    style Module fill:#228B22,color:#fff
-```
-
-### Spec-19 Dry-Run Fix: Before and After
-
-```mermaid
-sequenceDiagram
-    participant User as User
-    participant CLI as cli.py
-    participant SB as Sandbox (dry_run=True)
-    participant FS as Filesystem
-
-    Note over User,FS: BEFORE (Bug): mkdir runs even in dry-run
-    User->>CLI: codelicious /repo --dry-run
-    CLI->>SB: write_file("src/app.py", content)
-    SB->>FS: parent.mkdir(parents=True)
-    Note right of FS: Directory created (BUG)
-    SB->>SB: if self.dry_run: return
-    SB-->>CLI: (returned early but dir exists)
-
-    Note over User,FS: AFTER (Fixed): no filesystem changes
-    User->>CLI: codelicious /repo --dry-run
-    CLI->>SB: write_file("src/app.py", content)
-    SB->>SB: if self.dry_run: log and return
-    Note right of SB: No mkdir, no temp file, no writes
-    SB-->>CLI: (returned early, FS untouched)
-```
-
-### Spec-19 Logic Breakdown Progression
-
-```mermaid
-xychart-beta
-    title "Codebase Composition by Spec Phase (Estimated Lines)"
-    x-axis ["Post-16", "Post-17", "Post-18", "Post-19"]
-    y-axis "Source Lines" 0 --> 10000
-    bar [3800, 3900, 4100, 4200]
-    bar [4050, 3600, 3600, 3600]
-    bar [1350, 1300, 1500, 1600]
-```
-
-### Spec-20 Security Finding Resolution Flow
-
-```mermaid
-flowchart TB
-    subgraph P1["S20-P1 Critical (5 Findings)"]
-        S1["S20-P1-1\nSSRF via\nLLM endpoint"]
-        S2["S20-P1-2\ngit add .\nstages secrets"]
-        S3["S20-P1-3\n--dangerously-\nskip-permissions"]
-        S4["S20-P1-4\nPrompt injection\nvia spec_filter"]
-        S5["S20-P1-5\nSQLite DB\nworld-readable"]
-    end
-
-    subgraph P2["S20-P2 Important (11 Findings)"]
-        S6["S20-P2-1: Newline filename"]
-        S7["S20-P2-2: os.walk escape"]
-        S8["S20-P2-3: Denylist bypass"]
-        S9["S20-P2-4: No backoff"]
-        S10["S20-P2-5: BudgetGuard race"]
-        S11["S20-P2-6: retry_after ignored"]
-        S12["S20-P2-7: Duplicate check"]
-        S13["S20-P2-8: String tracker"]
-        S14["S20-P2-9: Symlink rmtree"]
-        S15["S20-P2-10: atomic_write"]
-        S16["S20-P2-11: Audit log race"]
-    end
-
-    subgraph Phases["Implementation Phases"]
-        Ph1["Phase 1: SSRF"]
-        Ph2["Phase 2: Git staging"]
-        Ph3["Phase 3: CLI perms"]
-        Ph4["Phase 4: Prompt sanitize"]
-        Ph5["Phase 5: SQLite perms"]
-        Ph6["Phase 6-12: P2 fixes"]
-        Ph7["Phase 13-18: P3 fixes"]
-    end
-
-    S1 --> Ph1
-    S2 --> Ph2
-    S3 --> Ph3
-    S4 --> Ph4
-    S5 --> Ph5
-    S6 & S7 & S8 & S9 & S10 & S11 & S12 & S13 & S14 & S15 & S16 --> Ph6
-    Ph1 & Ph2 & Ph3 & Ph4 & Ph5 & Ph6 & Ph7 --> Zero["Zero S20 Findings\n720+ Tests"]
-
-    style P1 fill:#DC143C,color:#fff
-    style P2 fill:#DAA520,color:#000
-    style Zero fill:#228B22,color:#fff
-```
-
-### Spec-20 Git Staging Safety (Before and After)
-
-```mermaid
-sequenceDiagram
-    participant Dev as Developer
-    participant GO as GitOrchestrator
-    participant Git as git CLI
-    participant Check as Sensitive File Check
-
-    Note over Dev,Check: BEFORE (Unsafe): git add . with warning-only guard
-    Dev->>GO: commit_verified_changes(files=None)
-    GO->>Git: git add .
-    Git-->>GO: staged everything (including .env)
-    GO->>Check: _check_staged_files()
-    Check-->>GO: WARNING: .env detected
-    Note right of GO: Warning logged but commit proceeds
-    GO->>Git: git commit -m "..."
-    Git-->>GO: committed (with secrets)
-
-    Note over Dev,Check: AFTER (Safe): explicit staging with hard abort
-    Dev->>GO: commit_verified_changes(files=None)
-    GO->>Git: git add -u
-    Git-->>GO: staged tracked files only
-    GO->>Check: _check_staged_files()
-    Check-->>GO: ERROR: .env detected
-    Note right of GO: GitOperationError raised, commit aborted
-    GO-->>Dev: Error: Refusing to commit sensitive file
-```
-
-### Spec-20 LLM Endpoint Validation Pipeline
-
-```mermaid
-flowchart TB
-    Input["LLM_ENDPOINT env var"]
-    Parse["urllib.parse.urlparse()"]
-    Scheme{"Scheme\n== https?"}
-    SchemeErr["ConfigurationError:\nOnly HTTPS permitted"]
-    DNS["socket.getaddrinfo()\nResolve hostname"]
-    DNSErr["ConfigurationError:\nCannot resolve hostname"]
-    IP["ipaddress.ip_address()"]
-    Private{"is_private?\nis_loopback?\nis_link_local?"}
-    PrivateErr["ConfigurationError:\nPrivate/loopback IP rejected"]
-    Accept["Validated endpoint URL\nStored in LLMClient"]
-
-    Input --> Parse --> Scheme
-    Scheme -->|No| SchemeErr
-    Scheme -->|Yes| DNS
-    DNS -->|Fail| DNSErr
-    DNS -->|OK| IP --> Private
-    Private -->|Yes| PrivateErr
-    Private -->|No| Accept
-
-    style Accept fill:#228B22,color:#fff
-    style SchemeErr fill:#DC143C,color:#fff
-    style DNSErr fill:#DC143C,color:#fff
-    style PrivateErr fill:#DC143C,color:#fff
-```
-
-### Spec-20 Thread Safety Model (Updated)
-
-```mermaid
-flowchart TB
-    subgraph Global["Global Resources (Lock-Protected)"]
-        direction LR
-        S1["Sandbox\nFile count: global 200 limit\nLock: full validate-write cycle"]
-        S2["AuditLogger\nLock: per file write\naudit.log + security.log"]
-        S3["CacheManager\nLock: load-modify-flush\ncache.json + state.json"]
-        S4["StructuredLogger\nLock: per JSON line write\nbuild.log"]
-        S5["BudgetGuard\nLock: record() + check()\ncalls + cost counters"]
-    end
-
-    subgraph Stateless["Stateless (No Lock Needed)"]
-        direction LR
-        S6["LLMClient\nImmutable config after init\nEndpoint validated at construction"]
-    end
-
-    subgraph Isolated["Per-Loop Instances (No Sharing)"]
-        direction LR
-        S7["ToolRegistry\nOwn tool schema + dispatch"]
-        S8["Message History\nOwn list per loop"]
-        S9["Iteration Counter\nOwn int per loop"]
-    end
-
-    style Global fill:#DAA520,color:#000
-    style Stateless fill:#228B22,color:#fff
-    style Isolated fill:#4169E1,color:#fff
-```
-
-### Spec-20 Credential Redaction Pipeline (Updated)
-
-```mermaid
-flowchart LR
-    subgraph Stage1["Stage 1: Individual Sanitization"]
-        Msg["record.msg"]
-        Args["record.args"]
-        SanMsg["sanitize_message(msg)"]
-        SanArgs["sanitize_message(str(arg))"]
-        Msg --> SanMsg
-        Args --> SanArgs
-    end
-
-    subgraph Stage2["Stage 2: Formatted Message Sanitization"]
-        Format["record.getMessage()\nmsg % args"]
-        SanFinal["sanitize_message(formatted)"]
-        Format --> SanFinal
-    end
-
-    subgraph Output["Safe Output"]
-        Final["record.msg = sanitized\nrecord.args = None\nAll secrets REDACTED"]
-    end
-
-    Stage1 --> Stage2 --> Output
-
-    style Stage1 fill:#4169E1,color:#fff
-    style Stage2 fill:#DAA520,color:#000
-    style Output fill:#228B22,color:#fff
-```
-
-### Spec-20 Codebase Composition Progression
-
-```mermaid
-xychart-beta
-    title "Codebase Composition by Spec Phase (Estimated Lines)"
-    x-axis ["Post-16", "Post-17", "Post-18", "Post-19", "Post-20"]
-    y-axis "Source Lines" 0 --> 10000
-    bar [3800, 3900, 4100, 4200, 4500]
-    bar [4050, 3600, 3600, 3600, 3600]
-    bar [1350, 1300, 1500, 1600, 1500]
-```
-
-### Spec-21 Coverage Gap Analysis
-
-```mermaid
-flowchart TB
-    subgraph Zero["0% Coverage (No Tests)"]
-        Z1["budget_guard.py\n134 lines"]
-        Z2["config.py\n455 lines"]
-        Z3["orchestrator.py\n709 lines"]
-        Z4["huggingface_engine.py\n166 lines"]
-        Z5["__main__.py\n9 lines"]
-    end
-
-    subgraph Low["Below 50% Coverage"]
-        L1["engines/__init__.py\n30%"]
-        L2["planner.py\n29%"]
-        L3["registry.py\n33%"]
-        L4["claude_engine.py\n34%"]
-        L5["git_orchestrator.py\n36%"]
-        L6["logger.py\n39%"]
-        L7["prompts.py\n47%"]
-        L8["loop_controller.py\n50%"]
-    end
-
-    subgraph Good["Above 80% Coverage"]
-        G1["sandbox.py 91%"]
-        G2["executor.py 96%"]
-        G3["command_runner.py 97%"]
-        G4["context_manager.py 95%"]
-        G5["cli.py 94%"]
-        G6["parser.py 93%"]
-        G7["llm_client.py 93%"]
-        G8["scaffolder.py 92%"]
-    end
-
-    Zero -->|"Spec-21 Target: 80%+"| Good
-    Low -->|"Spec-21 Target: 60%+"| Good
-
-    style Zero fill:#DC143C,color:#fff
-    style Low fill:#DAA520,color:#000
-    style Good fill:#228B22,color:#fff
-```
-
-### Spec-21 Deterministic vs Probabilistic Logic
-
-```mermaid
-pie title Codebase Logic Distribution (9,842 lines)
-    "Deterministic (56%): CLI, config, parser, sandbox, verifier, fs_tools, command_runner, git, logger, security, errors" : 5500
-    "Probabilistic (44%): executor, planner, llm_client, loop_controller, orchestrator, engines, agent_runner, rag, prompts" : 4300
-```
-
-### Spec-21 Security Finding Closure
-
-```mermaid
-flowchart TB
-    subgraph Original["Original P2 (3 Open)"]
-        O1["P2-12: Build logger\nfile creation race"]
-        O2["P2-NEW-1: Git push\nmissing timeout"]
-        O3["P2-NEW-2: Verifier\nno process group"]
-    end
-
-    subgraph REV1["REV-P1 (5 Open)"]
-        R1["REV-P1-1: Assertions\nin threaded code"]
-        R2["REV-P1-2: Executor\nReDoS"]
-        R3["REV-P1-3: Sandbox\nTOCTOU"]
-        R4["REV-P1-4: JSON\ndepth limits"]
-        R5["REV-P1-5: Verifier\nSIGKILL"]
-    end
-
-    subgraph REV2["REV-P2 (5 Open)"]
-        R6["REV-P2-1: Thread\nlifecycle race"]
-        R7["REV-P2-2: Dead code\nCommandDeniedError"]
-        R8["REV-P2-3: mkdir\nsymlink"]
-        R9["REV-P2-4: Secret\npatterns"]
-        R10["REV-P2-5: Timing\nside-channel"]
-    end
-
-    subgraph New["S21 New (3 P2)"]
-        N1["S21-P2-1: Logger\nReDoS"]
-        N2["S21-P2-2: Backoff\nclamping"]
-        N3["S21-P2-3: Bare\nBaseException"]
-    end
-
-    Original --> Closed["All Findings Closed\n16 fixes across 22 phases"]
-    REV1 --> Closed
-    REV2 --> Closed
-    New --> Closed
-
-    style Original fill:#DAA520,color:#000
-    style REV1 fill:#DC143C,color:#fff
-    style REV2 fill:#DAA520,color:#000
-    style New fill:#4169E1,color:#fff
-    style Closed fill:#228B22,color:#fff
-```
-
-### Spec-21 Implementation Phase Dependencies
-
-```mermaid
-flowchart LR
-    subgraph Security["Security Fixes (Phases 1-11)"]
-        P1["P1: Logger\nfile race"]
-        P2["P2: Git\ntimeout"]
-        P3["P3: Verifier\nproc group"]
-        P4["P4: Assert\nreplacement"]
-        P5["P5: Executor\nReDoS"]
-        P6["P6: Sandbox\nTOCTOU"]
-        P7["P7: JSON\ndepth"]
-        P8["P8: Verifier\nSIGKILL"]
-        P9["P9: REV-P2\nclosure"]
-        P10["P10: Logger\nReDoS"]
-        P11["P11: Backoff\nclamp"]
-    end
-
-    subgraph Coverage["Coverage Expansion (Phases 12-16)"]
-        P12["P12: budget_guard\n0% to 80%+"]
-        P13["P13: config\n0% to 80%+"]
-        P14["P14: orchestrator\n0% to 60%+"]
-        P15["P15: hf_engine\n0% to 70%+"]
-        P16["P16: Low-coverage\nmodules 60%+"]
-    end
-
-    subgraph Docs["Documentation (Phases 17-22)"]
-        P17["P17: README\nnumber fixes"]
-        P18["P18: CI\npipeline"]
-        P19["P19: Exception\nhardening"]
-        P20["P20: Test\nfixtures"]
-        P21["P21: STATE.md\nupdate"]
-        P22["P22: Mermaid\ndiagrams"]
-    end
-
-    Security --> Coverage --> Docs
-
-    style Security fill:#DC143C,color:#fff
-    style Coverage fill:#4169E1,color:#fff
-    style Docs fill:#228B22,color:#fff
-```
-
-### Spec-21 CI Quality Gate Pipeline (Updated)
-
-```mermaid
-flowchart LR
-    A[Push / PR] --> B[Install\npip install -e .[dev]]
-    B --> B2[Verify Install\nimport codelicious]
-    B2 --> C[Lint\nruff check]
-    C --> D[Format\nruff format]
-    D --> E[Tests + Coverage\npytest --cov-fail-under=75]
-    E --> F[Security\nbandit]
-    F --> G[Audit\npip-audit]
-    G --> H{All Pass?}
-    H -->|Yes| I[Merge Ready]
-    H -->|No| J[Block Merge]
-
-    style I fill:#228B22,color:#fff
-    style J fill:#DC143C,color:#fff
-    style B2 fill:#4169E1,color:#fff
-```
-
 ---
-
-### Spec-22 Spec-as-PR Lifecycle
-
-```mermaid
-flowchart TD
-    A["User runs: codelicious /path/to/repo --push-pr"] --> B["CLI parses args"]
-    B --> C["Engine selection: Claude or HuggingFace"]
-    C --> D["GitManager.assert_safe_branch with spec_id"]
-    D --> E{"On forbidden branch?"}
-    E -->|Yes| F["Create/checkout codelicious/spec-N"]
-    E -->|No| G["Continue on current branch"]
-    F --> H["Scaffold: write CLAUDE.md + .claude/"]
-    G --> H
-    H --> I["Build: spawn agent with spec prompt"]
-    I --> J["Verify: syntax + tests + security scan"]
-    J -->|Fail| K["Fix agent: re-run with error context"]
-    K --> J
-    J -->|Pass| L["Commit: git add specific-files + commit"]
-    L --> M["Push: git push to spec branch"]
-    M --> N{"Push succeeded?"}
-    N -->|No| O["Log error, skip PR"]
-    N -->|Yes| P["ensure_draft_pr_exists with spec_id"]
-    P --> Q{"PR with spec-N prefix exists?"}
-    Q -->|Yes| R["Log: PR already exists, commits appended"]
-    Q -->|No| S["gh pr create --draft with spec-N title"]
-    R --> T{"Verify passed?"}
-    S --> T
-    T -->|Yes| U["transition_pr_to_review"]
-    T -->|No| V["PR stays as draft"]
-
-    style F fill:#4169E1,color:#fff
-    style R fill:#228B22,color:#fff
-    style S fill:#DAA520,color:#000
-    style U fill:#228B22,color:#fff
-    style O fill:#DC143C,color:#fff
-```
-
-### Spec-22 Duplicate PR Prevention
-
-```mermaid
-flowchart LR
-    A["ensure_draft_pr_exists called"] --> B["gh pr list --state open --json"]
-    B --> C{"Parse JSON response"}
-    C -->|Success| D{"Any PR title starts\nwith [spec-N]?"}
-    C -->|Failure| E["Log warning, return None"]
-    D -->|"Found PR #X"| F["Return PR number X\n(commits auto-appended)"]
-    D -->|Not found| G["gh pr create --draft\ntitle: [spec-N] summary"]
-    G --> H{"Create succeeded?"}
-    H -->|Yes| I["Return new PR number"]
-    H -->|No| J["Log error, return None"]
-
-    style F fill:#228B22,color:#fff
-    style I fill:#228B22,color:#fff
-    style E fill:#DC143C,color:#fff
-    style J fill:#DC143C,color:#fff
-```
-
-### Spec-22 Finding Resolution by Phase
-
-```mermaid
-flowchart TB
-    subgraph P1_Fixes["P1 Critical (4 Findings)"]
-        F1["S22-P1-1\nTypeError in\nensure_draft_pr_exists"]
-        F2["S22-P1-2\nDuplicate PR\ncreation"]
-        F3["S22-P1-3\nPush failure\nsilently swallowed"]
-        F4["S22-P1-4\nbuild_logger\ncleanup never runs"]
-    end
-
-    subgraph P2_Fixes["P2 Important (20 Findings)"]
-        G1["Thread safety\naudit_logger\nbudget_guard\nprogress"]
-        G2["Token budget\nbypass in\ncontext_manager"]
-        G3["TOCTOU race\nin parser"]
-        G4["Denylist gaps\ngit, java, go\ncargo, dotnet"]
-        G5["Agent prompt\nstages secrets\ncreates PRs"]
-    end
-
-    subgraph Phases["Implementation Phases"]
-        Ph1["Phase 1: Branch mapping"]
-        Ph2["Phase 2: PR dedup"]
-        Ph3["Phase 3: Prompt cleanup"]
-        Ph4["Phase 4: Full lifecycle"]
-        Ph5["Phase 5: Build logger"]
-        Ph6["Phase 6: Thread safety"]
-        Ph7["Phase 7: Budget + TOCTOU"]
-        Ph8["Phase 8: Denylist + cache"]
-        Ph9["Phase 9: Test coverage"]
-        Ph10["Phase 10: Documentation"]
-    end
-
-    F1 --> Ph2
-    F2 --> Ph2
-    F3 --> Ph2
-    F4 --> Ph5
-    G1 --> Ph6
-    G2 --> Ph7
-    G3 --> Ph7
-    G4 --> Ph8
-    G5 --> Ph3
-
-    Ph1 & Ph2 & Ph3 & Ph4 & Ph5 & Ph6 & Ph7 & Ph8 & Ph9 & Ph10 --> Zero["Zero Duplicate PRs\nZero P1 Findings\n1556 Tests"]
-
-    style P1_Fixes fill:#DC143C,color:#fff
-    style P2_Fixes fill:#DAA520,color:#000
-    style Zero fill:#228B22,color:#fff
-```
-
-### Spec-22 Deterministic vs Probabilistic Logic
-
-```mermaid
-pie title Codebase Logic Breakdown (9,893 lines)
-    "Deterministic Safety Harness (56%)" : 5500
-    "Probabilistic LLM-Driven (44%)" : 4400
-```
-
-### CI Quality Gate Pipeline
-
-```mermaid
-flowchart LR
-    A[Push / PR] --> B[Lint\nruff check]
-    B --> C[Format\nruff format]
-    C --> D[Tests\npytest]
-    D --> E[Coverage\n90% minimum]
-    E --> F[Security\nbandit]
-    F --> G[Audit\npip-audit]
-    G --> H{All Pass?}
-    H -->|Yes| I[Merge Ready]
-    H -->|No| J[Block Merge]
-
-    style I fill:#228B22,color:#fff
-    style J fill:#DC143C,color:#fff
-```
-
-### Security Defense Layers
-
-```mermaid
-flowchart TB
-    subgraph L1["Layer 1: Input Validation"]
-        A1["Command denylist\n96 blocked commands"]
-        A2["Shell metacharacter filter\n12 blocked chars"]
-        A3["Path traversal defense\niterative decode + sandbox"]
-    end
-
-    subgraph L2["Layer 2: Execution Safety"]
-        B1["shell=False enforcement"]
-        B2["Process group timeout"]
-        B3["Prompt sanitization"]
-    end
-
-    subgraph L3["Layer 3: Output Protection"]
-        C1["File extension allowlist"]
-        C2["File count/size limits"]
-        C3["Atomic writes + symlink check"]
-    end
-
-    subgraph L4["Layer 4: Audit and Detection"]
-        D1["Security event logging"]
-        D2["Credential sanitization"]
-        D3["Secret pattern scanning"]
-    end
-
-    L1 --> L2 --> L3 --> L4
-
-    style L1 fill:#DAA520,color:#000
-    style L2 fill:#4169E1,color:#fff
-    style L3 fill:#228B22,color:#fff
-    style L4 fill:#8B008B,color:#fff
-```
-
-### Module Test Coverage Map
-
-```mermaid
-block-beta
-    columns 5
-    cmd_runner["command_runner\n284 tests"]:1
-    git_orch["git_orchestrator\n143 tests"]:1
-    verifier["verifier.py\n108 tests"]:1
-    planner["planner.py\n100 tests"]:1
-    config["config.py\n86 tests"]:1
-    agent["agent_runner\n67 tests"]:1
-    sandbox["sandbox.py\n59 tests"]:1
-    claude_eng["claude_engine\n59 tests"]:1
-    orchestrator["orchestrator\n56 tests"]:1
-    loop_ctrl["loop_controller\n56 tests"]:1
-    logger_san["logger_sanitize\n48 tests"]:1
-    executor["executor.py\n47 tests"]:1
-    prompts["prompts.py\n38 tests"]:1
-    fs_tools["fs_tools.py\n34 tests"]:1
-    parser["parser.py\n31 tests"]:1
-
-    style cmd_runner fill:#228B22,color:#fff
-    style git_orch fill:#4169E1,color:#fff
-    style verifier fill:#228B22,color:#fff
-    style planner fill:#228B22,color:#fff
-    style config fill:#4169E1,color:#fff
-    style agent fill:#4169E1,color:#fff
-    style sandbox fill:#228B22,color:#fff
-    style claude_eng fill:#4169E1,color:#fff
-    style orchestrator fill:#4169E1,color:#fff
-    style loop_ctrl fill:#228B22,color:#fff
-    style logger_san fill:#228B22,color:#fff
-    style executor fill:#228B22,color:#fff
-    style prompts fill:#228B22,color:#fff
-    style fs_tools fill:#228B22,color:#fff
-    style parser fill:#228B22,color:#fff
-```
-
-> Green = existing coverage, Blue = added/expanded in spec-16 through spec-22
-
----
-
-### Spec-20 Security Finding Resolution Flow
-
-```mermaid
-flowchart TD
-    S20["spec-20: 26 Findings"]
-    S20 --> P1["5 P1 Critical"]
-    S20 --> P2["11 P2 Important"]
-    S20 --> P3["10 P3 Minor"]
-
-    P1 --> P1a["Phase 1: SSRF Prevention"]
-    P1 --> P1b["Phase 2: Git Staging Safety"]
-    P1 --> P1c["Phase 3: Remove --dangerously-skip-permissions"]
-    P1 --> P1d["Phase 4: Prompt Injection Sanitization"]
-    P1 --> P1e["Phase 5: SQLite DB Permissions"]
-
-    P2 --> P2a["Phases 6-12: Sandbox, Denylist, Backoff, Locks, Tokenize, Cleanup, Atomic Write"]
-
-    P3 --> P3a["Phases 13-18: Fail-closed, ReDoS, Redaction, Config, Summary, Parser"]
-
-    P1a --> ZERO["Zero Open S20 Findings"]
-    P1b --> ZERO
-    P1c --> ZERO
-    P1d --> ZERO
-    P1e --> ZERO
-    P2a --> ZERO
-    P3a --> ZERO
-
-    style S20 fill:#DC143C,color:#fff
-    style ZERO fill:#228B22,color:#fff
-    style P1 fill:#FF4500,color:#fff
-    style P2 fill:#FF8C00,color:#fff
-    style P3 fill:#FFD700,color:#000
-```
-
-### Spec-20 Git Staging Safety (Before and After)
-
-```mermaid
-sequenceDiagram
-    participant O as Orchestrator
-    participant G as Git
-
-    rect rgb(255, 200, 200)
-    Note over O,G: BEFORE (spec-19)
-    O->>G: git add . (stages everything)
-    G-->>O: .env, .pem staged too
-    O->>O: Warning logged (continues)
-    O->>G: git commit
-    Note over G: Secrets committed!
-    end
-
-    rect rgb(200, 255, 200)
-    Note over O,G: AFTER (spec-20)
-    O->>G: git add -u (tracked files only)
-    G-->>O: Files staged
-    O->>O: _check_staged_files_for_sensitive_patterns()
-    alt Sensitive file found
-        O->>O: ABORT - GitOperationError
-        Note over O: Commit refused
-    else Clean
-        O->>G: git commit
-        Note over G: Safe commit
-    end
-    end
-```
-
-### Spec-20 LLM Endpoint Validation
-
-```mermaid
-flowchart TD
-    URL["LLM Endpoint URL"] --> PARSE["urllib.parse.urlparse()"]
-    PARSE --> SCHEME{{"Scheme == HTTPS?"}}
-    SCHEME -->|No| REJECT_SCHEME["REJECT: Insecure scheme"]
-    SCHEME -->|Yes| ALLOWLIST{{"In _ALLOWED_ENDPOINT_BASES?"}}
-    ALLOWLIST -->|Yes| ACCEPT["ACCEPT"]
-    ALLOWLIST -->|No| DNS["socket.getaddrinfo()"]
-    DNS --> LOOP_CHECK{{"is_loopback?"}}
-    LOOP_CHECK -->|Yes| REJECT_LOOP["REJECT: Loopback"]
-    LOOP_CHECK -->|No| LINK_CHECK{{"is_link_local?"}}
-    LINK_CHECK -->|Yes| REJECT_LINK["REJECT: Link-local"]
-    LINK_CHECK -->|No| PRIV_CHECK{{"is_private?"}}
-    PRIV_CHECK -->|Yes| REJECT_PRIV["REJECT: Private IP"]
-    PRIV_CHECK -->|No| ACCEPT
-
-    style REJECT_SCHEME fill:#DC143C,color:#fff
-    style REJECT_LOOP fill:#DC143C,color:#fff
-    style REJECT_LINK fill:#DC143C,color:#fff
-    style REJECT_PRIV fill:#DC143C,color:#fff
-    style ACCEPT fill:#228B22,color:#fff
-```
-
-### Spec-20 Thread Safety Model
-
-```mermaid
-block-beta
-    columns 3
-    block:sandbox["Sandbox"]
-        s_lock["threading.Lock"]
-        s_count["_file_count"]
-        s_paths["_written_paths"]
-    end
-    block:budget["BudgetGuard"]
-        b_lock["threading.Lock"]
-        b_calls["_calls_made"]
-        b_cost["_estimated_cost_usd"]
-    end
-    block:audit["AuditLogger"]
-        a_lock["threading.Lock"]
-        a_file["_audit_fh"]
-        a_sec["_security_fh"]
-    end
-
-    style s_lock fill:#4169E1,color:#fff
-    style b_lock fill:#4169E1,color:#fff
-    style a_lock fill:#4169E1,color:#fff
-```
-
-### Spec-20 Credential Redaction Pipeline
-
-```mermaid
-flowchart LR
-    MSG["record.msg"] --> SAN1["sanitize_message()"]
-    SAN1 --> ARGS["record.args"]
-    ARGS --> SAN2["sanitize per-arg"]
-    SAN2 --> FMT["record.getMessage()"]
-    FMT --> SAN3["sanitize_message()"]
-    SAN3 --> FINAL["record.msg = sanitized\nrecord.args = None"]
-    FINAL --> OUT["Final log output\n(always redacted)"]
-
-    style SAN1 fill:#FF8C00,color:#fff
-    style SAN2 fill:#FF8C00,color:#fff
-    style SAN3 fill:#228B22,color:#fff
-    style OUT fill:#228B22,color:#fff
-```
-
-> All spec-20 diagrams show the security improvements implemented across 18 phases resolving 26 findings.
-
----
-
-## Zero Dependencies
-
-The core engine uses only Python standard library (`urllib`, `json`, `sqlite3`, `subprocess`). No pip packages required at runtime.
 
 ## License
 

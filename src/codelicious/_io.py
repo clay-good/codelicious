@@ -63,7 +63,7 @@ def atomic_write_text(
             else:
                 raise
         os.chmod(str(target), mode)
-    except Exception:
+    except OSError:
         # Close fd if os.fdopen never claimed it (RC-2: prevent fd leak)
         if not fd_owned:
             try:
@@ -91,8 +91,8 @@ def read_text_safe(path: pathlib.Path, label: str | None = None) -> str:
     display = label or path.name
     try:
         return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
         raise FileReadError(
             f"Cannot read '{display}' as text (likely a binary file). Only UTF-8 text files are supported.",
             path=str(path),
-        )
+        ) from exc

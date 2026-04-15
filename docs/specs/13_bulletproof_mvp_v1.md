@@ -1748,15 +1748,15 @@ Fixtures that require filesystem state should use pytest's tmp_path fixture.
 
 After all 25 phases are complete, verify:
 
-- [ ] pytest: 500+ tests, 0 failures, 0 collection errors
-- [ ] pytest --cov: 80%+ line coverage
-- [ ] ruff check: 0 violations
-- [ ] ruff format: 0 reformats needed
-- [ ] python -c "from codelicious import cli": no import errors
-- [ ] grep for f-string logging: 0 matches in src/
-- [ ] grep for addLevelName: 0 matches in src/
-- [ ] grep for "git add .": 0 matches in src/ (replaced with explicit staging)
+- [x] pytest: 500+ tests, 0 failures, 0 collection errors
+- [x] pytest --cov: 80%+ line coverage
+- [x] ruff check: 0 violations
+- [x] ruff format: 0 reformats needed
+- [x] python -c "from codelicious import cli": no import errors
+- [x] grep for f-string logging: 0 matches in src/
+- [x] grep for addLevelName: 0 matches in src/
+- [x] grep for "git add .": 0 matches in src/ (replaced with explicit staging)
 - [x] grep for warnings.warn in planner.py _check_injection: 0 matches (replaced with raise)
-- [ ] README.md metrics match actual values
-- [ ] STATE.md shows spec-13 complete
-- [ ] BUILD_COMPLETE contains "DONE"
+- [x] README.md metrics match actual values
+- [x] STATE.md shows spec-13 complete
+- [x] BUILD_COMPLETE contains "DONE"

@@ -1,3 +1,3 @@
 """codelicious: Autonomous software builder from markdown specifications."""
 
-__all__: list[str] = []
+__version__ = "1.0.0"

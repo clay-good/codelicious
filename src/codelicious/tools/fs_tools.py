@@ -3,11 +3,11 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
-from codelicious.sandbox import Sandbox
 from codelicious.errors import (
     PathTraversalError,
     SandboxViolationError,
 )
+from codelicious.sandbox import Sandbox
 
 logger = logging.getLogger("codelicious.fs_tools")
 

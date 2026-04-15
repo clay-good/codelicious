@@ -1,9 +1,0 @@
-```python src/données.py
-# Module with unicode filename
-data = {"café": "résumé", "日本語": "テスト"}
-```
-
-```python src/módulo.py
-# Spanish module
-resultado = 42
-```

@@ -5,7 +5,6 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-
 # -- TF-1: edge_case_spec_path fixture variations ----------------------------
 
 

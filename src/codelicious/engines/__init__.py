@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import os
+import shutil
 
-from codelicious.engines.base import BuildEngine
+from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
 
 logger = logging.getLogger("codelicious.engines")
 
-__all__ = ["BuildEngine", "select_engine"]
+__all__ = ["BuildEngine", "BuildResult", "ChunkResult", "EngineContext", "select_engine"]
 
 
 def select_engine(engine_preference: str = "auto") -> BuildEngine:
@@ -19,10 +19,16 @@ def select_engine(engine_preference: str = "auto") -> BuildEngine:
     Parameters
     ----------
     engine_preference:
-        One of "auto", "claude", "huggingface".
-        - "auto": prefer Claude Code CLI if available, else HuggingFace.
-        - "claude": force Claude Code CLI (error if not available).
-        - "huggingface": force HuggingFace Inference API.
+        One of ``"auto"``, ``"claude"``, ``"huggingface"``.
+
+        - ``"auto"``: prefer Claude Code CLI if available, else HuggingFace.
+        - ``"claude"``: force Claude Code CLI (error if not available).
+        - ``"huggingface"``: force HuggingFace Inference API.
+
+        Future engine slots (not yet implemented):
+        - ``"anthropic-api"``: Anthropic API direct
+        - ``"openai"``: OpenAI/Codex API
+        - ``"gemini"``: Google Gemini API
 
     Returns
     -------

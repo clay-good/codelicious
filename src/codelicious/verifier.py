@@ -10,8 +10,8 @@ import os
 import pathlib
 import re
 import shlex
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import tokenize
@@ -143,7 +143,7 @@ class VerificationResult:
 
 
 @functools.lru_cache(maxsize=1)
-def probe_tools(project_dir: pathlib.Path) -> dict[str, bool]:  # noqa: ARG001
+def probe_tools(project_dir: pathlib.Path) -> dict[str, bool]:
     """Return a dict mapping tool name to True if available on PATH.
 
     project_dir is accepted for API consistency but is not used — tool
@@ -1278,7 +1278,7 @@ def _pytest_cov_available() -> bool:
         import importlib.util
 
         return importlib.util.find_spec("pytest_cov") is not None
-    except Exception:
+    except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
 

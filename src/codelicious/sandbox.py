@@ -8,10 +8,9 @@ import pathlib
 import shutil
 import tempfile
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from codelicious._env import parse_env_csv
-
 from codelicious.errors import (
     DeniedPathError,
     DisallowedExtensionError,
@@ -101,6 +100,10 @@ class Sandbox:
         self._files_created_count: int = 0
         self._written_paths: set[str] = set()
         self._lock: threading.Lock = threading.Lock()
+        # Coarse-grained lock for the full write_file cycle (spec-15 Phase 9).
+        # Serializes validate -> write -> replace to eliminate TOCTOU windows
+        # under concurrent access. The inner _lock handles fine-grained counter ops.
+        self._write_lock: threading.Lock = threading.Lock()
 
         # Merge extra extensions from CODELICIOUS_EXTRA_EXTENSIONS env var
         self._allowed_extensions: frozenset[str] = self._build_allowed_extensions()
@@ -112,9 +115,7 @@ class Sandbox:
         def _validate_extension(ext: str) -> bool:
             if not ext.startswith("."):
                 return False
-            if "/" in ext or "\\" in ext:
-                return False
-            return True
+            return "/" not in ext and "\\" not in ext
 
         return parse_env_csv(
             "CODELICIOUS_EXTRA_EXTENSIONS",
@@ -187,11 +188,11 @@ class Sandbox:
         logger.debug("Checking denied patterns for: %s", resolved_path)
         try:
             rel = resolved_path.relative_to(self.project_dir)
-        except ValueError:
+        except ValueError as exc:
             raise PathTraversalError(
                 f"Path traversal: '{resolved_path}' is outside project root '{self.project_dir}'",
                 path=str(resolved_path),
-            )
+            ) from exc
 
         # Check if the filename is in explicitly allowed names
         filename = resolved_path.name
@@ -299,7 +300,16 @@ class Sandbox:
         return resolved, is_new
 
     def write_file(self, relative_path: str, content: str) -> pathlib.Path:
-        """Write a file atomically after validation."""
+        """Write a file atomically after validation.
+
+        The full validate-write cycle is serialized under _write_lock to
+        eliminate TOCTOU windows under concurrent access (spec-15 Phase 9).
+        """
+        with self._write_lock:
+            return self._write_file_locked(relative_path, content)
+
+    def _write_file_locked(self, relative_path: str, content: str) -> pathlib.Path:
+        """Inner write implementation, called under _write_lock."""
         logger.info("Writing file: %s", relative_path)
         resolved, is_new = self.validate_write(relative_path, content)
 

@@ -1,10 +1,10 @@
+import logging
 import os
+import shlex
 import signal
 import subprocess
-import shlex
-from typing import TypedDict
-import logging
 from pathlib import Path
+from typing import TypedDict
 
 from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMANDS
 
@@ -158,5 +158,5 @@ class CommandRunner:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": f"Subprocess Execution Error: {str(e)}",
+                "stderr": f"Subprocess Execution Error: {e!s}",
             }

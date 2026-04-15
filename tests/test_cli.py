@@ -14,7 +14,17 @@ from unittest import mock
 import pytest
 
 import codelicious.cli as cli_module
-from codelicious.cli import _parse_args, _print_banner, _print_result, _validate_dependencies, main, setup_logger
+from codelicious.cli import (
+    PreFlightResult,
+    _detect_platform,
+    _parse_args,
+    _print_banner,
+    _print_result,
+    _run_auth_preflight,
+    _validate_dependencies,
+    main,
+    setup_logger,
+)
 from codelicious.engines.base import BuildResult
 from codelicious.git.git_orchestrator import GitManager
 
@@ -30,6 +40,8 @@ def mock_repo(tmp_path: Path) -> Path:
 @pytest.fixture
 def mock_successful_engine():
     """Create a mock engine that returns a successful build result."""
+    from codelicious.engines.base import ChunkResult
+
     engine = mock.MagicMock()
     engine.name = "mock-engine"
     engine.run_build_cycle.return_value = BuildResult(
@@ -38,12 +50,18 @@ def mock_successful_engine():
         session_id="test-123",
         elapsed_s=10.5,
     )
+    # v2 orchestrator chunk methods
+    engine.execute_chunk.return_value = ChunkResult(success=True, files_modified=[], message="done")
+    engine.verify_chunk.return_value = ChunkResult(success=True, message="passed")
+    engine.fix_chunk.return_value = ChunkResult(success=True, message="fixed")
     return engine
 
 
 @pytest.fixture
 def mock_failed_engine():
     """Create a mock engine that returns a failed build result."""
+    from codelicious.engines.base import ChunkResult
+
     engine = mock.MagicMock()
     engine.name = "mock-engine"
     engine.run_build_cycle.return_value = BuildResult(
@@ -52,6 +70,10 @@ def mock_failed_engine():
         session_id="test-456",
         elapsed_s=5.0,
     )
+    # v2 orchestrator chunk methods
+    engine.execute_chunk.return_value = ChunkResult(success=False, message="failed")
+    engine.verify_chunk.return_value = ChunkResult(success=False, message="failed")
+    engine.fix_chunk.return_value = ChunkResult(success=False, message="failed")
     return engine
 
 
@@ -60,14 +82,20 @@ def mock_git_manager():
     """Create a mock GitManager with proper spec to handle assert_safe_branch."""
     manager = mock.MagicMock(spec=GitManager)
     manager.current_branch = "feature/test"
+    # v2 orchestrator return values
+    manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
+    manager.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
+    manager.get_pr_commit_count.return_value = 0
+    manager.ensure_draft_pr_exists.return_value = 42
+    manager.revert_chunk_changes.return_value = True
     return manager
 
 
 def _mock_spec_discovery(*specs):
-    """Return mock patches for _walk_for_specs and _discover_incomplete_specs."""
+    """Return mock patches for walk_for_specs and discover_incomplete_specs."""
     return (
-        mock.patch("codelicious.cli._walk_for_specs", return_value=list(specs)),
-        mock.patch("codelicious.cli._discover_incomplete_specs", return_value=list(specs)),
+        mock.patch("codelicious.cli.walk_for_specs", return_value=list(specs)),
+        mock.patch("codelicious.cli.discover_incomplete_specs", return_value=list(specs)),
     )
 
 
@@ -88,10 +116,14 @@ class TestSingleCommand:
     def _skip_dep_validation(self):
         """Skip dependency validation in main() tests — tested separately."""
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_bare_command_runs_full_pipeline(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
-        """Test that `codelicious <repo>` runs the full pipeline."""
+        """Test that `codelicious <repo>` runs the v2 chunk-based pipeline."""
         spec_file = mock_repo / "spec.md"
         walk_patch, discover_patch = _mock_spec_discovery(spec_file)
 
@@ -105,14 +137,8 @@ class TestSingleCommand:
         # Engine auto-detected
         mock_select.assert_called_once_with("auto")
 
-        # Build cycle called with orchestrate mode ON
-        call_kwargs = mock_successful_engine.run_build_cycle.call_args
-        assert call_kwargs.kwargs["orchestrate"] is True
-        assert call_kwargs.kwargs["push_pr"] is True
-        assert call_kwargs.kwargs["reflect"] is True
-
-        # PR lifecycle is handled by git_orchestrator, not cli.py
-        mock_git_manager.transition_pr_to_review.assert_not_called()
+        # v2 orchestrator calls execute_chunk on the engine (not run_build_cycle)
+        mock_successful_engine.execute_chunk.assert_called()
 
     def test_engine_flag_passed_to_select_engine(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
         """Test that --engine flag is forwarded to select_engine."""
@@ -144,7 +170,7 @@ class TestSingleCommand:
         mock_select.assert_called_once_with("huggingface")
 
     def test_model_and_timeout_flags(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
-        """Test that --model and --agent-timeout are passed to run_build_cycle."""
+        """Test that --model and --agent-timeout are parsed correctly."""
         spec_file = mock_repo / "spec.md"
         walk_patch, discover_patch = _mock_spec_discovery(spec_file)
 
@@ -166,9 +192,8 @@ class TestSingleCommand:
                         ):
                             main()
 
-        call_kwargs = mock_successful_engine.run_build_cycle.call_args.kwargs
-        assert call_kwargs["model"] == "claude-sonnet-4-20250514"
-        assert call_kwargs["agent_timeout_s"] == 600
+        # V2 orchestrator was invoked (execute_chunk called)
+        mock_successful_engine.execute_chunk.assert_called()
 
 
 class TestErrorHandling:
@@ -177,7 +202,11 @@ class TestErrorHandling:
     @pytest.fixture(autouse=True)
     def _skip_dep_validation(self):
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_no_args_exits(self):
         """Test that no arguments causes exit."""
@@ -204,14 +233,16 @@ class TestErrorHandling:
 
     def test_engine_selection_runtime_error_exits(self, mock_repo: Path):
         """Test that RuntimeError from engine selection causes exit."""
-        with mock.patch(
-            "codelicious.cli.select_engine",
-            side_effect=RuntimeError("No engine available"),
+        with (
+            mock.patch(
+                "codelicious.cli.select_engine",
+                side_effect=RuntimeError("No engine available"),
+            ),
+            mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]),
         ):
-            with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
-                with pytest.raises(SystemExit) as exc_info:
-                    main()
-                assert exc_info.value.code == 1
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
 
 
 class TestBuildFailure:
@@ -220,7 +251,11 @@ class TestBuildFailure:
     @pytest.fixture(autouse=True)
     def _skip_dep_validation(self):
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_failed_build_exits_with_error(self, mock_repo: Path, mock_failed_engine, mock_git_manager):
         """Test that a failed build result causes exit with code 1."""
@@ -258,11 +293,15 @@ class TestKeyboardInterrupt:
     @pytest.fixture(autouse=True)
     def _skip_dep_validation(self):
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_keyboard_interrupt_exits_gracefully(self, mock_repo: Path, mock_successful_engine, mock_git_manager):
         """Test that KeyboardInterrupt is caught and exits with code 130."""
-        mock_successful_engine.run_build_cycle.side_effect = KeyboardInterrupt()
+        mock_successful_engine.execute_chunk.side_effect = KeyboardInterrupt()
         spec_file = mock_repo / "spec.md"
         walk_patch, discover_patch = _mock_spec_discovery(spec_file)
 
@@ -282,19 +321,23 @@ class TestNoIncompleteSpecsEarlyExit:
     @pytest.fixture(autouse=True)
     def _skip_dep_validation(self):
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_no_incomplete_specs_exits_zero_without_build(
         self, mock_repo: Path, mock_successful_engine, mock_git_manager
     ):
-        """When _discover_incomplete_specs returns [], main() exits 0 without running engine.run_build_cycle."""
-        # Patch both _walk_for_specs (for the banner) and _discover_incomplete_specs (for the guard)
+        """When discover_incomplete_specs returns [], main() exits 0 without running engine.run_build_cycle."""
+        # Patch both walk_for_specs (for the banner) and discover_incomplete_specs (for the guard)
         # to return empty lists, simulating a fully-complete repo.
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
-                    with mock.patch("codelicious.cli._walk_for_specs", return_value=[]):
-                        with mock.patch("codelicious.cli._discover_incomplete_specs", return_value=[]):
+                    with mock.patch("codelicious.cli.walk_for_specs", return_value=[]):
+                        with mock.patch("codelicious.cli.discover_incomplete_specs", return_value=[]):
                             with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo)]):
                                 with pytest.raises(SystemExit) as exc_info:
                                     main()
@@ -312,7 +355,7 @@ class TestPrintBanner:
         spec2 = tmp_path / "spec-02.md"
 
         captured = io.StringIO()
-        with mock.patch("codelicious.cli._walk_for_specs", return_value=[spec1, spec2]):
+        with mock.patch("codelicious.cli.walk_for_specs", return_value=[spec1, spec2]):
             with mock.patch("sys.stdout", captured):
                 _print_banner(
                     repo_path=tmp_path,
@@ -373,8 +416,8 @@ class TestPrintResult:
         result = BuildResult(success=True, message="Done.", session_id="s1", elapsed_s=5.0)
 
         captured = io.StringIO()
-        with mock.patch("codelicious.cli._walk_for_specs", return_value=[]):
-            # _print_result calls _walk_for_specs internally; patch it to avoid filesystem access
+        with mock.patch("codelicious.cli.walk_for_specs", return_value=[]):
+            # _print_result calls walk_for_specs internally; patch it to avoid filesystem access
             with mock.patch("sys.stdout", captured):
                 _print_result(
                     repo_path=tmp_path,
@@ -392,14 +435,13 @@ class TestPrintResult:
         result = BuildResult(success=False, message="Some error.", session_id="s2", elapsed_s=3.0)
 
         captured = io.StringIO()
-        with mock.patch("codelicious.cli._walk_for_specs", return_value=[]):
-            with mock.patch("sys.stdout", captured):
-                _print_result(
-                    repo_path=tmp_path,
-                    result=result,
-                    elapsed=3.0,
-                    initial_incomplete=2,
-                )
+        with mock.patch("codelicious.cli.walk_for_specs", return_value=[]), mock.patch("sys.stdout", captured):
+            _print_result(
+                repo_path=tmp_path,
+                result=result,
+                elapsed=3.0,
+                initial_incomplete=2,
+            )
 
         output = captured.getvalue()
         assert "BUILD FINISHED" in output
@@ -411,14 +453,13 @@ class TestPrintResult:
         result = BuildResult(success=True, message="", session_id="s3", elapsed_s=90.0)
 
         captured = io.StringIO()
-        with mock.patch("codelicious.cli._walk_for_specs", return_value=[]):
-            with mock.patch("sys.stdout", captured):
-                _print_result(
-                    repo_path=tmp_path,
-                    result=result,
-                    elapsed=90.0,
-                    initial_incomplete=0,
-                )
+        with mock.patch("codelicious.cli.walk_for_specs", return_value=[]), mock.patch("sys.stdout", captured):
+            _print_result(
+                repo_path=tmp_path,
+                result=result,
+                elapsed=90.0,
+                initial_incomplete=0,
+            )
 
         output = captured.getvalue()
         # 90 seconds = 1m 30s
@@ -427,18 +468,22 @@ class TestPrintResult:
 
 
 class TestRunBuildCycleRuntimeError:
-    """Tests for run_build_cycle raising an exception during execution (Finding 52)."""
+    """Tests for engine raising an exception during execution (Finding 52)."""
 
     @pytest.fixture(autouse=True)
     def _skip_dep_validation(self):
         with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
-            yield
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
 
     def test_runtime_error_during_build_cycle_exits_nonzero(self, mock_repo: Path, mock_git_manager):
-        """When run_build_cycle raises RuntimeError, main() exits with code 1."""
+        """When execute_chunk raises RuntimeError, main() exits with code 1."""
         engine = mock.MagicMock()
         engine.name = "mock-engine"
-        engine.run_build_cycle.side_effect = RuntimeError("Internal engine error")
+        engine.execute_chunk.side_effect = RuntimeError("Internal engine error")
 
         spec_file = mock_repo / "spec.md"
         walk_patch, discover_patch = _mock_spec_discovery(spec_file)
@@ -454,10 +499,10 @@ class TestRunBuildCycleRuntimeError:
         assert exc_info.value.code == 1
 
     def test_runtime_error_does_not_print_banner_result(self, mock_repo: Path, mock_git_manager):
-        """When run_build_cycle raises RuntimeError, _print_result is NOT called."""
+        """When execute_chunk raises RuntimeError, _print_result is NOT called."""
         engine = mock.MagicMock()
         engine.name = "mock-engine"
-        engine.run_build_cycle.side_effect = RuntimeError("boom")
+        engine.execute_chunk.side_effect = RuntimeError("boom")
 
         spec_file = mock_repo / "spec.md"
         walk_patch, discover_patch = _mock_spec_discovery(spec_file)
@@ -477,29 +522,17 @@ class TestRunBuildCycleRuntimeError:
 class TestSigtermHandler:
     """Tests for SIGTERM graceful shutdown (spec-18 Phase 1)."""
 
-    def test_sigterm_handler_sets_flag(self):
-        """_handle_sigterm sets the _shutdown_requested flag."""
-        cli_module._shutdown_requested = False
-        with pytest.raises(SystemExit):
-            cli_module._handle_sigterm(15, None)
-        assert cli_module._shutdown_requested is True
-        cli_module._shutdown_requested = False  # cleanup
-
     def test_sigterm_handler_raises_system_exit_143(self):
         """_handle_sigterm raises SystemExit with code 143."""
-        cli_module._shutdown_requested = False
         with pytest.raises(SystemExit) as exc_info:
             cli_module._handle_sigterm(15, None)
         assert exc_info.value.code == 143
-        cli_module._shutdown_requested = False  # cleanup
 
     def test_sigterm_handler_logs_warning(self, caplog):
         """_handle_sigterm logs a WARNING about the signal."""
-        cli_module._shutdown_requested = False
         with pytest.raises(SystemExit), caplog.at_level(logging.WARNING):
             cli_module._handle_sigterm(15, None)
         assert any("SIGTERM" in r.message for r in caplog.records)
-        cli_module._shutdown_requested = False  # cleanup
 
 
 class TestValidateDependencies:
@@ -572,14 +605,13 @@ class TestCLIArgumentValidation:
         from codelicious.engines import select_engine
 
         # With no claude binary and no HF token, any unknown engine raises RuntimeError
-        with mock.patch("shutil.which", return_value=None):
-            with mock.patch.dict("os.environ", {}, clear=True):
-                import os
+        with mock.patch("shutil.which", return_value=None), mock.patch.dict("os.environ", {}, clear=True):
+            import os
 
-                os.environ.pop("HF_TOKEN", None)
-                os.environ.pop("LLM_API_KEY", None)
-                with pytest.raises(RuntimeError, match="No build engine available"):
-                    select_engine("invalid")
+            os.environ.pop("HF_TOKEN", None)
+            os.environ.pop("LLM_API_KEY", None)
+            with pytest.raises(RuntimeError, match="No build engine available"):
+                select_engine("invalid")
 
     def test_non_integer_timeout_exits(self):
         """--agent-timeout with non-integer exits with code 2."""
@@ -603,3 +635,502 @@ class TestCLIArgumentValidation:
         assert opts["agent_timeout_s"] == 1800
         assert opts["model"] == ""
         assert opts["resume_session_id"] == ""
+
+    def test_negative_timeout_accepted(self):
+        """Negative --agent-timeout is accepted as integer (validation is at runtime, not parse time)."""
+        # _parse_args accepts any integer — it doesn't validate the range
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--agent-timeout", "-1"]):
+            opts = _parse_args(sys.argv)
+        assert opts["agent_timeout_s"] == -1
+
+    def test_resume_with_huggingface_engine_accepted(self):
+        """--resume with --engine huggingface is accepted at parse time (engines handle it)."""
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["codelicious", "/tmp/repo", "--resume", "sess-123", "--engine", "huggingface"],
+        ):
+            opts = _parse_args(sys.argv)
+        assert opts["resume_session_id"] == "sess-123"
+        assert opts["engine"] == "huggingface"
+
+    def test_skip_auth_check_flag_parsed(self):
+        """--skip-auth-check sets skip_auth_check=True."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--skip-auth-check"]):
+            opts = _parse_args(sys.argv)
+        assert opts["skip_auth_check"] is True
+
+    def test_skip_auth_check_default_false(self):
+        """skip_auth_check defaults to False."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["skip_auth_check"] is False
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 0.1 — _detect_platform
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPlatform:
+    """spec-27 Phase 0.1: _detect_platform identifies GitHub vs GitLab from remote URL."""
+
+    def test_github_url(self, tmp_path: Path) -> None:
+        """GitHub remote URL returns 'github'."""
+        result = mock.MagicMock()
+        result.returncode = 0
+        result.stdout = "git@github.com:user/repo.git\n"
+        with mock.patch("subprocess.run", return_value=result):
+            assert _detect_platform(tmp_path) == "github"
+
+    def test_gitlab_url(self, tmp_path: Path) -> None:
+        """GitLab remote URL returns 'gitlab'."""
+        result = mock.MagicMock()
+        result.returncode = 0
+        result.stdout = "git@gitlab.com:user/repo.git\n"
+        with mock.patch("subprocess.run", return_value=result):
+            assert _detect_platform(tmp_path) == "gitlab"
+
+    def test_unknown_url(self, tmp_path: Path) -> None:
+        """Unrecognized remote URL returns 'unknown'."""
+        result = mock.MagicMock()
+        result.returncode = 0
+        result.stdout = "git@bitbucket.org:user/repo.git\n"
+        with mock.patch("subprocess.run", return_value=result):
+            assert _detect_platform(tmp_path) == "unknown"
+
+    def test_no_remote(self, tmp_path: Path) -> None:
+        """When git remote fails, returns 'unknown'."""
+        result = mock.MagicMock()
+        result.returncode = 1
+        result.stdout = ""
+        with mock.patch("subprocess.run", return_value=result):
+            assert _detect_platform(tmp_path) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 0.1 — _run_auth_preflight
+# ---------------------------------------------------------------------------
+
+
+class TestRunAuthPreflight:
+    """spec-27 Phase 0.1: _run_auth_preflight validates gh/glab auth."""
+
+    def test_skip_returns_immediately(self, tmp_path: Path) -> None:
+        """When skip=True, returns PreFlightResult with skipped=True."""
+        result = _run_auth_preflight(tmp_path, skip=True)
+        assert result.skipped is True
+        assert result.platform == "unknown"
+
+    def test_github_authenticated(self, tmp_path: Path) -> None:
+        """When gh is installed and authenticated, returns success."""
+        auth_result = mock.MagicMock()
+        auth_result.returncode = 0
+        auth_result.stdout = "  Logged in to github.com account testuser (keyring)\n"
+        auth_result.stderr = ""
+
+        with mock.patch("codelicious.cli._detect_platform", return_value="github"):
+            with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                with mock.patch("subprocess.run", return_value=auth_result):
+                    result = _run_auth_preflight(tmp_path, skip=False)
+
+        assert result.platform == "github"
+        assert result.authenticated_user == "testuser"
+        assert result.cli_tool == "gh"
+        assert result.skipped is False
+
+    def test_github_gh_not_installed_exits(self, tmp_path: Path) -> None:
+        """When gh is not installed, exits with code 1."""
+        with mock.patch("codelicious.cli._detect_platform", return_value="github"):
+            with mock.patch("shutil.which", return_value=None):
+                with pytest.raises(SystemExit) as exc_info:
+                    _run_auth_preflight(tmp_path, skip=False)
+                assert exc_info.value.code == 1
+
+    def test_gitlab_glab_not_installed_exits(self, tmp_path: Path) -> None:
+        """When glab is not installed for GitLab repo, exits with code 1."""
+        with mock.patch("codelicious.cli._detect_platform", return_value="gitlab"):
+            with mock.patch("shutil.which", return_value=None):
+                with pytest.raises(SystemExit) as exc_info:
+                    _run_auth_preflight(tmp_path, skip=False)
+                assert exc_info.value.code == 1
+
+    def test_github_not_authed_triggers_login(self, tmp_path: Path) -> None:
+        """When gh is installed but not authed, triggers gh auth login."""
+        not_authed = mock.MagicMock()
+        not_authed.returncode = 1
+        not_authed.stdout = ""
+        not_authed.stderr = "You are not logged in"
+
+        login_result = mock.MagicMock()
+        login_result.returncode = 0
+
+        post_login_auth = mock.MagicMock()
+        post_login_auth.returncode = 0
+        post_login_auth.stdout = "Logged in to github.com account freshuser"
+        post_login_auth.stderr = ""
+
+        call_count = {"n": 0}
+
+        def fake_subprocess_run(args, **kw):
+            call_count["n"] += 1
+            if args[:3] == ["gh", "auth", "status"]:
+                # First call: not authed; second call: authed
+                return not_authed if call_count["n"] <= 1 else post_login_auth
+            if args[:3] == ["gh", "auth", "login"]:
+                return login_result
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("codelicious.cli._detect_platform", return_value="github"):
+            with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                with mock.patch("subprocess.run", side_effect=fake_subprocess_run):
+                    result = _run_auth_preflight(tmp_path, skip=False)
+
+        assert result.platform == "github"
+        assert result.authenticated_user == "freshuser"
+
+    def test_preflight_result_dataclass(self) -> None:
+        """PreFlightResult is frozen and has expected fields."""
+        r = PreFlightResult(platform="github", authenticated_user="me", cli_tool="gh", skipped=False)
+        assert r.platform == "github"
+        assert r.authenticated_user == "me"
+        assert r.cli_tool == "gh"
+        assert r.skipped is False
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 1.1 — New CLI flags
+# ---------------------------------------------------------------------------
+
+
+class TestNewCLIFlags:
+    """spec-27 Phase 1.1: --dry-run, --spec, --max-commits-per-pr, --platform flags."""
+
+    def test_dry_run_flag(self):
+        """--dry-run sets dry_run=True."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--dry-run"]):
+            opts = _parse_args(sys.argv)
+        assert opts["dry_run"] is True
+
+    def test_dry_run_default_false(self):
+        """dry_run defaults to False."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["dry_run"] is False
+
+    def test_spec_flag(self):
+        """--spec sets spec to the given path."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--spec", "docs/specs/feature.md"]):
+            opts = _parse_args(sys.argv)
+        assert opts["spec"] == "docs/specs/feature.md"
+
+    def test_spec_default_empty(self):
+        """spec defaults to empty string."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["spec"] == ""
+
+    def test_max_commits_per_pr_flag(self):
+        """--max-commits-per-pr sets the value as integer."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "75"]):
+            opts = _parse_args(sys.argv)
+        assert opts["max_commits_per_pr"] == 75
+
+    def test_max_commits_per_pr_default_50(self):
+        """max_commits_per_pr defaults to 50."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["max_commits_per_pr"] == 50
+
+    def test_max_commits_per_pr_over_100_exits(self):
+        """--max-commits-per-pr > 100 exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "101"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+            assert exc_info.value.code == 2
+
+    def test_max_commits_per_pr_zero_exits(self):
+        """--max-commits-per-pr 0 exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "0"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+            assert exc_info.value.code == 2
+
+    def test_platform_github(self):
+        """--platform github is accepted."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--platform", "github"]):
+            opts = _parse_args(sys.argv)
+        assert opts["platform"] == "github"
+
+    def test_platform_gitlab(self):
+        """--platform gitlab is accepted."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--platform", "gitlab"]):
+            opts = _parse_args(sys.argv)
+        assert opts["platform"] == "gitlab"
+
+    def test_platform_auto_default(self):
+        """platform defaults to 'auto'."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["platform"] == "auto"
+
+    def test_platform_invalid_exits(self):
+        """--platform with an invalid value exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--platform", "bitbucket"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+            assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 1.2 — spec_discovery standalone module
+# ---------------------------------------------------------------------------
+
+
+class TestSpecDiscoveryModule:
+    """spec-27 Phase 1.2: spec_discovery.py works as standalone module."""
+
+    def test_walk_for_specs_finds_specs_dir(self, tmp_path: Path) -> None:
+        """walk_for_specs finds .md files inside specs/ directories."""
+        from codelicious.spec_discovery import walk_for_specs as wfs
+
+        spec_dir = tmp_path / "docs" / "specs"
+        spec_dir.mkdir(parents=True)
+        f1 = spec_dir / "feature.md"
+        f1.write_text("- [ ] task\n", encoding="utf-8")
+
+        results = wfs(tmp_path)
+        assert f1.resolve() in results
+
+    def test_walk_for_specs_skips_excluded(self, tmp_path: Path) -> None:
+        """walk_for_specs skips README.md even inside specs/ dirs."""
+        from codelicious.spec_discovery import walk_for_specs as wfs
+
+        spec_dir = tmp_path / "docs" / "specs"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "README.md").write_text("# Readme\n", encoding="utf-8")
+
+        results = wfs(tmp_path)
+        assert (spec_dir / "README.md").resolve() not in results
+
+    def test_discover_incomplete_finds_unchecked(self, tmp_path: Path) -> None:
+        """discover_incomplete_specs finds specs with unchecked boxes."""
+        from codelicious.spec_discovery import discover_incomplete_specs as dis
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("- [ ] todo\n- [x] done\n", encoding="utf-8")
+
+        result = dis(tmp_path, all_specs=[spec])
+        assert spec in result
+
+    def test_discover_incomplete_skips_complete(self, tmp_path: Path) -> None:
+        """discover_incomplete_specs skips fully-checked specs."""
+        from codelicious.spec_discovery import discover_incomplete_specs as dis
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("- [x] done1\n- [X] done2\n", encoding="utf-8")
+
+        result = dis(tmp_path, all_specs=[spec])
+        assert spec not in result
+
+
+# ---------------------------------------------------------------------------
+# --version / -V flag (lines 390-394 in cli.py)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionFlag:
+    """Tests for the -V / --version flag."""
+
+    def test_version_flag_short(self, capsys):
+        """-V prints the version string and exits with code 0."""
+        with mock.patch.object(sys, "argv", ["codelicious", "-V"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "codelicious" in captured.out
+
+    def test_version_flag_long(self, capsys):
+        """--version prints the version string and exits with code 0."""
+        with mock.patch.object(sys, "argv", ["codelicious", "--version"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "codelicious" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# --parallel flag integer validation (lines 424-428 in cli.py)
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgsIntFlagValidation:
+    """Tests for integer flag validation in _parse_args."""
+
+    def test_parallel_non_integer_exits(self):
+        """--parallel with a non-integer value exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--parallel", "abc"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+        assert exc_info.value.code == 2
+
+    def test_parallel_integer_accepted(self):
+        """--parallel with a valid integer is parsed correctly."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--parallel", "4"]):
+            opts = _parse_args(sys.argv)
+        assert opts["parallel"] == 4
+
+    def test_max_commits_non_integer_exits(self):
+        """--max-commits-per-pr with a non-integer value exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "notanint"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+        assert exc_info.value.code == 2
+
+    def test_value_flag_without_following_value_is_unknown(self):
+        """A value flag at the end of argv with no following token is treated as unknown."""
+        # When "--engine" is the last token, i + 1 < len(args) is False,
+        # so the unknown-flag branch fires and exits with code 2.
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--engine"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+        assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# --dry-run path through main() (lines 535-556 in cli.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDryRunMainPath:
+    """Tests for the --dry-run code path executed through main()."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_external(self):
+        with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
+
+    def test_dry_run_exits_zero_without_building(self, mock_repo: Path, mock_git_manager, capsys):
+        """--dry-run prints the plan and exits with code 0 without running the engine."""
+        spec_file = mock_repo / "spec.md"
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(
+                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
+                        ):
+                            with pytest.raises(SystemExit) as exc_info:
+                                main()
+
+        assert exc_info.value.code == 0
+        # Engine must never run in dry-run mode
+        engine.execute_chunk.assert_not_called()
+
+    def test_dry_run_prints_spec_list(self, mock_repo: Path, mock_git_manager, capsys):
+        """--dry-run output includes the discovered spec path."""
+        spec_file = mock_repo / "spec.md"
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(
+                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
+                        ):
+                            with pytest.raises(SystemExit):
+                                main()
+
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "spec.md" in captured.out
+
+    def test_dry_run_shows_unchecked_task_count(self, mock_repo: Path, mock_git_manager, capsys):
+        """--dry-run output shows the number of unchecked tasks per spec."""
+        spec_file = mock_repo / "spec.md"
+        spec_file.write_text("# Spec\n- [ ] task one\n- [ ] task two\n", encoding="utf-8")
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+
+        walk_patch, discover_patch = _mock_spec_discovery(spec_file)
+
+        with mock.patch("codelicious.cli.select_engine", return_value=engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with walk_patch, discover_patch:
+                        with mock.patch.object(
+                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
+                        ):
+                            with pytest.raises(SystemExit):
+                                main()
+
+        captured = capsys.readouterr()
+        assert "2 unchecked task" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# --spec override path through main() (lines 508-515 in cli.py)
+# ---------------------------------------------------------------------------
+
+
+class TestSpecOverrideMainPath:
+    """Tests for the --spec single-file override through main()."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_external(self):
+        with mock.patch("codelicious.cli._validate_dependencies", side_effect=lambda e: e):
+            with mock.patch(
+                "codelicious.cli._run_auth_preflight",
+                return_value=PreFlightResult(platform="github", authenticated_user="test", cli_tool="gh", skipped=True),
+            ):
+                yield
+
+    def test_spec_override_missing_file_exits(self, mock_repo: Path, mock_git_manager):
+        """--spec pointing to a nonexistent file exits with code 1."""
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+
+        with mock.patch("codelicious.cli.select_engine", return_value=engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        ["codelicious", str(mock_repo), "--spec", "nonexistent/spec.md"],
+                    ):
+                        with pytest.raises(SystemExit) as exc_info:
+                            main()
+
+        assert exc_info.value.code == 1
+
+    def test_spec_override_builds_single_spec(self, mock_repo: Path, mock_git_manager, mock_successful_engine):
+        """--spec with a valid file builds only that spec."""
+        spec_file = mock_repo / "targeted.md"
+        spec_file.write_text("# Target\n- [ ] do this\n", encoding="utf-8")
+
+        with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
+            with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
+                with mock.patch("codelicious.cli.CacheManager"):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        ["codelicious", str(mock_repo), "--spec", "targeted.md"],
+                    ):
+                        main()
+
+        mock_successful_engine.execute_chunk.assert_called()

@@ -11,12 +11,10 @@ from codelicious.prompts import (
     AGENT_BUILD_SPEC,
     check_build_complete,
     clear_build_complete,
-    extract_context,
     render,
     scan_remaining_tasks,
     scan_remaining_tasks_for_spec,
 )
-
 
 # ---------------------------------------------------------------------------
 # scan_remaining_tasks_for_spec
@@ -206,112 +204,6 @@ class TestBuildComplete:
 
 
 # ---------------------------------------------------------------------------
-# Finding 81 — extract_context() with STATE.md present
-# ---------------------------------------------------------------------------
-
-
-class TestExtractContext:
-    """Finding 81: extract_context() with a real .codelicious/STATE.md file was untested.
-
-    These tests create a tmp_path with a .codelicious/STATE.md containing known
-    content and assert the expected fields are present in the returned dict.
-    """
-
-    def test_returns_dict_with_expected_keys(self, tmp_path: pathlib.Path) -> None:
-        """extract_context returns a dict with all expected template-variable keys."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        (state_dir / "STATE.md").write_text("## Tech Stack\nPython 3.10\n", encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        expected_keys = {
-            "project_name",
-            "iteration",
-            "max_iterations",
-            "pending_count",
-            "completed_count",
-            "completed_tasks",
-            "tech_stack",
-            "test_command",
-            "failed_tasks",
-            "stall_count",
-        }
-        assert expected_keys.issubset(ctx.keys()), f"Missing keys: {expected_keys - set(ctx.keys())}"
-
-    def test_project_name_matches_directory(self, tmp_path: pathlib.Path) -> None:
-        """project_name in the returned dict matches the project root directory name."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        (state_dir / "STATE.md").write_text("", encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["project_name"] == tmp_path.name
-
-    def test_tech_stack_extracted_from_state_md(self, tmp_path: pathlib.Path) -> None:
-        """tech_stack field contains content from the '## Tech Stack' section."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        content = "## Tech Stack\nPython 3.10, pytest, ruff\n\n## Other\nstuff\n"
-        (state_dir / "STATE.md").write_text(content, encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert "Python 3.10" in ctx["tech_stack"]
-
-    def test_pending_count_counts_unchecked_tasks(self, tmp_path: pathlib.Path) -> None:
-        """pending_count reflects the number of '### [ ]' items in STATE.md."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        content = "### [ ] Task A\n### [ ] Task B\n### [x] Task: Done task\n"
-        (state_dir / "STATE.md").write_text(content, encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["pending_count"] == "2"
-
-    def test_completed_count_counts_completed_tasks(self, tmp_path: pathlib.Path) -> None:
-        """completed_count reflects the number of '### [x] Task:' items in STATE.md."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        content = "### [x] Task: Build thing\n### [x] Task: Test thing\n### [ ] Task C\n"
-        (state_dir / "STATE.md").write_text(content, encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["completed_count"] == "2"
-
-    def test_missing_state_md_returns_defaults(self, tmp_path: pathlib.Path) -> None:
-        """When STATE.md does not exist, extract_context returns all-default values."""
-        # No .codelicious/STATE.md created
-        ctx = extract_context(tmp_path)
-
-        assert ctx["pending_count"] == "0"
-        assert ctx["completed_count"] == "0"
-        assert ctx["tech_stack"] == ""
-        assert ctx["test_command"] == ""
-
-    def test_iteration_and_stall_count_passed_through(self, tmp_path: pathlib.Path) -> None:
-        """iteration and stall_count arguments are reflected in the returned dict."""
-        ctx = extract_context(tmp_path, iteration=3, stall_count=2)
-
-        assert ctx["iteration"] == "3"
-        assert ctx["stall_count"] == "2"
-
-    def test_test_command_extracted_from_how_to_test_section(self, tmp_path: pathlib.Path) -> None:
-        """test_command is the first non-empty line of the '## How to Test' section."""
-        state_dir = tmp_path / ".codelicious"
-        state_dir.mkdir()
-        content = "## How to Test\npython -m pytest tests/ -x\n\n## Other\nstuff\n"
-        (state_dir / "STATE.md").write_text(content, encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["test_command"] == "python -m pytest tests/ -x"
-
-
-# ---------------------------------------------------------------------------
 # spec-21 Phase 16e: prompts.py — render substitution and prompt constants
 # ---------------------------------------------------------------------------
 
@@ -350,3 +242,51 @@ class TestPromptsRenderAndConstants:
 
         assert "{{project_name}}" in AGENT_BUILD_SPEC
         assert "{{spec_filter}}" in AGENT_BUILD_SPEC
+
+    def test_chunk_execute_contains_template_vars(self) -> None:
+        """CHUNK_EXECUTE must contain expected template variables."""
+        from codelicious.prompts import CHUNK_EXECUTE
+
+        assert "{{repo_path}}" in CHUNK_EXECUTE
+        assert "{{chunk_id}}" in CHUNK_EXECUTE
+        assert "{{chunk_description}}" in CHUNK_EXECUTE
+        assert "{{spec_content}}" in CHUNK_EXECUTE
+        assert "{{previous_chunks}}" in CHUNK_EXECUTE
+        assert "{{chunk_validation}}" in CHUNK_EXECUTE
+
+    def test_chunk_verify_contains_template_vars(self) -> None:
+        """CHUNK_VERIFY must contain expected template variables."""
+        from codelicious.prompts import CHUNK_VERIFY
+
+        assert "{{repo_path}}" in CHUNK_VERIFY
+        assert "{{chunk_id}}" in CHUNK_VERIFY
+
+    def test_chunk_fix_contains_template_vars(self) -> None:
+        """CHUNK_FIX must contain expected template variables."""
+        from codelicious.prompts import CHUNK_FIX
+
+        assert "{{repo_path}}" in CHUNK_FIX
+        assert "{{chunk_id}}" in CHUNK_FIX
+        assert "{{failures}}" in CHUNK_FIX
+
+    def test_chunk_templates_renderable(self) -> None:
+        """All chunk templates can be rendered with render()."""
+        from codelicious.prompts import CHUNK_EXECUTE, CHUNK_FIX, CHUNK_VERIFY, render
+
+        rendered = render(
+            CHUNK_EXECUTE,
+            repo_path="/tmp/repo",
+            chunk_id="spec-1-chunk-01",
+            chunk_description="Add feature",
+            spec_content="# Spec",
+            previous_chunks="none",
+            chunk_validation="tests pass",
+        )
+        assert "/tmp/repo" in rendered
+        assert "spec-1-chunk-01" in rendered
+
+        rendered_v = render(CHUNK_VERIFY, repo_path="/tmp", chunk_id="c1")
+        assert "/tmp" in rendered_v
+
+        rendered_f = render(CHUNK_FIX, repo_path="/tmp", chunk_id="c1", failures="lint failed")
+        assert "lint failed" in rendered_f

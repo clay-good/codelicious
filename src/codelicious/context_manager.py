@@ -14,7 +14,6 @@ __all__ = [
     "build_fix_prompt",
     "build_task_prompt",
     "estimate_tokens",
-    "truncate_to_tokens",
 ]
 
 logger = logging.getLogger("codelicious.context_manager")
@@ -69,36 +68,6 @@ class ContextBudget:
         return max(0, raw)
 
 
-def _warn_if_extreme_truncation(tokens_included: int, total_content_tokens: int, context: str) -> None:
-    """Log a warning if more than 50% of available content was truncated."""
-    logger.debug(
-        "Truncation check (%s): included=%d tokens, total_content=%d tokens, truncated=%.0f%%",
-        context,
-        tokens_included,
-        total_content_tokens,
-        (1 - tokens_included / total_content_tokens) * 100 if total_content_tokens > 0 else 0,
-    )
-    if total_content_tokens > 0 and tokens_included < total_content_tokens * 0.5:
-        logger.warning(
-            "%s: more than 50%% of content was truncated (used %d tokens, total content %d tokens)",
-            context,
-            tokens_included,
-            total_content_tokens,
-        )
-
-
-def truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Truncate text to approximately max_tokens.
-
-    Cuts at the character boundary (max_tokens * 4) and appends
-    a truncation marker if text was cut.
-    """
-    max_chars = max_tokens * 4
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "\n[truncated]"
-
-
 def build_task_prompt(
     task: Any,
     system_prompt: str,
@@ -143,7 +112,8 @@ def build_task_prompt(
         # Reserve space for header + footer; truncate description
         overhead_tokens = estimate_tokens(task_header + task_footer)
         remaining_for_desc = max(0, budget.available_tokens - overhead_tokens)
-        task_desc = truncate_to_tokens(task_desc, remaining_for_desc)
+        max_chars = remaining_for_desc * 4
+        task_desc = task_desc[:max_chars] + "\n[truncated]" if len(task_desc) > max_chars else task_desc
         logger.warning(
             "Task description truncated to fit context window (%d tokens available)",
             budget.available_tokens,
@@ -162,7 +132,10 @@ def build_task_prompt(
         if tokens_used + section_tokens > budget.available_tokens:
             remaining = budget.available_tokens - tokens_used
             if remaining > 50:
-                truncated = truncate_to_tokens(file_section, remaining)
+                max_chars = remaining * 4
+                truncated = (
+                    file_section[:max_chars] + "\n[truncated]" if len(file_section) > max_chars else file_section
+                )
                 parts.append(truncated)
                 tokens_used += estimate_tokens(truncated)
             else:
@@ -184,7 +157,8 @@ def build_task_prompt(
         total_content_before_build += summary_tokens
         if tokens_used + summary_tokens > budget.available_tokens:
             remaining = budget.available_tokens - tokens_used
-            truncated = truncate_to_tokens(summary, remaining)
+            max_chars = remaining * 4
+            truncated = summary[:max_chars] + "\n[truncated]" if len(summary) > max_chars else summary
             parts.append(truncated)
             tokens_used = budget.available_tokens
             break
@@ -211,7 +185,8 @@ def build_task_prompt(
         total_content_before_build += tree_tokens
         if tokens_used + tree_tokens > budget.available_tokens:
             remaining = budget.available_tokens - tokens_used
-            tree_section = truncate_to_tokens(tree_section, remaining)
+            max_chars = remaining * 4
+            tree_section = tree_section[:max_chars] + "\n[truncated]" if len(tree_section) > max_chars else tree_section
             tokens_used += estimate_tokens(tree_section)
         else:
             tokens_used += tree_tokens
@@ -219,7 +194,19 @@ def build_task_prompt(
         logger.debug("Priority 5: %d tokens used", tokens_used)
 
     user_prompt = "\n".join(parts)
-    _warn_if_extreme_truncation(tokens_used, total_content_before_build, "build_task_prompt")
+    # Warn if more than 50% of available content was truncated.
+    logger.debug(
+        "Truncation check (build_task_prompt): included=%d tokens, total_content=%d tokens, truncated=%.0f%%",
+        tokens_used,
+        total_content_before_build,
+        (1 - tokens_used / total_content_before_build) * 100 if total_content_before_build > 0 else 0,
+    )
+    if total_content_before_build > 0 and tokens_used < total_content_before_build * 0.5:
+        logger.warning(
+            "build_task_prompt: more than 50%% of content was truncated (used %d tokens, total content %d tokens)",
+            tokens_used,
+            total_content_before_build,
+        )
     logger.info("Task prompt built: %d tokens used", tokens_used)
     return system_prompt, user_prompt
 
@@ -260,7 +247,10 @@ def build_fix_prompt(
     error_section_header = "### Error output:\n```\n"
     error_section_footer = "\n```\n"
     max_error_tokens = 2000
-    truncated_error = truncate_to_tokens(error_output, max_error_tokens)
+    max_error_chars = max_error_tokens * 4
+    truncated_error = (
+        error_output[:max_error_chars] + "\n[truncated]" if len(error_output) > max_error_chars else error_output
+    )
     error_section = error_section_header + truncated_error + error_section_footer
     error_tokens = estimate_tokens(error_section)
     total_content_before_build += error_tokens
@@ -270,7 +260,8 @@ def build_fix_prompt(
         tokens_used += error_tokens
     else:
         remaining = budget.available_tokens - tokens_used
-        error_section = truncate_to_tokens(error_section, remaining)
+        max_chars = remaining * 4
+        error_section = error_section[:max_chars] + "\n[truncated]" if len(error_section) > max_chars else error_section
         parts.append(error_section)
         tokens_used = budget.available_tokens
 
@@ -282,7 +273,10 @@ def build_fix_prompt(
             total_content_before_build += code_tokens
             if tokens_used + code_tokens > budget.available_tokens:
                 remaining = budget.available_tokens - tokens_used
-                code_section = truncate_to_tokens(code_section, remaining)
+                max_chars = remaining * 4
+                code_section = (
+                    code_section[:max_chars] + "\n[truncated]" if len(code_section) > max_chars else code_section
+                )
                 parts.append(code_section)
                 tokens_used = budget.available_tokens
                 break
@@ -290,6 +284,18 @@ def build_fix_prompt(
             tokens_used += code_tokens
 
     user_prompt = "\n".join(parts)
-    _warn_if_extreme_truncation(tokens_used, total_content_before_build, "build_fix_prompt")
+    # Warn if more than 50% of available content was truncated.
+    logger.debug(
+        "Truncation check (build_fix_prompt): included=%d tokens, total_content=%d tokens, truncated=%.0f%%",
+        tokens_used,
+        total_content_before_build,
+        (1 - tokens_used / total_content_before_build) * 100 if total_content_before_build > 0 else 0,
+    )
+    if total_content_before_build > 0 and tokens_used < total_content_before_build * 0.5:
+        logger.warning(
+            "build_fix_prompt: more than 50%% of content was truncated (used %d tokens, total content %d tokens)",
+            tokens_used,
+            total_content_before_build,
+        )
     logger.info("Fix prompt built: %d tokens used", tokens_used)
     return system_prompt, user_prompt

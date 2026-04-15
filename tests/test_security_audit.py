@@ -249,9 +249,9 @@ class TestAuditLoggerSecurityLogging:
         expected timestamp is fully deterministic, and we validate the exact value
         rather than just the regex match.
         """
-        import re
         import datetime
-        from unittest.mock import patch, MagicMock
+        import re
+        from unittest.mock import MagicMock, patch
 
         fixed_dt = datetime.datetime(2026, 3, 15, 15, 6, 23, tzinfo=datetime.timezone.utc)
 

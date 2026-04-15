@@ -3,23 +3,13 @@
 from __future__ import annotations
 
 import logging
-import logging.handlers
-import os
-import pathlib
 import re
-import sys
-import time
-from typing import Any, Callable
 
 __all__ = [
     "LOG_FORMAT",
-    "SanitizingFilter",
-    "TimingContext",
     "VERBOSE_LOG_FORMAT",
-    "create_log_callback",
-    "log_call_details",
+    "SanitizingFilter",
     "sanitize_message",
-    "setup_logging",
 ]
 
 # Patterns for API key redaction - various provider formats
@@ -235,97 +225,7 @@ class SanitizingFilter(logging.Filter):
             sanitized = sanitize_message(formatted)
             record.msg = sanitized
             record.args = None
-        except Exception:
+        except Exception:  # nosec B110
             pass  # Individual sanitization above is still in place
 
         return True
-
-
-def setup_logging(
-    project_dir: pathlib.Path,
-    verbose: bool = False,
-) -> logging.Logger:
-    """Configure and return the codelicious logger."""
-    logger = logging.getLogger("codelicious")
-    logger.setLevel(logging.DEBUG)
-
-    # Remove any existing handlers to allow reconfiguration
-    logger.handlers.clear()
-
-    sanitizing_filter = SanitizingFilter()
-
-    # Console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-    console_handler.setFormatter(logging.Formatter(LOG_FORMAT, style="{"))
-    console_handler.addFilter(sanitizing_filter)
-    logger.addHandler(console_handler)
-
-    # File handler (.codelicious/codelicious.log) with rotation (10 MB, 1 backup)
-    try:
-        log_dir = project_dir / ".codelicious"
-        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-        log_file = log_dir / "codelicious.log"
-        file_handler = logging.handlers.RotatingFileHandler(
-            str(log_file),
-            maxBytes=10 * 1024 * 1024,
-            backupCount=1,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(VERBOSE_LOG_FORMAT, style="{"))
-        file_handler.addFilter(sanitizing_filter)
-        logger.addHandler(file_handler)
-
-        # Set log file permissions
-        os.chmod(str(log_file), 0o600)
-    except OSError:
-        # Read-only filesystem or permission denied — console-only logging
-        sys.stderr.write("[WARNING] Cannot create log file; logging to console only.\n")
-
-    return logger
-
-
-def create_log_callback(
-    logger: logging.Logger,
-) -> Callable[[str, dict[str, Any]], None]:
-    """Return a callback function that logs events at INFO level."""
-
-    def callback(event_name: str, event_data: dict[str, Any]) -> None:
-        sanitized_data = sanitize_message(str(event_data))
-        logger.info("[%s] %s", event_name, sanitized_data)
-
-    return callback
-
-
-class TimingContext:
-    """Context manager that logs entry and exit with elapsed time."""
-
-    def __init__(self, logger: logging.Logger, operation_name: str) -> None:
-        self.logger = logger
-        self.operation_name = operation_name
-        self.start_time: float = 0.0
-
-    def __enter__(self) -> "TimingContext":
-        self.start_time = time.perf_counter()
-        self.logger.debug("%s: started", self.operation_name)
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
-        elapsed = time.perf_counter() - self.start_time
-        if exc_val is not None:
-            self.logger.warning("%s: failed after %.3fs: %s", self.operation_name, elapsed, exc_val)
-        else:
-            self.logger.debug("%s: completed in %.3fs", self.operation_name, elapsed)
-
-
-def log_call_details(logger: logging.Logger, func_name: str, **kwargs: Any) -> None:
-    """Log function entry with parameter details at DEBUG level."""
-    params = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-    logger.debug("%s called with: %s", func_name, params)

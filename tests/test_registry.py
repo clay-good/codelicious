@@ -15,7 +15,6 @@ import pytest
 
 from codelicious.tools.registry import ToolCallLimitError, ToolRegistry
 
-
 # ---------------------------------------------------------------------------
 # Helper: build a fully-mocked ToolRegistry
 # ---------------------------------------------------------------------------
@@ -238,3 +237,47 @@ class TestRegistryCoverageS21:
         # Verify audit logger was called (log_tool_intent + log_tool_outcome)
         reg.audit.log_tool_intent.assert_called()
         reg.audit.log_tool_outcome.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Unique error-path tests from spec-83 (merged from test_tool_registry.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchTypeErrorAudit:
+    """Verify audit logging behaviour for TypeError-raising tools."""
+
+    def test_type_error_audit_outcome_logged(self, tmp_path: pathlib.Path) -> None:
+        """AuditLogger.log_tool_outcome is called with the error dict on TypeError."""
+        reg = _make_registry(tmp_path)
+        reg.registry["type_err_tool"] = MagicMock(side_effect=TypeError("bad"))
+        result = reg.dispatch("type_err_tool", {})
+        reg.audit.log_tool_outcome.assert_called_once_with("type_err_tool", result)
+
+
+class TestDispatchRuntimeErrorAudit:
+    """Verify audit logging behaviour for RuntimeError-raising tools."""
+
+    def test_runtime_error_logs_sandbox_violation(self, tmp_path: pathlib.Path) -> None:
+        """AuditLogger.log_sandbox_violation is called for RuntimeError faults."""
+        reg = _make_registry(tmp_path)
+        reg.registry["crash_tool"] = MagicMock(side_effect=RuntimeError("boom"))
+        reg.dispatch("crash_tool", {})
+        reg.audit.log_sandbox_violation.assert_called()
+
+    def test_runtime_error_does_not_call_log_tool_outcome(self, tmp_path: pathlib.Path) -> None:
+        """RuntimeError path calls log_sandbox_violation, NOT log_tool_outcome."""
+        reg = _make_registry(tmp_path)
+        reg.registry["crash_tool"] = MagicMock(side_effect=RuntimeError("boom"))
+        reg.dispatch("crash_tool", {})
+        reg.audit.log_tool_outcome.assert_not_called()
+
+
+class TestToolDispatchTimeout:
+    """Tests for per-tool timeout (spec-18 Phase 6: TE-2)."""
+
+    def test_tool_timeout_error_exists(self) -> None:
+        """ToolTimeoutError can be imported from errors."""
+        from codelicious.errors import ToolTimeoutError
+
+        assert issubclass(ToolTimeoutError, Exception)

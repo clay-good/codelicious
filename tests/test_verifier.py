@@ -698,7 +698,7 @@ def test_stripe_secret_key_detected(tmp_path: pathlib.Path) -> None:
     while still testing the regex pattern. The test file is written dynamically.
     """
     # Construct the key dynamically to avoid GitHub secret scanning in this file
-    sk_prefix = "sk_" + "live_"  # noqa: S105
+    sk_prefix = "sk_" + "live_"
     key_suffix = "XXXXXXXXXXXXXXXXXXXXXXXXXX"
     (tmp_path / "payment.py").write_text(
         f"STRIPE_KEY = '{sk_prefix}{key_suffix}'\n",
@@ -715,7 +715,7 @@ def test_stripe_publishable_key_detected(tmp_path: pathlib.Path) -> None:
     Note: We construct the key dynamically to avoid GitHub secret scanning.
     """
     # Construct the key dynamically to avoid GitHub secret scanning in this file
-    pk_prefix = "pk_" + "live_"  # noqa: S105
+    pk_prefix = "pk_" + "live_"
     key_suffix = "XXXXXXXXXXXXXXXXXXXXXXXXXX"
     (tmp_path / "payment.py").write_text(
         f"STRIPE_PK = '{pk_prefix}{key_suffix}'\n",
