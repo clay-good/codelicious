@@ -1,10 +1,11 @@
-import logging
 import json
+import logging
 import time
-from codelicious.tools.registry import ToolRegistry
-from codelicious.llm_client import LLMClient
+
 from codelicious.context_manager import estimate_tokens
-from codelicious.errors import LLMResponseTooLargeError, LLMResponseFormatError
+from codelicious.errors import LLMResponseFormatError, LLMResponseTooLargeError
+from codelicious.llm_client import LLMClient
+from codelicious.tools.registry import ToolRegistry
 
 logger = logging.getLogger("codelicious.loop")
 
@@ -139,43 +140,9 @@ class BuildLoop:
         self.cache_manager = cache_manager
 
         # Load configs
-        config_path = self.repo_path / ".codelicious" / "config.json"
+        from codelicious.config import load_project_config
 
-        # Allowed config keys — must match git_orchestrator._ALLOWED_CONFIG_KEYS (Finding 12)
-        # S20-P3-4: allowlisted_commands is still accepted for backwards compat
-        # (triggers a deprecation warning) but is not used.
-        _allowed_keys = frozenset(
-            {"allowlisted_commands", "default_reviewers", "max_calls_per_iteration", "verify_command"}
-        )
-        _config_max_bytes = 100_000
-
-        defaults: dict = {}
-        if config_path.exists():
-            try:
-                config_size = config_path.stat().st_size
-                if config_size > _config_max_bytes:
-                    logger.error("config.json too large (%d bytes); skipping.", config_size)
-                else:
-                    loaded = json.loads(config_path.read_text())
-                    if isinstance(loaded, dict):
-                        # Filter to allowed keys only (Finding 12: prevent config injection)
-                        filtered = {k: v for k, v in loaded.items() if k in _allowed_keys}
-                        defaults.update(filtered)
-                        # S20-P3-4: Deprecation warning for allowlisted_commands
-                        if "allowlisted_commands" in defaults:
-                            logger.warning(
-                                "Config key 'allowlisted_commands' is deprecated and ignored. "
-                                "Command restrictions are hardcoded in security_constants.py."
-                            )
-                            del defaults["allowlisted_commands"]
-                        # Clamp max_calls_per_iteration to safe range
-                        if "max_calls_per_iteration" in defaults:
-                            defaults["max_calls_per_iteration"] = max(
-                                10, min(100, int(defaults["max_calls_per_iteration"]))
-                            )
-            except (json.JSONDecodeError, ValueError):
-                pass
-        self.config = defaults
+        self.config = load_project_config(self.repo_path)
 
         # Initialize Sandboxed Tooling Hub
         self.tool_registry = ToolRegistry(

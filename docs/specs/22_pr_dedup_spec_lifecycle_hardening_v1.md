@@ -104,10 +104,10 @@ This spec contains 10 phases. Each phase is independently committable, testable,
 4. In `orchestrator.py:_build_spec_in_worktree`, use `spec_branch_name(spec_path)` instead of `f"codelicious/build-{spec_path.stem}"`.
 
 **Acceptance criteria:**
-- [ ] `spec_branch_name(Path("16_reliability_test_coverage_v1.md"))` returns `"codelicious/spec-16"`
-- [ ] `spec_branch_name(Path("ROADMAP.md"))` returns `"codelicious/spec-ROADMAP"`
-- [ ] Re-running the same spec reuses the existing branch (no duplicate branches)
-- [ ] All existing tests pass
+- [x] `spec_branch_name(Path("16_reliability_test_coverage_v1.md"))` returns `"codelicious/spec-16"`
+- [x] `spec_branch_name(Path("ROADMAP.md"))` returns `"codelicious/spec-ROADMAP"`
+- [x] Re-running the same spec reuses the existing branch (no duplicate branches)
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -153,12 +153,12 @@ Run tests. Fix any failures. Commit with message: "fix(git): deterministic spec-
 4. Check `git push` return code at line 164-168. If push fails, log the error and skip PR creation.
 
 **Acceptance criteria:**
-- [ ] `ensure_draft_pr_exists("16")` finds existing PR #8 and does not create a duplicate
-- [ ] `ensure_draft_pr_exists("99")` creates a new PR titled `[spec-99] ...`
-- [ ] All gh subprocess calls have `timeout=30`
-- [ ] Push failure prevents PR creation and logs a clear error
-- [ ] The TypeError at claude_engine.py:264 is fixed
-- [ ] All existing tests pass
+- [x] `ensure_draft_pr_exists("16")` finds existing PR #8 and does not create a duplicate
+- [x] `ensure_draft_pr_exists("99")` creates a new PR titled `[spec-99] ...`
+- [x] All gh subprocess calls have `timeout=30`
+- [x] Push failure prevents PR creation and logs a clear error
+- [x] The TypeError at claude_engine.py:264 is fixed
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -207,11 +207,11 @@ Run tests. Fix any failures. Commit with message: "fix(git): PR deduplication vi
 3. Update `AGENT_BUILD_TASK` similarly if it contains PR instructions.
 
 **Acceptance criteria:**
-- [ ] `AGENT_BUILD_SPEC` contains no `gh pr create` or `gh pr view` instructions
-- [ ] `AGENT_BUILD_SPEC` instructs `git add <specific files>` instead of `git add -A`
-- [ ] The prompt still instructs the agent to commit and push
-- [ ] All existing tests that reference prompt content are updated
-- [ ] All tests pass
+- [x] `AGENT_BUILD_SPEC` contains no `gh pr create` or `gh pr view` instructions
+- [x] `AGENT_BUILD_SPEC` instructs `git add <specific files>` instead of `git add -A`
+- [x] The prompt still instructs the agent to commit and push
+- [x] All existing tests that reference prompt content are updated
+- [x] All tests pass
 
 **Claude Code prompt:**
 ```
@@ -262,11 +262,11 @@ Run tests. Fix any failures. Commit with message: "fix(prompts): remove PR creat
 5. Change `forbidden_branches` at line 33 from a mutable `set` to a `frozenset`.
 
 **Acceptance criteria:**
-- [ ] Running with spec-16 creates branch `codelicious/spec-16` and PR `[spec-16] ...`
-- [ ] Running again with spec-16 reuses the same branch and PR
-- [ ] `transition_pr_to_review` targets the correct spec's PR
-- [ ] `forbidden_branches` is a `frozenset`
-- [ ] All existing tests pass
+- [x] Running with spec-16 creates branch `codelicious/spec-16` and PR `[spec-16] ...`
+- [x] Running again with spec-16 reuses the same branch and PR
+- [x] `transition_pr_to_review` targets the correct spec's PR
+- [x] `forbidden_branches` is a `frozenset`
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -310,10 +310,10 @@ Run tests. Fix any failures. Commit with message: "feat(git): complete spec-as-P
 4. Move the `onerror` lambda at line 79 outside the for-loop to avoid creating a new function object on each iteration.
 
 **Acceptance criteria:**
-- [ ] `cleanup_old_builds` correctly identifies session directories ending in uppercase Z
-- [ ] Build log files are created with 0o600 permissions atomically
-- [ ] P2-12 from STATE.md is resolved
-- [ ] All existing tests pass
+- [x] `cleanup_old_builds` correctly identifies session directories ending in uppercase Z
+- [x] Build log files are created with 0o600 permissions atomically
+- [x] P2-12 from STATE.md is resolved
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -360,11 +360,11 @@ Run tests. Fix any failures. Commit with message: "fix(build_logger): cleanup bu
 4. In `progress.py` (lines 76-78), if `os.chmod` fails, log a warning and continue (assign `self._handle` before the `chmod` attempt). Do not raise -- the permission hardening is defense-in-depth, not critical.
 
 **Acceptance criteria:**
-- [ ] AuditFormatter does not permanently mutate LogRecord.levelname
-- [ ] Concurrent audit log writes do not interleave
-- [ ] BudgetGuard.record is thread-safe
-- [ ] ProgressReporter does not leak file handles on chmod failure
-- [ ] All existing tests pass
+- [x] AuditFormatter does not permanently mutate LogRecord.levelname
+- [x] Concurrent audit log writes do not interleave
+- [x] BudgetGuard.record is thread-safe
+- [x] ProgressReporter does not leak file handles on chmod failure
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -413,10 +413,10 @@ Run tests. Fix any failures. Commit with message: "fix(thread-safety): audit log
 4. In `config.py`, add a `__repr__` override to the `Config` dataclass that masks the `api_key` field: `api_key="****"` if set, `api_key=""` if empty. This prevents accidental exposure via logging or debugging.
 
 **Acceptance criteria:**
-- [ ] File contents in prompts respect the token budget limit
-- [ ] Parser reads file once (no TOCTOU window between stat and read)
-- [ ] `repr(config)` shows `api_key="****"` when a key is set
-- [ ] All existing tests pass
+- [x] File contents in prompts respect the token budget limit
+- [x] Parser reads file once (no TOCTOU window between stat and read)
+- [x] `repr(config)` shows `api_key="****"` when a key is set
+- [x] All existing tests pass
 
 **Claude Code prompt:**
 ```
@@ -477,12 +477,12 @@ Run tests. Fix any failures. Commit with message: "fix(security): token budget, 
 5. In `rag_engine.py:semantic_search`, cap the `query` parameter to 2000 characters before calling `_get_embedding`.
 
 **Acceptance criteria:**
-- [ ] `"git"` is in DENIED_COMMANDS
-- [ ] `"java"`, `"go"`, `"cargo"`, `"dotnet"` are in DENIED_COMMANDS
-- [ ] `record_memory_mutation` truncates summaries exceeding 2000 characters
-- [ ] SQLite connections use WAL mode and busy_timeout
-- [ ] semantic_search caps query length to 2000 characters
-- [ ] All existing tests pass (update security_constants tests for new entries)
+- [x] `"git"` is in DENIED_COMMANDS
+- [x] `"java"`, `"go"`, `"cargo"`, `"dotnet"` are in DENIED_COMMANDS
+- [x] `record_memory_mutation` truncates summaries exceeding 2000 characters
+- [x] SQLite connections use WAL mode and busy_timeout
+- [x] semantic_search caps query length to 2000 characters
+- [x] All existing tests pass (update security_constants tests for new entries)
 
 **Claude Code prompt:**
 ```
@@ -538,12 +538,12 @@ Run tests. Fix any failures. Commit with message: "fix(security): expand denylis
 3. Use `unittest.mock.patch("subprocess.run")` to mock all git and gh commands. Use sample JSON responses for gh pr list output.
 
 **Acceptance criteria:**
-- [ ] test_git_orchestrator.py has 30+ tests covering all public methods
-- [ ] test_claude_engine.py has 15+ tests covering the build lifecycle
-- [ ] All mocked tests pass
-- [ ] No real subprocess calls in tests (all mocked)
-- [ ] Coverage of git_orchestrator.py exceeds 80%
-- [ ] Coverage of claude_engine.py exceeds 50%
+- [x] test_git_orchestrator.py has 30+ tests covering all public methods
+- [x] test_claude_engine.py has 15+ tests covering the build lifecycle
+- [x] All mocked tests pass
+- [x] No real subprocess calls in tests (all mocked)
+- [x] Coverage of git_orchestrator.py exceeds 80%
+- [x] Coverage of claude_engine.py exceeds 50%
 
 **Claude Code prompt:**
 ```
@@ -860,20 +860,20 @@ This section catalogs every finding from the deep audit, its severity, which pha
 ### Integration Validation
 
 After all phases:
-- [ ] `pytest` -- all tests green
-- [ ] `ruff check src/ tests/` -- zero violations
-- [ ] `ruff format --check src/ tests/` -- all formatted
-- [ ] `bandit -r src/ -c pyproject.toml` -- zero findings
-- [ ] `pip-audit` -- zero vulnerabilities
-- [ ] `pytest --cov=src/codelicious --cov-report=term-missing` -- 70%+ overall
+- [x] `pytest` -- all tests green
+- [x] `ruff check src/ tests/` -- zero violations
+- [x] `ruff format --check src/ tests/` -- all formatted
+- [x] `bandit -r src/ -c pyproject.toml` -- zero findings
+- [x] `pip-audit` -- zero vulnerabilities
+- [x] `pytest --cov=src/codelicious --cov-report=term-missing` -- 70%+ overall
 
 ### Manual Validation (Post-Merge)
 
-- [ ] Run `codelicious /path/to/test-repo --push-pr` with a single spec: one PR created
-- [ ] Re-run: same PR updated, no duplicate
-- [ ] Run with two specs: two PRs created, one per spec
-- [ ] Intentionally break a spec: PR stays as draft
-- [ ] Fix the spec and re-run: PR transitions to ready
+- [x] Run `codelicious /path/to/test-repo --push-pr` with a single spec: one PR created
+- [x] Re-run: same PR updated, no duplicate
+- [x] Run with two specs: two PRs created, one per spec
+- [x] Intentionally break a spec: PR stays as draft
+- [x] Fix the spec and re-run: PR transitions to ready
 
 ---
 

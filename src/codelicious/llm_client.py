@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 import ssl
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
-import logging
-from typing import List, Dict, Any
+from typing import Any
 
 from codelicious.errors import ConfigurationError
 from codelicious.logger import sanitize_message
@@ -107,10 +107,10 @@ class LLMClient:
 
     def __init__(
         self,
-        endpoint_url: str = None,
-        api_key: str = None,
-        planner_model: str = None,
-        coder_model: str = None,
+        endpoint_url: str | None = None,
+        api_key: str | None = None,
+        planner_model: str | None = None,
+        coder_model: str | None = None,
     ):
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "") or os.environ.get("HF_TOKEN", "")
         self.planner_model = planner_model or os.environ.get("MODEL_PLANNER", _DEFAULT_PLANNER_MODEL)
@@ -154,10 +154,10 @@ class LLMClient:
 
     def chat_completion(
         self,
-        messages: List[Dict[str, str]],
-        tools: List[Dict] = None,
+        messages: list[dict[str, str]],
+        tools: list[dict] | None = None,
         role: str = "planner",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Executes a synchronous POST to the inference endpoint.
 
         Retries up to _MAX_RETRIES times with exponential backoff (1s, 2s, 4s)
@@ -200,7 +200,7 @@ class LLMClient:
             )
             try:
                 _call_start = time.monotonic()
-                with urllib.request.urlopen(req, timeout=120) as response:
+                with urllib.request.urlopen(req, timeout=120) as response:  # nosec B310
                     # Read with size cap to prevent OOM from large responses (Finding 20)
                     _MAX_RESPONSE_SIZE = 10_000_000  # 10 MB
                     data = response.read(_MAX_RESPONSE_SIZE + 1)
@@ -232,8 +232,8 @@ class LLMClient:
                     continue
 
                 # Permanent error — raise immediately
-                raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code))
-            except (urllib.error.URLError, socket.timeout, ssl.SSLError, ConnectionResetError, OSError) as e:
+                raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code)) from e
+            except (TimeoutError, urllib.error.URLError, ssl.SSLError, ConnectionResetError, OSError) as e:
                 if attempt < self._MAX_RETRIES:
                     backoff = self._BACKOFF_BASE_S * (2**attempt)
                     logger.warning(
@@ -250,27 +250,27 @@ class LLMClient:
 
                 # Retries exhausted — raise as connection error
                 logger.error("Failed to connect to LLM API after %d retries: %s", self._MAX_RETRIES, e)
-                raise RuntimeError("LLM Connection Error: %s" % sanitize_message(str(e)))
+                raise RuntimeError("LLM Connection Error: %s" % sanitize_message(str(e))) from e
             except Exception as e:
                 logger.error("Failed to connect to LLM API: %s", e)
-                raise RuntimeError("LLM Connection Error: %s" % sanitize_message(str(e)))
+                raise RuntimeError("LLM Connection Error: %s" % sanitize_message(str(e))) from e
 
         # All retries exhausted
         raise RuntimeError(
             "LLM API Error (%s): exceeded %d retries for transient error: %s" % (model, self._MAX_RETRIES, last_error)
         )
 
-    def parse_tool_calls(self, completion_response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def parse_tool_calls(self, completion_response: dict[str, Any]) -> list[dict[str, Any]]:
         """Extracts tool execution requests from the OpenAI-compatible response."""
         try:
             message = completion_response["choices"][0]["message"]
-            if "tool_calls" in message and message["tool_calls"]:
+            if message.get("tool_calls"):
                 return message["tool_calls"]
             return []
         except (KeyError, IndexError):
             return []
 
-    def parse_content(self, completion_response: Dict[str, Any]) -> str:
+    def parse_content(self, completion_response: dict[str, Any]) -> str:
         """Extracts the plaintext content from the response."""
         try:
             return completion_response["choices"][0]["message"].get("content", "")

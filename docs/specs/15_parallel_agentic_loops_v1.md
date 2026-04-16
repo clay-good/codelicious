@@ -330,11 +330,11 @@ reject the command.
   rather than undefined behavior.
 
 **Acceptance Criteria:**
-- [ ] command_runner.py uses shlex.split() for both validation and execution
-- [ ] shlex.ValueError is caught and the command is rejected with an error message
-- [ ] Existing test_command_runner.py tests still pass (195 tests)
-- [ ] New tests verify that quoted-argument denylist bypass is blocked
-- [ ] New tests verify that unmatched quotes are rejected
+- [x] command_runner.py uses shlex.split() for both validation and execution
+- [x] shlex.ValueError is caught and the command is rejected with an error message
+- [x] Existing test_command_runner.py tests still pass (195 tests)
+- [x] New tests verify that quoted-argument denylist bypass is blocked
+- [x] New tests verify that unmatched quotes are rejected
 
 **Claude Code Prompt:**
 ```
@@ -374,10 +374,10 @@ must see the error in both the terminal and the audit log.
   with a warning that the PR step failed.
 
 **Acceptance Criteria:**
-- [ ] cli.py logs PR transition errors at ERROR level with exception details
-- [ ] No bare `except Exception: pass` remains in cli.py
-- [ ] New test_cli.py tests verify that PR errors are logged, not swallowed
-- [ ] Existing behavior is preserved: build success is not affected by PR failure
+- [x] cli.py logs PR transition errors at ERROR level with exception details
+- [x] No bare `except Exception: pass` remains in cli.py
+- [x] New test_cli.py tests verify that PR errors are logged, not swallowed
+- [x] Existing behavior is preserved: build success is not affected by PR failure
 
 **Claude Code Prompt:**
 ```
@@ -417,11 +417,11 @@ is still alive. This is POSIX-only (Linux/macOS), which matches the target platf
 - As a user on macOS or Linux, I expect this to work correctly. Windows is not a target platform.
 
 **Acceptance Criteria:**
-- [ ] subprocess.run() uses start_new_session=True (Python 3.11+ equivalent of preexec_fn=os.setsid)
-- [ ] On subprocess.TimeoutExpired, os.killpg(pgid, signal.SIGTERM) is called
-- [ ] After 5-second grace, os.killpg(pgid, signal.SIGKILL) is called if group still alive
-- [ ] New tests verify process group cleanup on timeout
-- [ ] Existing timeout tests still pass
+- [x] subprocess.run() uses start_new_session=True (Python 3.11+ equivalent of preexec_fn=os.setsid)
+- [x] On subprocess.TimeoutExpired, os.killpg(pgid, signal.SIGTERM) is called
+- [x] After 5-second grace, os.killpg(pgid, signal.SIGKILL) is called if group still alive
+- [x] New tests verify process group cleanup on timeout
+- [x] Existing timeout tests still pass
 
 **Claude Code Prompt:**
 ```
@@ -470,15 +470,15 @@ attribution.
   Lines that I can filter with jq or Python.
 
 **Acceptance Criteria:**
-- [ ] StructuredLogger class exists in src/codelicious/structured_logger.py
-- [ ] write() method accepts loop_id, level, phase, and arbitrary keyword data
-- [ ] File output is JSON Lines format (one JSON object per line, newline-terminated)
-- [ ] Terminal output is formatted with [loop_id] prefix
-- [ ] File writes are atomic (write full line + flush in one locked operation)
-- [ ] File permissions are 0o640 (owner read/write, group read)
-- [ ] Credential sanitization is applied to all logged data (reuse SanitizingFilter patterns)
-- [ ] Tests verify JSON Lines format, terminal format, thread safety, and credential sanitization
-- [ ] build.log file is created in .codelicious/ directory
+- [x] StructuredLogger class exists in src/codelicious/structured_logger.py
+- [x] write() method accepts loop_id, level, phase, and arbitrary keyword data
+- [x] File output is JSON Lines format (one JSON object per line, newline-terminated)
+- [x] Terminal output is formatted with [loop_id] prefix
+- [x] File writes are atomic (write full line + flush in one locked operation)
+- [x] File permissions are 0o640 (owner read/write, group read)
+- [x] Credential sanitization is applied to all logged data (reuse SanitizingFilter patterns)
+- [x] Tests verify JSON Lines format, terminal format, thread safety, and credential sanitization
+- [x] build.log file is created in .codelicious/ directory
 
 **Claude Code Prompt:**
 ```
@@ -551,15 +551,15 @@ agentic loops in parallel. Each loop is an independent LoopWorker that processes
 - As a user, when one spec fails, I expect the other loops to continue and complete independently.
 
 **Acceptance Criteria:**
-- [ ] ParallelExecutor class exists in src/codelicious/parallel_executor.py
-- [ ] Uses concurrent.futures.ThreadPoolExecutor (stdlib)
-- [ ] Each LoopWorker gets: spec_path, loop_id, shared LLMClient, shared Sandbox, shared AuditLogger,
+- [x] ParallelExecutor class exists in src/codelicious/parallel_executor.py
+- [x] Uses concurrent.futures.ThreadPoolExecutor (stdlib)
+- [x] Each LoopWorker gets: spec_path, loop_id, shared LLMClient, shared Sandbox, shared AuditLogger,
       own ToolRegistry instance, own message history list
-- [ ] Spec partitioning: specs sorted by numeric prefix, distributed round-robin to workers
-- [ ] Failed specs do not abort other loops
-- [ ] Final result aggregates all loop results into a single BuildResult
-- [ ] max_workers validated: min 1, max 8, default 1
-- [ ] Tests verify: parallel execution, failure isolation, result aggregation, worker count bounds
+- [x] Spec partitioning: specs sorted by numeric prefix, distributed round-robin to workers
+- [x] Failed specs do not abort other loops
+- [x] Final result aggregates all loop results into a single BuildResult
+- [x] max_workers validated: min 1, max 8, default 1
+- [x] Tests verify: parallel execution, failure isolation, result aggregation, worker count bounds
 
 **Claude Code Prompt:**
 ```
@@ -642,11 +642,11 @@ access.
   are fast, lock contention is minimal).
 
 **Acceptance Criteria:**
-- [ ] AuditLogger.__init__ creates a threading.Lock
-- [ ] All file write methods acquire the lock before writing
-- [ ] Existing test_security_audit.py tests still pass (20 tests)
-- [ ] New tests verify thread safety: 4 threads writing 100 events each, all entries present and complete
-- [ ] No deadlocks under concurrent access
+- [x] AuditLogger.__init__ creates a threading.Lock
+- [x] All file write methods acquire the lock before writing
+- [x] Existing test_security_audit.py tests still pass (20 tests)
+- [x] New tests verify thread safety: 4 threads writing 100 events each, all entries present and complete
+- [x] No deadlocks under concurrent access
 
 **Claude Code Prompt:**
 ```
@@ -687,11 +687,11 @@ operations are infrequent (once per iteration, not per tool call), lock contenti
 - As a developer, I expect no data loss from concurrent flushes.
 
 **Acceptance Criteria:**
-- [ ] CacheManager.__init__ creates a threading.Lock
-- [ ] load_cache(), load_state(), flush_cache(), _flush_state() all acquire the lock
-- [ ] Existing test_cache_engine.py tests still pass (14 tests)
-- [ ] New tests verify: 4 threads flushing different data, final state contains all updates
-- [ ] New tests verify: concurrent load during flush returns valid JSON (not partial)
+- [x] CacheManager.__init__ creates a threading.Lock
+- [x] load_cache(), load_state(), flush_cache(), _flush_state() all acquire the lock
+- [x] Existing test_cache_engine.py tests still pass (14 tests)
+- [x] New tests verify: 4 threads flushing different data, final state contains all updates
+- [x] New tests verify: concurrent load during flush returns valid JSON (not partial)
 
 **Claude Code Prompt:**
 ```
@@ -739,13 +739,13 @@ Also update cli.py to:
   its own concurrency).
 
 **Acceptance Criteria:**
-- [ ] cli.py has --parallel N argument with default=1, type=int
-- [ ] HuggingFaceEngine.run_build_cycle accepts max_workers parameter
-- [ ] When max_workers=1, existing sequential behavior is preserved exactly
-- [ ] When max_workers>1, ParallelExecutor is used
-- [ ] _run_single_loop() is extracted and works independently
-- [ ] Existing tests still pass (no regressions)
-- [ ] Claude Code engine ignores --parallel (no error, no change)
+- [x] cli.py has --parallel N argument with default=1, type=int
+- [x] HuggingFaceEngine.run_build_cycle accepts max_workers parameter
+- [x] When max_workers=1, existing sequential behavior is preserved exactly
+- [x] When max_workers>1, ParallelExecutor is used
+- [x] _run_single_loop() is extracted and works independently
+- [x] Existing tests still pass (no regressions)
+- [x] Claude Code engine ignores --parallel (no error, no change)
 
 **Claude Code Prompt:**
 ```
@@ -798,12 +798,12 @@ negligible. The lock serializes file writes, not LLM calls (which dominate wall-
 - As a developer, I expect no measurable performance degradation from the expanded lock scope.
 
 **Acceptance Criteria:**
-- [ ] sandbox.py lock covers the full validate -> resolve -> check_denied -> check_extension
+- [x] sandbox.py lock covers the full validate -> resolve -> check_denied -> check_extension
       -> check_symlink -> write cycle
-- [ ] Existing test_sandbox.py tests still pass (46 tests)
-- [ ] New tests: 4 threads writing to different paths concurrently, all writes succeed
-- [ ] New tests: 4 threads writing to the same path concurrently, no corruption
-- [ ] File count limit (200) is enforced globally across all concurrent writes
+- [x] Existing test_sandbox.py tests still pass (46 tests)
+- [x] New tests: 4 threads writing to different paths concurrently, all writes succeed
+- [x] New tests: 4 threads writing to the same path concurrently, no corruption
+- [x] File count limit (200) is enforced globally across all concurrent writes
 
 **Claude Code Prompt:**
 ```
@@ -852,14 +852,14 @@ Create an integration test that:
   without requiring real API calls or network access.
 
 **Acceptance Criteria:**
-- [ ] Integration test exists in tests/test_parallel_integration.py
-- [ ] Test creates a temporary repo with 3 dummy spec files
-- [ ] LLMClient is mocked to return tool calls and eventually "ALL_SPECS_COMPLETE"
-- [ ] Test runs with max_workers=3
-- [ ] Test verifies: 3 LoopResults, all successful, build.log has 3 distinct loop_ids
-- [ ] Test verifies: audit.log has entries from all loops
-- [ ] Test verifies: no partial or corrupted log lines
-- [ ] Test completes in under 10 seconds (no real LLM calls)
+- [x] Integration test exists in tests/test_parallel_integration.py
+- [x] Test creates a temporary repo with 3 dummy spec files
+- [x] LLMClient is mocked to return tool calls and eventually "ALL_SPECS_COMPLETE"
+- [x] Test runs with max_workers=3
+- [x] Test verifies: 3 LoopResults, all successful, build.log has 3 distinct loop_ids
+- [x] Test verifies: audit.log has entries from all loops
+- [x] Test verifies: no partial or corrupted log lines
+- [x] Test completes in under 10 seconds (no real LLM calls)
 
 **Claude Code Prompt:**
 ```
@@ -925,14 +925,14 @@ Create a tests/fixtures/ directory with reusable test data:
   create a complete temporary repository with .codelicious/ directory and sample spec files.
 
 **Acceptance Criteria:**
-- [ ] tests/fixtures/specs/ contains: valid_simple.md, valid_multi_section.md, invalid_empty.md,
+- [x] tests/fixtures/specs/ contains: valid_simple.md, valid_multi_section.md, invalid_empty.md,
       malicious_path_traversal.md
-- [ ] tests/fixtures/llm_responses/ contains: tool_call_write_file.json, tool_call_run_command.json,
+- [x] tests/fixtures/llm_responses/ contains: tool_call_write_file.json, tool_call_run_command.json,
       completion_signal.json, error_rate_limit.json
-- [ ] tests/conftest.py has fixtures: temp_repo, temp_repo_with_specs, mock_llm_success,
+- [x] tests/conftest.py has fixtures: temp_repo, temp_repo_with_specs, mock_llm_success,
       mock_llm_tool_call
-- [ ] Existing tests continue to pass (fixtures supplement, not replace)
-- [ ] At least 2 existing test files are updated to use the new fixtures
+- [x] Existing tests continue to pass (fixtures supplement, not replace)
+- [x] At least 2 existing test files are updated to use the new fixtures
 
 **Claude Code Prompt:**
 ```
@@ -983,11 +983,11 @@ Add new Mermaid diagrams to README.md covering:
   from the diagrams without reading source code.
 
 **Acceptance Criteria:**
-- [ ] README.md contains a "Parallel Execution Architecture" Mermaid diagram
-- [ ] README.md contains a "Thread Safety Model" Mermaid diagram
-- [ ] CLI Reference table includes --parallel flag
-- [ ] Codebase Logic Composition pie chart is updated
-- [ ] All existing diagrams are preserved (append new ones, do not remove old ones)
+- [x] README.md contains a "Parallel Execution Architecture" Mermaid diagram
+- [x] README.md contains a "Thread Safety Model" Mermaid diagram
+- [x] CLI Reference table includes --parallel flag
+- [x] Codebase Logic Composition pie chart is updated
+- [x] All existing diagrams are preserved (append new ones, do not remove old ones)
 
 **Claude Code Prompt:**
 ```
@@ -1058,10 +1058,10 @@ Update STATE.md to reflect the current spec-15 progress. Update CLAUDE.md to men
 parallel execution capability for the builder agent.
 
 **Acceptance Criteria:**
-- [ ] STATE.md reflects spec-15 as current work
-- [ ] STATE.md lists all spec-15 phases with completion checkboxes
-- [ ] CLAUDE.md mentions --parallel flag in the "How to Work" section
-- [ ] CLAUDE.md mentions StructuredLogger for debugging parallel builds
+- [x] STATE.md reflects spec-15 as current work
+- [x] STATE.md lists all spec-15 phases with completion checkboxes
+- [x] CLAUDE.md mentions --parallel flag in the "How to Work" section
+- [x] CLAUDE.md mentions StructuredLogger for debugging parallel builds
 
 **Claude Code Prompt:**
 ```
@@ -1069,20 +1069,20 @@ Read .codelicious/STATE.md. Add a new section at the top for spec-15:
 
 ### spec-15: Parallel Agentic Loops (IN PROGRESS)
 
-- [ ] Phase 1: Fix P1-2 -- Unify Command Validation (shlex.split)
-- [ ] Phase 2: Fix P1-8 -- Replace Silent Exception Swallowing
-- [ ] Phase 3: Fix P2-3 -- Add Process Group Timeout
-- [ ] Phase 4: Create StructuredLogger Module
-- [ ] Phase 5: Create ParallelExecutor Module
-- [ ] Phase 6: Thread-Safe AuditLogger
-- [ ] Phase 7: Thread-Safe CacheManager
-- [ ] Phase 8: Integrate ParallelExecutor into HuggingFaceEngine
-- [ ] Phase 9: Expand Sandbox Thread Safety
-- [ ] Phase 10: Integration Tests for Parallel Execution
-- [ ] Phase 11: Sample Dummy Data and Test Fixtures
-- [ ] Phase 12: Update README.md with Parallel Architecture Diagrams
-- [ ] Phase 13: Update STATE.md and CLAUDE.md
-- [ ] Phase 14: Lint, Format, and Full Verification
+- [x] Phase 1: Fix P1-2 -- Unify Command Validation (shlex.split)
+- [x] Phase 2: Fix P1-8 -- Replace Silent Exception Swallowing
+- [x] Phase 3: Fix P2-3 -- Add Process Group Timeout
+- [x] Phase 4: Create StructuredLogger Module
+- [x] Phase 5: Create ParallelExecutor Module
+- [x] Phase 6: Thread-Safe AuditLogger
+- [x] Phase 7: Thread-Safe CacheManager
+- [x] Phase 8: Integrate ParallelExecutor into HuggingFaceEngine
+- [x] Phase 9: Expand Sandbox Thread Safety
+- [x] Phase 10: Integration Tests for Parallel Execution
+- [x] Phase 11: Sample Dummy Data and Test Fixtures
+- [x] Phase 12: Update README.md with Parallel Architecture Diagrams
+- [x] Phase 13: Update STATE.md and CLAUDE.md
+- [x] Phase 14: Lint, Format, and Full Verification
 
 Update the "Current Status" header to reference spec-15.
 
@@ -1108,11 +1108,11 @@ Run the full verification suite: pytest, ruff check, ruff format, and security s
 issues found.
 
 **Acceptance Criteria:**
-- [ ] All tests pass (620+ expected)
-- [ ] ruff check src/ tests/ reports zero violations
-- [ ] ruff format --check src/ tests/ reports zero formatting issues
-- [ ] No eval(), exec(), shell=True, or hardcoded secrets in new code
-- [ ] .codelicious/BUILD_COMPLETE contains "DONE"
+- [x] All tests pass (620+ expected)
+- [x] ruff check src/ tests/ reports zero violations
+- [x] ruff format --check src/ tests/ reports zero formatting issues
+- [x] No eval(), exec(), shell=True, or hardcoded secrets in new code
+- [x] .codelicious/BUILD_COMPLETE contains "DONE"
 
 **Claude Code Prompt:**
 ```
@@ -1236,16 +1236,16 @@ If parallel execution introduces instability:
 
 ## 11. Acceptance Criteria (Spec-Level)
 
-- [ ] All 14 phases complete with individual acceptance criteria met
-- [ ] pytest reports 620+ passing tests with zero failures
-- [ ] ruff check src/ tests/ reports zero violations
-- [ ] ruff format --check src/ tests/ reports zero formatting issues
-- [ ] codelicious --parallel 1 produces identical behavior to current system (regression test)
-- [ ] codelicious --parallel 4 with 4 specs produces 4 concurrent loop executions
-- [ ] .codelicious/build.log contains valid JSON Lines with loop_id fields
-- [ ] audit.log and security.log contain entries from all concurrent loops
-- [ ] File count limit (200) is enforced globally across all concurrent loops
-- [ ] No new runtime dependencies (stdlib only)
-- [ ] README.md contains updated Mermaid diagrams
-- [ ] STATE.md reflects spec-15 progress
-- [ ] .codelicious/BUILD_COMPLETE contains "DONE"
+- [x] All 14 phases complete with individual acceptance criteria met
+- [x] pytest reports 620+ passing tests with zero failures
+- [x] ruff check src/ tests/ reports zero violations
+- [x] ruff format --check src/ tests/ reports zero formatting issues
+- [x] codelicious --parallel 1 produces identical behavior to current system (regression test)
+- [x] codelicious --parallel 4 with 4 specs produces 4 concurrent loop executions
+- [x] .codelicious/build.log contains valid JSON Lines with loop_id fields
+- [x] audit.log and security.log contain entries from all concurrent loops
+- [x] File count limit (200) is enforced globally across all concurrent loops
+- [x] No new runtime dependencies (stdlib only)
+- [x] README.md contains updated Mermaid diagrams
+- [x] STATE.md reflects spec-15 progress
+- [x] .codelicious/BUILD_COMPLETE contains "DONE"

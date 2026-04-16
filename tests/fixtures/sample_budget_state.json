@@ -1,9 +1,0 @@
-{
-  "calls_made": 120,
-  "max_calls": 150,
-  "total_input_tokens": 450000,
-  "total_output_tokens": 180000,
-  "total_cost_usd": 2.40,
-  "max_cost_usd": 3.00,
-  "utilization_pct": 80
-}

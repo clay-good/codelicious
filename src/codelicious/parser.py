@@ -54,11 +54,11 @@ def parse_spec(
         resolved_base = base_dir.resolve()
         try:
             resolved.relative_to(resolved_base)
-        except ValueError:
+        except ValueError as exc:
             raise SpecFileNotFoundError(
                 f"Path {resolved} is outside base directory {resolved_base}",
                 path=str(path),
-            )
+            ) from exc
 
     if not resolved.exists() or not resolved.is_file():
         raise SpecFileNotFoundError(
@@ -137,10 +137,9 @@ def _split_sections(content: str) -> list[Section]:
                 fence_char = "~"
         else:
             # Only close with matching fence type
-            if fence_char == "`" and stripped_line.startswith("```"):
-                in_code_fence = False
-                fence_char = ""
-            elif fence_char == "~" and stripped_line.startswith("~~~"):
+            if (fence_char == "`" and stripped_line.startswith("```")) or (
+                fence_char == "~" and stripped_line.startswith("~~~")
+            ):
                 in_code_fence = False
                 fence_char = ""
 

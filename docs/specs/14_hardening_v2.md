@@ -1494,18 +1494,18 @@ data). Fixtures that require filesystem state should use pytest's tmp_path fixtu
 
 After all 20 phases are complete, verify:
 
-- [ ] pytest: 600+ tests, 0 failures, 0 collection errors
-- [ ] pytest --cov: 85%+ line coverage
-- [ ] ruff check: 0 violations
-- [ ] ruff format: 0 reformats needed
-- [ ] python -c "from codelicious import cli": no import errors
-- [ ] grep for f-string logging: 0 matches in src/
-- [ ] grep for addLevelName: 0 matches in src/
-- [ ] grep for "git add .": 0 matches in src/ (replaced in spec-13)
-- [ ] grep for "proxilion": 0 matches in entire repository
-- [ ] grep for "dangerously-skip-permissions" without conditional: 0 matches
-- [ ] grep for 'os.fdopen.*"w")' without encoding: 0 matches in src/
-- [ ] README.md metrics match actual values
-- [ ] STATE.md shows spec-14 complete
-- [ ] BUILD_COMPLETE contains "DONE"
-- [ ] MEMORY.md is updated with project context
+- [x] pytest: 600+ tests, 0 failures, 0 collection errors
+- [x] pytest --cov: 85%+ line coverage
+- [x] ruff check: 0 violations
+- [x] ruff format: 0 reformats needed
+- [x] python -c "from codelicious import cli": no import errors
+- [x] grep for f-string logging: 0 matches in src/
+- [x] grep for addLevelName: 0 matches in src/
+- [x] grep for "git add .": 0 matches in src/ (replaced in spec-13)
+- [x] grep for "proxilion": 0 matches in entire repository
+- [x] grep for "dangerously-skip-permissions" without conditional: 0 matches
+- [x] grep for 'os.fdopen.*"w")' without encoding: 0 matches in src/
+- [x] README.md metrics match actual values
+- [x] STATE.md shows spec-14 complete
+- [x] BUILD_COMPLETE contains "DONE"
+- [x] MEMORY.md is updated with project context

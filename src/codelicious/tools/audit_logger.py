@@ -1,6 +1,6 @@
+import datetime
 import json
 import logging
-import datetime
 import sys
 import threading
 from enum import Enum
@@ -111,11 +111,11 @@ class AuditLogger:
         """
         try:
             self._audit_fh.close()
-        except Exception:
+        except OSError:
             pass
         try:
             self._security_fh.close()
-        except Exception:
+        except OSError:
             pass
 
     def __del__(self) -> None:

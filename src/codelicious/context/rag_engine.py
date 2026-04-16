@@ -1,17 +1,17 @@
 import atexit
-import os
+import heapq
 import json
-import socket
+import logging
+import math
+import os
+import re
 import sqlite3
 import struct
 import time
-import urllib.request
 import urllib.error
-import logging
-import math
-import heapq
+import urllib.request
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any
 
 from codelicious.errors import SandboxViolationError
 from codelicious.llm_client import _validate_endpoint_url
@@ -20,6 +20,54 @@ logger = logging.getLogger("codelicious.rag")
 
 # Maximum number of results to return from semantic_search to prevent memory exhaustion
 MAX_TOP_K = 20
+
+# Maximum length for a single chunk returned by semantic_search (S22-P3-10)
+_MAX_CHUNK_LEN = 5000
+
+# Prompt injection patterns to detect in RAG chunk text (S22-P3-10).
+# Reuses the same pattern set as planner._INJECTION_PATTERNS for consistency.
+_CHUNK_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("SYSTEM:", re.compile(r"SYSTEM:", re.IGNORECASE)),
+    ("IGNORE PREVIOUS", re.compile(r"IGNORE\s+PREVIOUS", re.IGNORECASE)),
+    ("FORGET", re.compile(r"\bFORGET\b", re.IGNORECASE)),
+    ("NEW INSTRUCTIONS", re.compile(r"NEW\s+INSTRUCTIONS", re.IGNORECASE)),
+    ("OVERRIDE", re.compile(r"\bOVERRIDE\b", re.IGNORECASE)),
+    ("DISREGARD", re.compile(r"\bDISREGARD\b", re.IGNORECASE)),
+]
+
+
+def _sanitize_chunk_text(text: str) -> str:
+    """Sanitize RAG chunk text to mitigate prompt injection (S22-P3-10).
+
+    Strips null bytes and control characters, redacts lines matching known
+    injection patterns, and truncates to _MAX_CHUNK_LEN.
+    """
+    # Strip null bytes
+    text = text.replace("\x00", "")
+
+    # Strip control characters (ASCII 0-31 except tab, newline, carriage return)
+    text = "".join(c for c in text if ord(c) >= 32 or c in "\t\n\r")
+
+    # Redact lines that match injection patterns
+    lines = text.split("\n")
+    sanitized_lines: list[str] = []
+    for line in lines:
+        matched = False
+        for _label, pattern in _CHUNK_INJECTION_PATTERNS:
+            if pattern.search(line):
+                matched = True
+                break
+        if matched:
+            sanitized_lines.append("[REDACTED]")
+        else:
+            sanitized_lines.append(line)
+    text = "\n".join(sanitized_lines)
+
+    # Truncate to max length
+    if len(text) > _MAX_CHUNK_LEN:
+        text = text[:_MAX_CHUNK_LEN] + "\n[CHUNK_TRUNCATED]"
+
+    return text
 
 
 class RagEngine:
@@ -134,21 +182,21 @@ class RagEngine:
             conn.commit()
 
     @classmethod
-    def _vec_to_blob(cls, vec: List[float]) -> bytes:
+    def _vec_to_blob(cls, vec: list[float]) -> bytes:
         """Encode a float vector as a compact binary blob."""
         return struct.pack(cls._BLOB_FMT, *vec)
 
     @classmethod
-    def _blob_to_vec(cls, blob: bytes) -> List[float]:
+    def _blob_to_vec(cls, blob: bytes) -> list[float]:
         """Decode a binary blob back to a float vector."""
         return list(struct.unpack(cls._BLOB_FMT, blob))
 
-    def _get_embedding(self, text: str) -> List[float]:
+    def _get_embedding(self, text: str) -> list[float]:
         """Calls the HF serverless API to get a single chunk embedding synchronously."""
         results = self._get_embeddings_batch([text])
         return results[0] if results else []
 
-    def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+    def _get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
         """Calls the HF serverless API to get embeddings for multiple texts in one request.
 
         The HuggingFace inference API accepts a list under the 'inputs' key, so we
@@ -180,7 +228,7 @@ class RagEngine:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=self._embed_timeout) as response:
+                with urllib.request.urlopen(req, timeout=self._embed_timeout) as response:  # nosec B310
                     # Cap response size to prevent memory exhaustion from a
                     # rogue or misconfigured embedding API (Finding 28).
                     _MAX_RESPONSE_BYTES = 5_000_000
@@ -208,7 +256,7 @@ class RagEngine:
                     continue
                 logger.error("Failed to generate batch embeddings: %s", e)
                 return []
-            except (urllib.error.URLError, socket.timeout, OSError) as e:
+            except (TimeoutError, urllib.error.URLError, OSError) as e:
                 last_err = e
                 wait_s = self._EMBED_BACKOFF_BASE_S * (2**attempt)
                 logger.warning(
@@ -228,11 +276,11 @@ class RagEngine:
         return []
 
     @staticmethod
-    def _compute_norm(vec: List[float]) -> float:
+    def _compute_norm(vec: list[float]) -> float:
         """Compute the L2 norm of a vector in a single pass."""
         return math.sqrt(math.fsum(v * v for v in vec))
 
-    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+    def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Native pure python cosine similarity calculation to circumvent numpy dependencies.
 
         Uses a single-pass approach: dot product, norm_a, and norm_b are all
@@ -244,7 +292,7 @@ class RagEngine:
         dot = 0.0
         sq_a = 0.0
         sq_b = 0.0
-        for a, b in zip(vec_a, vec_b):
+        for a, b in zip(vec_a, vec_b, strict=False):
             dot += a * b
             sq_a += a * a
             sq_b += b * b
@@ -255,9 +303,9 @@ class RagEngine:
 
     def _cosine_similarity_with_norms(
         self,
-        vec_a: List[float],
+        vec_a: list[float],
         norm_a: float,
-        vec_b: List[float],
+        vec_b: list[float],
         norm_b: float,
     ) -> float:
         """Cosine similarity when both norms are pre-computed.
@@ -270,7 +318,7 @@ class RagEngine:
             return 0.0
         if norm_a == 0.0 or norm_b == 0.0:
             return 0.0
-        dot = math.fsum(a * b for a, b in zip(vec_a, vec_b))
+        dot = math.fsum(a * b for a, b in zip(vec_a, vec_b, strict=False))
         return dot / (norm_a * norm_b)
 
     def ingest_file(self, rel_path: str, content: str):
@@ -320,7 +368,7 @@ class RagEngine:
             # Delete old chunks for this file only after confirming new data exists
             cursor.execute("DELETE FROM file_chunks WHERE file_path = ?", (rel_path,))
 
-            for chunk, vector in zip(non_empty_chunks, vectors):
+            for chunk, vector in zip(non_empty_chunks, vectors, strict=False):
                 if vector:
                     norm = self._compute_norm(vector)
                     blob = self._vec_to_blob(vector) if len(vector) == self._EMBED_DIM else None
@@ -330,7 +378,7 @@ class RagEngine:
                     )
             conn.commit()
 
-    def semantic_search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    def semantic_search(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
         """
         Embeds the query string, then pulls all sqlite chunk vectors from disk,
         running a brute-force native cosine similarity check.
@@ -360,7 +408,7 @@ class RagEngine:
 
         # Use a min-heap of size top_k for O(n log k) performance
         # Store tuples of (score, file_path, chunk_text) - score first for heap ordering
-        heap: List[tuple] = []
+        heap: list[tuple] = []
 
         with sqlite3.connect(self.db_path) as conn:
             self._configure_connection(conn)
@@ -391,7 +439,7 @@ class RagEngine:
                 except (json.JSONDecodeError, struct.error):
                     continue
 
-        # Extract results from heap and sort by score descending
-        results = [{"file_path": fp, "text": text, "score": score} for score, fp, text in heap]
+        # Extract results from heap, sanitize chunk text (S22-P3-10), and sort by score descending
+        results = [{"file_path": fp, "text": _sanitize_chunk_text(text), "score": score} for score, fp, text in heap]
         results.sort(key=lambda x: x["score"], reverse=True)
         return results

@@ -1,6 +1,9 @@
 """Tests for CacheManager atomic persistence operations."""
 
+from __future__ import annotations
+
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,9 +91,8 @@ class TestFlushCache:
         """Temp file should be cleaned up when flush fails."""
         manager = CacheManager(tmp_path)
 
-        with patch("os.replace", side_effect=OSError("Simulated error")):
-            with pytest.raises(OSError):
-                manager.flush_cache({"test": "data"})
+        with patch("os.replace", side_effect=OSError("Simulated error")), pytest.raises(OSError):
+            manager.flush_cache({"test": "data"})
 
         # Verify no temp files left behind
         codelicious_dir = tmp_path / ".codelicious"
@@ -222,9 +224,8 @@ class TestFlushStateFailurePath:
         original_raw = state_file.read_bytes()
 
         # Now trigger a failure on the next mutation
-        with patch("os.replace", side_effect=OSError("Simulated disk full")):
-            with pytest.raises(OSError):
-                manager.record_memory_mutation("second entry — should not persist")
+        with patch("os.replace", side_effect=OSError("Simulated disk full")), pytest.raises(OSError):
+            manager.record_memory_mutation("second entry — should not persist")
 
         # The on-disk state must be byte-for-byte unchanged
         raw_after = state_file.read_bytes()
@@ -340,3 +341,213 @@ class TestRecordMemoryMutationTruncation:
         manager.record_memory_mutation(exact)
         state = manager.load_state()
         assert state["memory_ledger"][-1] == exact
+
+
+# ---------------------------------------------------------------------------
+# Lines 56-57 / 66-67: os.chmod failure in _ensure_skeleton (OSError swallowed)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureSkeletonChmodFailure:
+    """os.chmod failures in _ensure_skeleton are silently ignored."""
+
+    def test_ensure_skeleton_chmod_failure_state_file(self, tmp_path: Path):
+        """OSError from os.chmod on the state file must not propagate."""
+        call_count = {"n": 0}
+        real_chmod = os.chmod
+
+        def patched_chmod(path, mode):
+            call_count["n"] += 1
+            # Raise only for the state file
+            if "state.json" in str(path):
+                raise OSError("Permission denied (mocked)")
+            real_chmod(path, mode)
+
+        with patch("os.chmod", side_effect=patched_chmod):
+            # Must not raise even though chmod on state.json fails
+            CacheManager(tmp_path)
+
+        # State file was still written despite the chmod failure
+        state_file = tmp_path / ".codelicious" / "state.json"
+        assert state_file.exists()
+        content = json.loads(state_file.read_text(encoding="utf-8"))
+        assert "memory_ledger" in content
+
+    def test_ensure_skeleton_chmod_failure_cache_file(self, tmp_path: Path):
+        """OSError from os.chmod on the cache file must not propagate."""
+        call_count = {"n": 0}
+        real_chmod = os.chmod
+
+        def patched_chmod(path, mode):
+            call_count["n"] += 1
+            # Raise only for the cache file
+            if "cache.json" in str(path):
+                raise OSError("Permission denied (mocked)")
+            real_chmod(path, mode)
+
+        with patch("os.chmod", side_effect=patched_chmod):
+            CacheManager(tmp_path)
+
+        # Cache file was still written despite the chmod failure
+        cache_file = tmp_path / ".codelicious" / "cache.json"
+        assert cache_file.exists()
+        content = json.loads(cache_file.read_text(encoding="utf-8"))
+        assert "file_hashes" in content
+
+
+# ---------------------------------------------------------------------------
+# Lines 113-117 / 120-122: flush_cache finally-block cleanup on rare failures
+# ---------------------------------------------------------------------------
+
+
+class TestFlushCacheCleanupOnRareFailure:
+    """Cover the finally-block cleanup paths in flush_cache (lines 113-122)."""
+
+    def test_flush_cache_oserror_on_unlink_is_swallowed(self, tmp_path: Path):
+        """When os.unlink raises in the finally block, OSError is swallowed and
+        the original exception (from os.replace) is still propagated."""
+        manager = CacheManager(tmp_path)
+
+        original_unlink = os.unlink
+
+        def patched_unlink(path):
+            if ".tmp" in str(path):
+                raise OSError("Cannot unlink (mocked)")
+            original_unlink(path)
+
+        with (
+            patch("os.replace", side_effect=OSError("Simulated replace failure")),
+            patch("os.unlink", side_effect=patched_unlink),
+        ):
+            # The outer OSError from os.replace must still propagate even when
+            # os.unlink also raises in the finally block.
+            with pytest.raises(OSError, match="Simulated replace failure"):
+                manager.flush_cache({"test": "data"})
+
+    def test_flush_cache_osfdopen_fails_closes_fd_and_propagates(self, tmp_path: Path):
+        """When os.fdopen fails, the raw temp_fd is closed in the finally block
+        and the exception propagates (covers lines 113-117)."""
+        manager = CacheManager(tmp_path)
+
+        def patched_fdopen(fd, *args, **kwargs):
+            raise OSError("Cannot open fd (mocked)")
+
+        with patch("os.fdopen", side_effect=patched_fdopen):
+            with pytest.raises(OSError, match="Cannot open fd"):
+                manager.flush_cache({"test": "data"})
+
+        # After failure, no temp files should remain
+        codelicious_dir = tmp_path / ".codelicious"
+        temp_files = list(codelicious_dir.glob("cache_*.tmp"))
+        assert len(temp_files) == 0, f"Temp files not cleaned up: {temp_files}"
+
+
+# ---------------------------------------------------------------------------
+# Lines 150-154 / 157-159: _flush_state finally-block cleanup on rare failures
+# ---------------------------------------------------------------------------
+
+
+class TestFlushStateCleanupOnRareFailure:
+    """Cover the finally-block cleanup paths in _flush_state (lines 150-159)."""
+
+    def test_flush_state_oserror_on_unlink_is_swallowed(self, tmp_path: Path):
+        """When os.unlink raises in _flush_state's finally block, the original
+        exception (os.replace failure) still propagates."""
+        manager = CacheManager(tmp_path)
+        manager.record_memory_mutation("priming entry")  # initialize _memory_ledger
+
+        original_unlink = os.unlink
+
+        def patched_unlink(path):
+            if ".tmp" in str(path):
+                raise OSError("Cannot unlink state tmp (mocked)")
+            original_unlink(path)
+
+        with (
+            patch("os.replace", side_effect=OSError("Simulated state replace failure")),
+            patch("os.unlink", side_effect=patched_unlink),
+        ):
+            with pytest.raises(OSError, match="Simulated state replace failure"):
+                manager.record_memory_mutation("triggering flush")
+
+    def test_flush_state_osfdopen_fails_closes_fd_and_propagates(self, tmp_path: Path):
+        """When os.fdopen fails inside _flush_state, the raw fd is closed and
+        the exception propagates (covers lines 150-154)."""
+        manager = CacheManager(tmp_path)
+        manager.record_memory_mutation("priming entry")
+
+        real_fdopen = os.fdopen
+
+        call_count = {"n": 0}
+
+        def patched_fdopen(fd, *args, **kwargs):
+            call_count["n"] += 1
+            # Let the first call (which comes from flush_cache) succeed but block
+            # any subsequent call that originates from _flush_state.
+            if call_count["n"] == 1:
+                raise OSError("Cannot open state fd (mocked)")
+            return real_fdopen(fd, *args, **kwargs)
+
+        with patch("os.fdopen", side_effect=patched_fdopen):
+            with pytest.raises(OSError, match="Cannot open state fd"):
+                manager.record_memory_mutation("will fail")
+
+        # No temp state files should remain
+        codelicious_dir = tmp_path / ".codelicious"
+        state_tmp_files = list(codelicious_dir.glob("state_*.tmp"))
+        assert len(state_tmp_files) == 0, f"State temp files not cleaned up: {state_tmp_files}"
+
+
+# ---------------------------------------------------------------------------
+# Lines 205-211: flush_state() public method — lazy-init path and write path
+# ---------------------------------------------------------------------------
+
+
+class TestFlushStatePublicMethod:
+    """Tests for the public flush_state() method (lines 199-211)."""
+
+    def test_flush_state_noop_when_no_mutations_recorded(self, tmp_path: Path):
+        """flush_state() is a no-op when _memory_ledger is None (no mutations yet)."""
+        manager = CacheManager(tmp_path)
+        # Write a known state directly to disk
+        state_file = tmp_path / ".codelicious" / "state.json"
+        expected = {"memory_ledger": ["existing-entry"], "completed_tasks": []}
+        state_file.write_text(json.dumps(expected), encoding="utf-8")
+
+        # Call flush_state() before any record_memory_mutation — should be a no-op
+        manager.flush_state()
+
+        # On-disk state must be unchanged
+        content = json.loads(state_file.read_text(encoding="utf-8"))
+        assert content == expected
+
+    def test_flush_state_writes_ledger_after_mutations(self, tmp_path: Path):
+        """flush_state() persists the in-memory ledger to disk after mutations."""
+        manager = CacheManager(tmp_path)
+        manager.record_memory_mutation("entry-one")
+        manager.record_memory_mutation("entry-two")
+
+        # Call flush_state() explicitly — should produce the same result as the
+        # implicit flush inside record_memory_mutation
+        manager.flush_state()
+
+        state = manager.load_state()
+        assert "entry-one" in state["memory_ledger"]
+        assert "entry-two" in state["memory_ledger"]
+
+    def test_flush_state_preserves_extra_state_keys(self, tmp_path: Path):
+        """flush_state() round-trips extra keys (e.g. completed_tasks) correctly."""
+        manager = CacheManager(tmp_path)
+
+        # Pre-populate state file with extra keys
+        state_file = tmp_path / ".codelicious" / "state.json"
+        initial_state = {"memory_ledger": [], "completed_tasks": ["task-A"]}
+        state_file.write_text(json.dumps(initial_state), encoding="utf-8")
+
+        # Trigger lazy init by recording a mutation, then call public flush_state()
+        manager.record_memory_mutation("new-entry")
+        manager.flush_state()
+
+        state = manager.load_state()
+        assert "task-A" in state["completed_tasks"]
+        assert "new-entry" in state["memory_ledger"]

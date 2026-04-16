@@ -1,6 +1,5 @@
 """Tests for error message quality improvements (spec-19 Phase 2: EM-1 through EM-5)."""
 
-import argparse
 import pathlib
 import unittest.mock
 
@@ -8,7 +7,6 @@ import pytest
 
 from codelicious.errors import PathTraversalError
 from codelicious.sandbox import Sandbox
-
 
 # -- EM-1 / EM-2: sandbox.py error messages include paths and distinguish symlink vs direct --
 
@@ -48,48 +46,6 @@ class TestSandboxErrorMessages:
         outside = pathlib.Path("/completely/outside")
         with pytest.raises(PathTraversalError, match=str(tmp_path)):
             sandbox._check_denied(outside)
-
-
-# -- EM-3: config.py max_context_tokens error includes recommended range --
-
-
-class TestConfigErrorMessages:
-    """Verify config error messages include actionable guidance."""
-
-    def test_max_context_tokens_includes_recommendation(self) -> None:
-        """EM-3: max_context_tokens error should include recommended range."""
-        from codelicious.config import build_config
-
-        args = argparse.Namespace(
-            provider=None,
-            model=None,
-            patience=None,
-            max_context_tokens=500,
-            verify_command=None,
-            task_timeout=None,
-            test_timeout=None,
-            lint_timeout=None,
-            dry_run=None,
-            stop_on_failure=None,
-            verbose=None,
-            project_dir=None,
-            verification_timeout=None,
-            replan_after_failures=None,
-            coverage_threshold=None,
-            agent_timeout_s=None,
-            effort=None,
-            max_turns=None,
-            iterations=None,
-            no_reflect=None,
-            verify_passes=None,
-            push_pr=None,
-            pr_base_branch=None,
-            ci_fix_passes=None,
-            auto=None,
-            spec=None,
-        )
-        with pytest.raises(ValueError, match="recommended: 4000-8000"):
-            build_config(args)
 
 
 # -- EM-4: verifier.py tool-not-found messages include install guidance --
@@ -161,10 +117,10 @@ class TestCliExceptionHandling:
 
     def test_main_logs_fatal_exception(self) -> None:
         """EM-5: main() logs exceptions rather than silently swallowing."""
-        from codelicious import cli
-
         # Verify the except block at the end of main() calls logger.exception
         import inspect
+
+        from codelicious import cli
 
         source = inspect.getsource(cli.main)
         assert "logger.exception" in source

@@ -12,15 +12,8 @@ import pytest
 from codelicious._env import parse_env_float, parse_env_int
 
 
-class TestBudgetGuardRateOverrides:
+class TestEnvFloatOverrides:
     """Verify CODELICIOUS_INPUT_RATE_PER_MTOK / OUTPUT_RATE_PER_MTOK env overrides."""
-
-    def test_default_rates(self) -> None:
-        """Module-level defaults are used when env vars are unset."""
-        import codelicious.budget_guard as bg
-
-        assert bg._DEFAULT_INPUT_RATE == 3.00
-        assert bg._DEFAULT_OUTPUT_RATE == 15.00
 
     def test_input_rate_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CODELICIOUS_INPUT_RATE_PER_MTOK", "5.50")
@@ -140,37 +133,3 @@ class TestSandboxExtensionOverrides:
         sb = Sandbox(tmp_path)
         result = sb.write_file("schema.proto", 'syntax = "proto3";')
         assert result.exists()
-
-
-class TestProgressBytesOverride:
-    """Verify CODELICIOUS_MAX_PROGRESS_BYTES env override."""
-
-    def test_default_value(self) -> None:
-        import codelicious.progress as p
-
-        assert p._DEFAULT_MAX_PROGRESS_BYTES == 10 * 1024 * 1024
-
-    def test_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODELICIOUS_MAX_PROGRESS_BYTES", "5000000")
-        val = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", 10 * 1024 * 1024, min_val=1)
-        assert val == 5000000
-
-    def test_invalid_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODELICIOUS_MAX_PROGRESS_BYTES", "notanumber")
-        val = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", 10 * 1024 * 1024, min_val=1)
-        assert val == 10 * 1024 * 1024
-
-    def test_zero_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODELICIOUS_MAX_PROGRESS_BYTES", "0")
-        val = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", 10 * 1024 * 1024, min_val=1)
-        assert val == 10 * 1024 * 1024
-
-    def test_negative_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODELICIOUS_MAX_PROGRESS_BYTES", "-100")
-        val = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", 10 * 1024 * 1024, min_val=1)
-        assert val == 10 * 1024 * 1024
-
-    def test_empty_string_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CODELICIOUS_MAX_PROGRESS_BYTES", "")
-        val = parse_env_int("CODELICIOUS_MAX_PROGRESS_BYTES", 10 * 1024 * 1024, min_val=1)
-        assert val == 10 * 1024 * 1024

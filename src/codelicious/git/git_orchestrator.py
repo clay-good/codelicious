@@ -1,13 +1,94 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 import re
 import subprocess
+import time as _time_mod
 from pathlib import Path
 
 from codelicious.errors import GitOperationError
+
+
+@dataclasses.dataclass(frozen=True)
+class PushResult:
+    """Structured result from ``push_to_origin()`` (spec-27 Phase 0.4).
+
+    Replaces the old ``bool`` return so callers can inspect *why* a push
+    failed and act accordingly (e.g. don't retry auth failures).
+    """
+
+    success: bool
+    error_type: str | None = None  # "auth", "conflict", "transient", "unknown", or None on success
+    message: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class CommitResult:
+    """Result of ``commit_chunk()`` (spec-27 Phase 2.2).
+
+    Contains the commit SHA on success so callers can reference it.
+    """
+
+    success: bool
+    sha: str = ""  # Short commit SHA, empty on failure
+    message: str = ""
+
+
+# Stderr patterns used to classify push failures (spec-27 Phase 0.4).
+_AUTH_FAILURE_PATTERNS: tuple[str, ...] = (
+    "permission denied",
+    "authentication failed",
+    "could not read username",
+    "invalid credentials",
+    "authorization failed",
+)
+
+_CONFLICT_PATTERNS: tuple[str, ...] = (
+    "rejected",
+    "non-fast-forward",
+    "fetch first",
+    "failed to push some refs",
+)
+
+_TRANSIENT_PATTERNS: tuple[str, ...] = (
+    "connection reset",
+    "connection timed out",
+    "could not resolve host",
+    "ssl",
+    "tls",
+    "broken pipe",
+    "network is unreachable",
+    "connection refused",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _classify_push_error(stderr: str) -> str:
+    """Classify a git push stderr message into an error category.
+
+    Transient patterns are checked first so that messages like
+    "fatal: unable to access ... Connection timed out" are correctly
+    classified as transient rather than auth.
+    """
+    lower = stderr.lower()
+    # Check transient FIRST — they overlap with auth patterns
+    # (e.g. "fatal: unable to access ... Connection timed out")
+    for pattern in _TRANSIENT_PATTERNS:
+        if pattern in lower:
+            return "transient"
+    for pattern in _AUTH_FAILURE_PATTERNS:
+        if pattern in lower:
+            return "auth"
+    for pattern in _CONFLICT_PATTERNS:
+        if pattern in lower:
+            return "conflict"
+    return "unknown"
+
 
 logger = logging.getLogger("codelicious.git")
 
@@ -19,8 +100,12 @@ _CONFIG_MAX_BYTES: int = 100_000  # 100 KB
 _ALLOWED_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "allowlisted_commands",
+        "chunk_strategy",
+        "default_engine",
         "default_reviewers",
         "max_calls_per_iteration",
+        "max_commits_per_pr",
+        "platform",
         "verify_command",
     }
 )
@@ -88,6 +173,7 @@ class GitManager:
         self.repo_path = repo_path
         self.spec_id = spec_id
         self.forbidden_branches = frozenset({"main", "master", "production", "develop", "release", "staging", "trunk"})
+        self._platform: str | None = None  # Cached platform detection
 
         # Load local configurations with size limit and schema validation
         # (Finding 32: config.json loaded without validation).
@@ -119,6 +205,120 @@ class GitManager:
             except json.JSONDecodeError:
                 logger.error("Failed to parse config.json.")
 
+    def verify_git_identity(self) -> None:
+        """Check that git user.name and user.email are configured (spec-27 Phase 0.2).
+
+        Checks local repo config first, then global config.  If either is
+        unset after both checks, prints an actionable error and exits.
+        Logs the identity that will be used for commits.
+        """
+        if not self._has_git():
+            return
+
+        def _get_config(key: str) -> str:
+            """Try local then global git config for *key*."""
+            # Local (repo-level) config
+            try:
+                value = self._run_cmd(["git", "config", "--local", key], check=False)
+                if value:
+                    return value
+            except (OSError, RuntimeError):
+                pass
+            # Global fallback
+            try:
+                value = self._run_cmd(["git", "config", "--global", key], check=False)
+                if value:
+                    return value
+            except (OSError, RuntimeError):
+                pass
+            return ""
+
+        name = _get_config("user.name")
+        email = _get_config("user.email")
+
+        missing = []
+        if not name:
+            missing.append("user.name")
+        if not email:
+            missing.append("user.email")
+
+        if missing:
+            import sys
+
+            keys = " and ".join(missing)
+            print(
+                f"Error: git {keys} not configured. Commits require an identity.\n"
+                f"  Set them with:\n"
+                f'    git config --global user.name "Your Name"\n'
+                f'    git config --global user.email "you@example.com"',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        logger.info("Git identity: %s <%s>", name, email)
+
+    def detect_platform(self) -> str:
+        """Detect whether the repo's origin remote points to GitHub or GitLab (spec-27 Phase 5.2).
+
+        Returns ``"github"``, ``"gitlab"``, or ``"unknown"``.  Caches the result.
+        """
+        if self._platform is not None:
+            return self._platform
+
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                url = result.stdout.strip().lower()
+                if "gitlab" in url:
+                    self._platform = "gitlab"
+                elif "github" in url:
+                    self._platform = "github"
+                else:
+                    self._platform = "unknown"
+            else:
+                self._platform = "unknown"
+        except (subprocess.TimeoutExpired, OSError):
+            self._platform = "unknown"
+
+        return self._platform
+
+    def _check_cli_auth(self) -> tuple[str, bool]:
+        """Check whether the platform CLI (gh/glab) is authenticated (spec-27 Phase 5.1).
+
+        Returns ``(cli_tool, authenticated)`` where ``cli_tool`` is ``"gh"``,
+        ``"glab"``, or ``""`` if neither is available.
+        """
+        import shutil
+
+        _TIMEOUT = 15
+        platform = self.detect_platform()
+
+        if platform == "gitlab":
+            if shutil.which("glab") is None:
+                logger.warning("GitLab remote detected but `glab` CLI not installed. Skipping MR operations.")
+                return ("", False)
+            try:
+                result = subprocess.run(["glab", "auth", "status"], capture_output=True, text=True, timeout=_TIMEOUT)
+                return ("glab", result.returncode == 0)
+            except (subprocess.TimeoutExpired, OSError):
+                return ("glab", False)
+
+        # Default: GitHub
+        if shutil.which("gh") is None:
+            logger.warning("GitHub CLI (`gh`) not installed. Skipping PR operations.")
+            return ("", False)
+        try:
+            result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=_TIMEOUT)
+            return ("gh", result.returncode == 0)
+        except (subprocess.TimeoutExpired, OSError):
+            return ("gh", False)
+
     @property
     def current_branch(self) -> str:
         """Return the current git branch name."""
@@ -126,7 +326,7 @@ class GitManager:
             return "unknown"
         try:
             return self._run_cmd(["git", "branch", "--show-current"])
-        except Exception:
+        except (OSError, RuntimeError):
             return "unknown"
 
     def _has_git(self) -> bool:
@@ -156,14 +356,21 @@ class GitManager:
             raise RuntimeError(f"Command {safe_cmd} failed: {res.stderr[:200]}")
         return res.stdout.strip()
 
-    def push_to_origin(self) -> bool:
+    def push_to_origin(self) -> PushResult:
         """Push the current branch to origin if there are unpushed commits.
 
-        Returns True if the push succeeded (or nothing to push),
-        False on failure.
+        Returns a ``PushResult`` with structured error information instead
+        of a plain ``bool`` (spec-27 Phase 0.4).  Callers MUST inspect
+        ``result.success`` and ``result.error_type``.
+
+        Error classification:
+        - ``"auth"``: credential / permission issue — do NOT retry.
+        - ``"conflict"``: non-fast-forward — needs rebase, do NOT retry.
+        - ``"transient"``: network / server glitch — retried automatically.
+        - ``"unknown"``: unclassified failure.
         """
         if not self._has_git():
-            return False
+            return PushResult(success=False, error_type="unknown", message="Not a git repository.")
 
         try:
             current_branch = self._run_cmd(["git", "branch", "--show-current"])
@@ -181,11 +388,14 @@ class GitManager:
 
             if not has_unpushed:
                 logger.debug("No unpushed commits on %s.", current_branch)
-                return True
+                return PushResult(success=True, message="Nothing to push.")
 
             logger.info("Pushing %s to origin.", current_branch)
-            # Retry push up to 3 times with backoff for transient failures (Finding 22)
+
             _PUSH_MAX_RETRIES = 3
+            last_stderr = ""
+            last_error_type = "unknown"
+
             for _push_attempt in range(_PUSH_MAX_RETRIES):
                 push_result = subprocess.run(
                     ["git", "push", "--set-upstream", "origin", current_branch],
@@ -195,29 +405,53 @@ class GitManager:
                     timeout=120,
                 )
                 if push_result.returncode == 0:
-                    return True
-                if _push_attempt < _PUSH_MAX_RETRIES - 1:
-                    import time as _time
+                    return PushResult(success=True, message="Push succeeded.")
 
-                    _time.sleep(5 * (_push_attempt + 1))
+                last_stderr = push_result.stderr.strip()
+                last_error_type = _classify_push_error(last_stderr)
+
+                # Auth and conflict errors will never succeed on retry — fail fast
+                if last_error_type == "auth":
+                    logger.error(
+                        "git push failed — authentication/permission error:\n%s\n"
+                        "Fix: run `gh auth login` (GitHub) or `glab auth login` (GitLab) "
+                        "and try again.",
+                        last_stderr,
+                    )
+                    return PushResult(success=False, error_type="auth", message=last_stderr)
+
+                if last_error_type == "conflict":
+                    logger.error(
+                        "git push rejected — remote has diverged:\n%s\nFix: run `git pull --rebase` and try again.",
+                        last_stderr,
+                    )
+                    return PushResult(success=False, error_type="conflict", message=last_stderr)
+
+                # Transient or unknown — retry with backoff
+                if _push_attempt < _PUSH_MAX_RETRIES - 1:
+                    _time_mod.sleep(5 * (_push_attempt + 1))
                     logger.warning(
-                        "git push failed (attempt %d/%d, exit %d): %s — retrying",
+                        "git push failed (attempt %d/%d, exit %d, type=%s): %s — retrying",
                         _push_attempt + 1,
                         _PUSH_MAX_RETRIES,
                         push_result.returncode,
-                        push_result.stderr.strip()[:200],
+                        last_error_type,
+                        last_stderr,
                     )
                 else:
-                    logger.warning(
-                        "git push failed after %d attempts (exit %d): %s",
+                    logger.error(
+                        "git push failed after %d attempts (exit %d, type=%s): %s",
                         _PUSH_MAX_RETRIES,
                         push_result.returncode,
-                        push_result.stderr.strip()[:200],
+                        last_error_type,
+                        last_stderr,
                     )
-            return False
+
+            return PushResult(success=False, error_type=last_error_type, message=last_stderr)
+
         except Exception as e:
-            logger.warning("Push failed: %s", e)
-            return False
+            logger.error("Push failed with exception: %s", e)
+            return PushResult(success=False, error_type="unknown", message=str(e))
 
     def assert_safe_branch(self, spec_name: str = "", spec_id: str | None = None):
         """Ensures the agent never executes against main/master directly.
@@ -290,10 +524,7 @@ class GitManager:
     def _is_sensitive_file(self, filename: str) -> bool:
         """Check if a filename matches any sensitive pattern."""
         filename_lower = filename.lower()
-        for pattern in SENSITIVE_PATTERNS:
-            if pattern in filename_lower:
-                return True
-        return False
+        return any(pattern in filename_lower for pattern in SENSITIVE_PATTERNS)
 
     def _check_staged_files_for_sensitive_patterns(self) -> None:
         """Check staged files for sensitive patterns and abort if any are found.
@@ -312,22 +543,6 @@ class GitManager:
             raise
         except RuntimeError:
             pass
-
-    def _unstage_sensitive_files(self, sensitive_files: list[str]) -> None:
-        """Unstage files that were detected as potentially sensitive.
-
-        Uses 'git reset HEAD <file>' to remove each file from the staging
-        area so it cannot be accidentally committed.
-        """
-        for filepath in sensitive_files:
-            try:
-                self._run_cmd(["git", "reset", "HEAD", filepath])
-                logger.warning(
-                    "Unstaged sensitive file to prevent accidental commit: %s",
-                    filepath,
-                )
-            except RuntimeError as e:
-                logger.error("Failed to unstage sensitive file %s: %s", filepath, e)
 
     def commit_verified_changes(self, commit_message: str, files_to_stage: list[str] | None = None) -> bool:
         """Stage changes and commit them.  Does NOT push.
@@ -388,14 +603,32 @@ class GitManager:
                 self._run_cmd(["git", "commit", "-m", commit_message])
                 logger.info("Committed changes: %s", commit_message)
             except RuntimeError as commit_err:
-                # Commit failed — unstage all staged changes so the working
-                # tree is left in a clean state and callers can safely retry.
-                logger.error("Commit failed: %s — unstaging changes.", commit_err)
-                try:
-                    self._run_cmd(["git", "reset", "HEAD"])
-                except RuntimeError as reset_err:
-                    logger.error("Failed to unstage after commit failure: %s", reset_err)
-                raise
+                err_str = str(commit_err).lower()
+                # spec-27 Phase 0.3: GPG signing fallback — retry unsigned
+                if "gpg failed" in err_str or "signing failed" in err_str:
+                    logger.warning(
+                        "GPG signing unavailable — committing unsigned. "
+                        "Configure GPG signing or set `commit.gpgsign=false` to suppress this warning."
+                    )
+                    try:
+                        self._run_cmd(["git", "commit", "--no-gpg-sign", "-m", commit_message])
+                        logger.info("Committed changes (unsigned): %s", commit_message)
+                    except RuntimeError as unsigned_err:
+                        logger.error("Unsigned commit also failed: %s — unstaging changes.", unsigned_err)
+                        try:
+                            self._run_cmd(["git", "reset", "HEAD"])
+                        except RuntimeError as reset_err:
+                            logger.error("Failed to unstage after commit failure: %s", reset_err)
+                        raise
+                else:
+                    # Non-GPG commit failure — unstage all staged changes so the working
+                    # tree is left in a clean state and callers can safely retry.
+                    logger.error("Commit failed: %s — unstaging changes.", commit_err)
+                    try:
+                        self._run_cmd(["git", "reset", "HEAD"])
+                    except RuntimeError as reset_err:
+                        logger.error("Failed to unstage after commit failure: %s", reset_err)
+                    raise
 
         except Exception as e:
             logger.error("Failed to commit: %s", e)
@@ -403,227 +636,455 @@ class GitManager:
 
         return True
 
-    def ensure_draft_pr_exists(self, spec_id: str = "", spec_summary: str = "") -> int | None:
-        """Ensure exactly one PR exists for the current spec.
+    def ensure_draft_pr_exists(
+        self,
+        spec_id: str = "",
+        spec_summary: str = "",
+        part: int = 0,
+        prev_pr_url: str = "",
+        chunk_summaries: list[str] | None = None,
+    ) -> int | None:
+        """Ensure exactly one PR/MR exists for the current spec (spec-27 Phase 5).
 
-        Searches ALL open PRs for a title starting with ``[spec-{spec_id}]``
-        so that duplicate PRs are prevented even across different branches.
+        Supports both GitHub (``gh``) and GitLab (``glab``) by detecting the
+        platform from the remote URL.  Uses ``gh auth status`` / ``glab auth
+        status`` instead of just checking the binary version.
 
-        When ``spec_id`` is empty, falls back to matching by the current
-        branch name (legacy behavior).
+        Parameters
+        ----------
+        part:
+            When > 0, this is a continuation PR (spec-27 Phase 2.3).
+        prev_pr_url:
+            URL of the previous part's PR (for linking in the body).
+        chunk_summaries:
+            Short descriptions of chunks included in this PR.
 
-        Returns the PR number on success, or ``None`` on failure / skip.
+        Returns the PR/MR number on success, or ``None`` on failure / skip.
         """
         if not self._has_git():
             return None
 
-        _GH_TIMEOUT_S = 30  # Max seconds for gh CLI calls (spec-22)
+        _TIMEOUT_S = 30
 
-        # Check if gh CLI is installed
-        try:
-            gh_check = subprocess.run(["gh", "--version"], capture_output=True, timeout=_GH_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            logger.warning("gh --version timed out. Skipping PR creation.")
+        # spec-27 Phase 5.1: validate auth, not just binary presence
+        cli_tool, authenticated = self._check_cli_auth()
+        if not cli_tool:
+            logger.warning("No PR/MR CLI tool available. Skipping PR creation. Commits still work.")
             return None
-        if gh_check.returncode != 0:
-            logger.warning("GitHub CLI (`gh`) not found. Skipping PR creation.")
+        if not authenticated:
+            logger.warning(
+                "%s is installed but not authenticated. Run `%s auth login` to enable PR creation.",
+                cli_tool,
+                cli_tool,
+            )
             return None
 
+        platform = self.detect_platform()
         current_branch = self.current_branch
         if current_branch in self.forbidden_branches or current_branch == "unknown":
-            logger.warning("Cannot create PR from branch %s.", current_branch)
+            logger.warning("Cannot create PR/MR from branch %s.", current_branch)
             return None
 
-        # ── Search for existing PR by spec-id title prefix ────────────
+        # ── Search for existing PR/MR by spec-id title prefix ─────────
         if spec_id:
             prefix = f"[spec-{spec_id}]"
-            try:
-                pr_list = subprocess.run(
-                    ["gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName", "--limit", "100"],
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=_GH_TIMEOUT_S,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("gh pr list timed out; skipping PR creation.")
-                return None
-
-            if pr_list.returncode == 0 and pr_list.stdout.strip() not in ("", "[]"):
-                try:
-                    prs = json.loads(pr_list.stdout)
-                    for pr in prs:
-                        if pr.get("title", "").startswith(prefix):
-                            pr_num = pr["number"]
-                            logger.info(
-                                "PR #%d already exists for spec-%s (%s). Commits appended via push.",
-                                pr_num,
-                                spec_id,
-                                pr.get("headRefName", ""),
-                            )
-                            return pr_num
-                except json.JSONDecodeError:
-                    pass
+            existing = self._find_existing_pr(cli_tool, platform, prefix, current_branch, _TIMEOUT_S)
+            if existing is not None:
+                return existing
         else:
-            # Legacy path: check by branch head
-            try:
-                pr_check = subprocess.run(
-                    [
-                        "gh",
-                        "pr",
-                        "list",
-                        "--head",
-                        current_branch,
-                        "--state",
-                        "all",
-                        "--json",
-                        "number,url,state",
-                        "--limit",
-                        "1",
-                    ],
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=_GH_TIMEOUT_S,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("gh pr list timed out for branch %s; skipping PR creation.", current_branch)
-                return None
+            existing = self._find_existing_pr_by_branch(cli_tool, platform, current_branch, _TIMEOUT_S)
+            if existing is not None:
+                return existing
 
-            if pr_check.returncode == 0 and pr_check.stdout.strip() not in ("", "[]"):
-                try:
-                    prs = json.loads(pr_check.stdout)
-                    if prs:
-                        pr_num = prs[0].get("number")
-                        logger.info(
-                            "PR already exists for branch %s: #%s (state: %s). Commits appended via push.",
-                            current_branch,
-                            pr_num,
-                            prs[0].get("state", ""),
-                        )
-                        return pr_num
-                except json.JSONDecodeError:
-                    pass
+        # ── No PR/MR exists — create one ──────────────────────────────
+        logger.info("No PR/MR found for spec-%s on branch %s. Creating draft.", spec_id or "?", current_branch)
 
-        # ── No PR exists — create one ─────────────────────────────────
-        logger.info("No PR found for spec-%s on branch %s. Creating draft PR.", spec_id or "?", current_branch)
         if spec_id:
             title = f"[spec-{spec_id}] {spec_summary}".strip() if spec_summary else f"[spec-{spec_id}] {current_branch}"
         else:
             title = spec_summary or f"codelicious: {current_branch}"
-        # Sanitize PR title (Finding 39)
-        title = title.replace("\n", " ").replace("\r", " ").replace("\x00", "")
-        title = title[:70]  # Keep PR titles concise
-        body = (
-            f"## Summary\n\n"
-            f"Autonomous implementation by Codelicious (spec-{spec_id}).\n\n"
-            f"This PR updates automatically as new commits are pushed.\n\n"
-            f"---\n*Built by [Codelicious](https://github.com/clay-good/codelicious)*"
-        )
+        if part > 0:
+            title = f"{title} (part {part})"
+        title = title.replace("\n", " ").replace("\r", " ").replace("\x00", "")[:70]
 
+        body = self._build_pr_body(spec_id, chunk_summaries, prev_pr_url)
+
+        if platform == "gitlab":
+            return self._create_gitlab_mr(cli_tool, title, body, _TIMEOUT_S)
+        return self._create_github_pr(cli_tool, title, body, _TIMEOUT_S)
+
+    def _build_pr_body(
+        self,
+        spec_id: str,
+        chunk_summaries: list[str] | None,
+        prev_pr_url: str,
+    ) -> str:
+        """Build the PR/MR body with spec link, chunk summary, and part links."""
+        parts = [
+            "## Summary\n",
+            f"Autonomous implementation by Codelicious (spec-{spec_id}).\n",
+        ]
+        if chunk_summaries:
+            parts.append("### Chunks in this PR\n")
+            for cs in chunk_summaries[:50]:
+                parts.append(f"- {cs}")
+            parts.append("")
+        if prev_pr_url:
+            parts.append(f"**Previous part:** {prev_pr_url}\n")
+        parts.append("This PR updates automatically as new commits are pushed.\n")
+        parts.append("---\n*Built by [Codelicious](https://github.com/clay-good/codelicious)*")
+        return "\n".join(parts)
+
+    def _find_existing_pr(
+        self, cli_tool: str, platform: str, prefix: str, current_branch: str, timeout: int
+    ) -> int | None:
+        """Search for an existing PR/MR by title prefix."""
+        if platform == "gitlab":
+            cmd = ["glab", "mr", "list", "--state", "opened", "--output", "json"]
+        else:
+            cmd = ["gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName", "--limit", "100"]
+
+        try:
+            result = subprocess.run(cmd, cwd=self.repo_path, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("%s list timed out; skipping.", cli_tool)
+            return None
+
+        if result.returncode == 0 and result.stdout.strip() not in ("", "[]"):
+            try:
+                prs = json.loads(result.stdout)
+                for pr in prs:
+                    pr_title = pr.get("title", "")
+                    if pr_title.startswith(prefix):
+                        # GitLab uses "iid" for project-scoped MR numbers
+                        pr_num = pr.get("number") or pr.get("iid")
+                        if pr_num:
+                            logger.info("PR/MR #%s already exists for %s. Commits appended via push.", pr_num, prefix)
+                            return int(pr_num)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+        return None
+
+    def _find_existing_pr_by_branch(
+        self, cli_tool: str, platform: str, current_branch: str, timeout: int
+    ) -> int | None:
+        """Search for an existing PR/MR by branch head (legacy path)."""
+        if platform == "gitlab":
+            cmd = ["glab", "mr", "list", "--source-branch", current_branch, "--state", "opened", "--output", "json"]
+        else:
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                current_branch,
+                "--state",
+                "all",
+                "--json",
+                "number,url,state",
+                "--limit",
+                "1",
+            ]
+
+        try:
+            result = subprocess.run(cmd, cwd=self.repo_path, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+        if result.returncode == 0 and result.stdout.strip() not in ("", "[]"):
+            try:
+                prs = json.loads(result.stdout)
+                if prs:
+                    pr_num = prs[0].get("number") or prs[0].get("iid")
+                    if pr_num:
+                        logger.info("PR/MR #%s exists for branch %s.", pr_num, current_branch)
+                        return int(pr_num)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+        return None
+
+    def _create_github_pr(self, cli_tool: str, title: str, body: str, timeout: int) -> int | None:
+        """Create a draft GitHub PR."""
         try:
             result = subprocess.run(
                 ["gh", "pr", "create", "--draft", "--title", title, "--body", body],
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=_GH_TIMEOUT_S,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("gh pr create timed out for branch %s.", current_branch)
+            logger.warning("gh pr create timed out.")
             return None
 
         if result.returncode == 0:
             pr_url = result.stdout.strip()
             logger.info("Created draft PR: %s", pr_url)
-            # Extract PR number from URL (format: .../pull/123)
             try:
                 return int(pr_url.rstrip("/").rsplit("/", 1)[-1])
             except (ValueError, IndexError):
                 return None
-        else:
-            logger.warning("Failed to create PR: %s", result.stderr.strip())
+        logger.warning("Failed to create PR: %s", result.stderr.strip())
+        return None
+
+    def _create_gitlab_mr(self, cli_tool: str, title: str, body: str, timeout: int) -> int | None:
+        """Create a draft GitLab MR."""
+        try:
+            result = subprocess.run(
+                ["glab", "mr", "create", "--draft", "--title", title, "--description", body, "--yes"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("glab mr create timed out.")
             return None
 
+        if result.returncode == 0:
+            mr_url = result.stdout.strip()
+            logger.info("Created draft MR: %s", mr_url)
+            # glab outputs URL like https://gitlab.com/.../merge_requests/42
+            try:
+                return int(mr_url.rstrip("/").rsplit("/", 1)[-1])
+            except (ValueError, IndexError):
+                return None
+        logger.warning("Failed to create MR: %s", result.stderr.strip())
+        return None
+
     def transition_pr_to_review(self, spec_id: str = ""):
-        """Transition a draft PR to ready-for-review.
+        """Transition a draft PR/MR to ready-for-review (spec-27 Phase 5.3).
 
-        When ``spec_id`` is provided, finds the PR by ``[spec-{id}]`` title
-        prefix and marks that specific PR as ready.  Otherwise falls back to
-        ``gh pr ready`` on the current branch (legacy behavior).
+        Steps:
+        1. Final push to ensure all commits are on remote
+        2. Mark PR/MR as ready (``gh pr ready`` / ``glab mr ready``)
+        3. Assign reviewers if configured in ``.codelicious/config.json``
 
-        Also requests configured reviewers if ``default_reviewers`` is set
-        in ``.codelicious/config.json``.
+        Supports both GitHub and GitLab.  Reviewer assignment failures are
+        logged as warnings but do not fail the build.
         """
         if not self._has_git():
             return
 
-        _GH_TIMEOUT_S = 30  # Max seconds for gh CLI calls (spec-22)
+        _TIMEOUT_S = 30
+        platform = self.detect_platform()
 
-        logger.info("Loop Completed. Transitioning Pull Request from Draft to Active.")
+        # Step 1: Final push
+        push = self.push_to_origin()
+        if not push.success:
+            logger.warning("Final push before PR transition failed: %s", push.message)
 
-        try:
-            gh_check = subprocess.run(["gh", "--version"], capture_output=True, timeout=_GH_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            logger.warning("gh --version timed out. Skipping PR transition.")
+        cli_tool, authenticated = self._check_cli_auth()
+        if not cli_tool or not authenticated:
+            logger.warning("CLI tool not available or not authenticated. Skipping PR transition.")
             return
-        if gh_check.returncode != 0:
-            return
 
-        # Find the PR number by spec-id title prefix (spec-22 Phase 4)
+        logger.info("Transitioning PR/MR to ready-for-review.")
+
+        # Find the PR/MR number by spec-id title prefix
         pr_number: str | None = None
         if spec_id:
             prefix = f"[spec-{spec_id}]"
-            try:
-                pr_list = subprocess.run(
-                    ["gh", "pr", "list", "--state", "open", "--json", "number,title", "--limit", "100"],
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=_GH_TIMEOUT_S,
-                )
-                if pr_list.returncode == 0:
-                    try:
-                        prs = json.loads(pr_list.stdout)
-                        for pr in prs:
-                            if pr.get("title", "").startswith(prefix):
-                                pr_number = str(pr["number"])
-                                break
-                    except json.JSONDecodeError:
-                        pass
-            except subprocess.TimeoutExpired:
-                logger.warning("gh pr list timed out during transition.")
+            existing = self._find_existing_pr(cli_tool, platform, prefix, self.current_branch, _TIMEOUT_S)
+            if existing is not None:
+                pr_number = str(existing)
 
+        # Step 2: Mark as ready
         try:
-            ready_cmd = ["gh", "pr", "ready"]
+            if platform == "gitlab":
+                ready_cmd = ["glab", "mr", "ready"]
+            else:
+                ready_cmd = ["gh", "pr", "ready"]
             if pr_number:
                 ready_cmd.append(pr_number)
-            subprocess.run(ready_cmd, cwd=self.repo_path, capture_output=True, timeout=_GH_TIMEOUT_S)
+            subprocess.run(ready_cmd, cwd=self.repo_path, capture_output=True, timeout=_TIMEOUT_S)
+            logger.info("PR/MR marked as ready for review.")
         except subprocess.TimeoutExpired:
-            logger.warning("gh pr ready timed out.")
+            logger.warning("%s ready timed out.", cli_tool)
 
+        # Step 3: Assign reviewers (failures are warnings, not errors — spec-27 Phase 5.3)
         reviewers = self.config.get("default_reviewers", [])
         if reviewers:
-            logger.info("Requesting urgent human reviews from: %s", reviewers)
-            _gh_user_re = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
+            logger.info("Requesting reviews from: %s", reviewers)
+            _user_re = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-_.]{0,38}$")
             reviewer_args = []
             for r in reviewers:
-                if not isinstance(r, str) or not _gh_user_re.match(r):
+                if not isinstance(r, str) or not _user_re.match(r):
                     logger.warning("Skipping invalid reviewer name: %r", r)
                     continue
                 reviewer_args.extend(["--reviewer", r])
-            edit_cmd = ["gh", "pr", "edit"]
-            if pr_number:
-                edit_cmd.append(pr_number)
-            edit_cmd.extend(reviewer_args)
-            try:
-                subprocess.run(
-                    edit_cmd,
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    timeout=_GH_TIMEOUT_S,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("gh pr edit (reviewer assignment) timed out.")
 
-        logger.info("Successfully transitioned outcome to 'Outcome as a Service' completion queue.")
+            if reviewer_args:
+                if platform == "gitlab":
+                    edit_cmd = ["glab", "mr", "update"]
+                else:
+                    edit_cmd = ["gh", "pr", "edit"]
+                if pr_number:
+                    edit_cmd.append(pr_number)
+                edit_cmd.extend(reviewer_args)
+                try:
+                    result = subprocess.run(edit_cmd, cwd=self.repo_path, capture_output=True, timeout=_TIMEOUT_S)
+                    if result.returncode != 0:
+                        logger.warning("Reviewer assignment failed (non-fatal): %s", result.stderr.strip()[:200])
+                except subprocess.TimeoutExpired:
+                    logger.warning("Reviewer assignment timed out (non-fatal).")
+
+        logger.info("PR/MR transition complete.")
+
+    # ------------------------------------------------------------------
+    # spec-27 Phase 2.2: Chunk-level commit discipline
+    # ------------------------------------------------------------------
+
+    def commit_chunk(self, chunk_id: str, chunk_title: str, files: list[str]) -> CommitResult:
+        """Commit exactly one chunk's changes (spec-27 Phase 2.2).
+
+        Stages only *files*, runs the sensitive-file check, and commits
+        with a structured message.  Uses GPG fallback from Phase 0.3.
+
+        Returns a ``CommitResult`` with the short SHA on success.
+        """
+        if not self._has_git():
+            return CommitResult(success=False, message="Not a git repository.")
+
+        # Build commit message
+        subject = f"[{chunk_id}] {chunk_title}"
+        subject = subject.replace("\x00", "").replace("\n", " ")
+        if len(subject) > 200:
+            subject = subject[:197] + "..."
+
+        body_lines = [
+            f"Chunk: {chunk_id}",
+            f"Files: {', '.join(files[:20])}" + (" ..." if len(files) > 20 else ""),
+        ]
+        full_message = subject + "\n\n" + "\n".join(body_lines)
+
+        try:
+            # Stage only the specified files
+            for filepath in files:
+                if "\n" in filepath or "\r" in filepath:
+                    raise GitOperationError(f"Filename contains newline character: {filepath!r}")
+                try:
+                    self._run_cmd(["git", "add", filepath])
+                except RuntimeError as e:
+                    logger.warning("Failed to stage file %s: %s", filepath, e)
+
+            # Sensitive file check
+            self._check_staged_files_for_sensitive_patterns()
+
+            # Check if there's anything staged
+            status = self._run_cmd(["git", "diff", "--cached", "--name-only"])
+            if not status:
+                logger.info("No changes staged for chunk %s. Skipping commit.", chunk_id)
+                return CommitResult(success=True, sha="", message="Nothing to commit.")
+
+            # Attempt commit with GPG fallback (Phase 0.3 pattern)
+            try:
+                self._run_cmd(["git", "commit", "-m", full_message])
+            except RuntimeError as commit_err:
+                err_str = str(commit_err).lower()
+                if "gpg failed" in err_str or "signing failed" in err_str:
+                    logger.warning("GPG signing unavailable for chunk %s — committing unsigned.", chunk_id)
+                    self._run_cmd(["git", "commit", "--no-gpg-sign", "-m", full_message])
+                else:
+                    raise
+
+            # Get the short SHA of the commit we just made
+            sha = self._run_cmd(["git", "rev-parse", "--short", "HEAD"])
+            logger.info("Committed chunk %s: %s (%s)", chunk_id, chunk_title, sha)
+            return CommitResult(success=True, sha=sha, message=subject)
+
+        except Exception as e:
+            logger.error("Failed to commit chunk %s: %s", chunk_id, e)
+            # Unstage to leave clean state
+            try:
+                self._run_cmd(["git", "reset", "HEAD"])
+            except RuntimeError:
+                pass
+            return CommitResult(success=False, message=str(e))
+
+    def get_pr_commit_count(self, pr_number: int) -> int:
+        """Count commits on the current branch relative to the base (spec-27 Phase 2.2).
+
+        Uses ``gh pr view`` to get the commit count for the given PR.
+        Falls back to counting ``git log`` commits on the branch if ``gh``
+        is unavailable.
+
+        Returns 0 on any failure (safe default — won't trigger PR splits).
+        """
+        _GH_TIMEOUT_S = 30
+
+        # Try gh first — most accurate for PR commit count
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", str(pr_number), "--json", "commits", "--jq", ".commits | length"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=_GH_TIMEOUT_S,
+            )
+            if result.returncode == 0 and result.stdout.strip().isdigit():
+                count = int(result.stdout.strip())
+                logger.debug("PR #%d has %d commits.", pr_number, count)
+                return count
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Fallback: count log entries between merge-base and HEAD
+        try:
+            current = self._run_cmd(["git", "branch", "--show-current"])
+            # Find merge-base with main/master
+            for base in ("main", "master"):
+                try:
+                    merge_base = self._run_cmd(["git", "merge-base", base, "HEAD"])
+                    log_output = self._run_cmd(
+                        ["git", "log", "--oneline", f"{merge_base}..HEAD"],
+                        timeout=15,
+                    )
+                    count = len(log_output.splitlines()) if log_output else 0
+                    logger.debug("Branch %s has %d commits since %s.", current, count, base)
+                    return count
+                except RuntimeError:
+                    continue
+        except (RuntimeError, OSError):
+            pass
+
+        return 0
+
+    def revert_chunk_changes(self) -> bool:
+        """Discard all unstaged and staged changes in the working tree (spec-27 Phase 2.2).
+
+        Used when a chunk's verification fails — reverts everything so
+        the next chunk starts from a clean state.
+
+        Returns True if the revert succeeded.
+        """
+        if not self._has_git():
+            return False
+
+        try:
+            # Unstage everything
+            self._run_cmd(["git", "reset", "HEAD"], check=False)
+            # Discard working tree changes for tracked files
+            self._run_cmd(["git", "checkout", "--", "."])
+            # Remove untracked files created by the failed chunk
+            self._run_cmd(["git", "clean", "-fd"], check=False)
+            logger.info("Reverted working tree to last commit.")
+            return True
+        except Exception as e:
+            logger.error("Failed to revert chunk changes: %s", e)
+            return False
+
+    def create_continuation_branch(self, spec_id: str, part: int) -> str:
+        """Create a new branch for the next part of a split PR (spec-27 Phase 2.3).
+
+        Returns the new branch name.
+        """
+        branch_name = f"codelicious/spec-{spec_id}-part-{part}"
+        try:
+            self._run_cmd(["git", "checkout", "-b", branch_name])
+            logger.info("Created continuation branch: %s", branch_name)
+        except RuntimeError:
+            # Branch might already exist
+            self._run_cmd(["git", "checkout", branch_name])
+            logger.info("Checked out existing continuation branch: %s", branch_name)
+        return branch_name

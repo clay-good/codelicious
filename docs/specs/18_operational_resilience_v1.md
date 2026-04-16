@@ -1260,7 +1260,7 @@ Read .codelicious/STATE.md. Add a new section for spec-18:
 - [x] Phase 10: Structured exception logging and timing (EC-2, observability) — DONE 2026-04-03
 - [x] Phase 11: Engine contract tests and CLI validation tests (TC-1, TC-2, TC-3, TC-4) — DONE 2026-04-03
 - [x] Phase 12: CI matrix and integration test stage (CI-1, CI-2, CI-3) — already implemented in .github/workflows/ci.yml
-- [ ] Phase 13: Documentation updates
+- [x] Phase 13: Documentation updates — DONE 2026-04-10
 
 Read README.md. Add the Mermaid diagrams defined in Section 6 of the spec at the end, before the
 License section:

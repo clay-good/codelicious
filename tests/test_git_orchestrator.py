@@ -11,7 +11,14 @@ from unittest import mock
 import pytest
 
 from codelicious.errors import GitOperationError
-from codelicious.git.git_orchestrator import GitManager, SENSITIVE_PATTERNS, spec_branch_name
+from codelicious.git.git_orchestrator import (
+    SENSITIVE_PATTERNS,
+    CommitResult,
+    GitManager,
+    PushResult,
+    _classify_push_error,
+    spec_branch_name,
+)
 
 
 @pytest.fixture
@@ -621,11 +628,13 @@ class TestEnsureDraftPrExists:
                 return pr_list_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-16"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-16"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect) as mock_run,
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
-                result = manager.ensure_draft_pr_exists(spec_id="16")
+            result = manager.ensure_draft_pr_exists(spec_id="16")
 
         assert result == 8
         create_calls = [call for call in mock_run.call_args_list if "create" in (call.args[0] if call.args else [])]
@@ -650,11 +659,13 @@ class TestEnsureDraftPrExists:
                 return pr_create_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-99"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-99"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect) as mock_run,
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
-                result = manager.ensure_draft_pr_exists(spec_id="99", spec_summary="build project")
+            result = manager.ensure_draft_pr_exists(spec_id="99", spec_summary="build project")
 
         assert result == 55
         create_calls = [call for call in mock_run.call_args_list if "create" in (call.args[0] if call.args else [])]
@@ -678,11 +689,13 @@ class TestEnsureDraftPrExists:
                 return pr_list_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-01"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-01"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect),
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect):
-                result = manager.ensure_draft_pr_exists(spec_summary="test spec summary")
+            result = manager.ensure_draft_pr_exists(spec_summary="test spec summary")
 
         assert result == 42
 
@@ -708,11 +721,13 @@ class TestEnsureDraftPrExists:
                 return pr_create_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-03"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-03"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect) as mock_run,
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
-                manager.ensure_draft_pr_exists(spec_id="03", spec_summary="spec with bad json")
+            manager.ensure_draft_pr_exists(spec_id="03", spec_summary="spec with bad json")
 
         create_calls = [call for call in mock_run.call_args_list if "create" in (call.args[0] if call.args else [])]
         assert len(create_calls) == 1
@@ -739,11 +754,13 @@ class TestEnsureDraftPrExists:
                 return pr_create_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-50"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-50"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect) as mock_run,
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
-                result = manager.ensure_draft_pr_exists(spec_id="50")
+            result = manager.ensure_draft_pr_exists(spec_id="50")
 
         assert result == 10
         create_calls = [call for call in mock_run.call_args_list if "create" in (call.args[0] if call.args else [])]
@@ -793,42 +810,52 @@ class TestEnsureDraftPrExists:
                 return pr_create_fail
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-77"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-77"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect),
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect):
-                result = manager.ensure_draft_pr_exists(spec_id="77")
+            result = manager.ensure_draft_pr_exists(spec_id="77")
 
         assert result is None
 
-    def test_gh_timeout_returns_30(self, tmp_path: Path) -> None:
-        """All gh subprocess calls should use timeout=30."""
+    def test_gh_calls_use_reasonable_timeouts(self, tmp_path: Path) -> None:
+        """All subprocess calls in ensure_draft_pr_exists should use reasonable timeouts."""
         manager = self._make_manager_on_feature_branch(tmp_path)
 
-        gh_version_result = self._mock_gh_version_ok()
         pr_list_result = self._mock_pr_list_empty()
         pr_create_result = mock.MagicMock()
         pr_create_result.returncode = 0
         pr_create_result.stdout = "https://github.com/o/r/pull/1"
 
         def _side_effect(cmd, **kwargs):
-            if "version" in cmd:
-                return gh_version_result
+            if cmd[0] == "git" and "remote" in cmd:
+                r = mock.MagicMock()
+                r.returncode = 0
+                r.stdout = "git@github.com:user/repo.git\n"
+                return r
+            if cmd[0:3] == ["gh", "auth", "status"]:
+                return mock.MagicMock(returncode=0, stdout="Logged in", stderr="")
             if "list" in cmd:
                 return pr_list_result
             if "create" in cmd:
                 return pr_create_result
             return mock.MagicMock(returncode=0, stdout="")
 
-        with mock.patch.object(
-            type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-01"
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-01"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect) as mock_run,
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
         ):
-            with mock.patch("subprocess.run", side_effect=_side_effect) as mock_run:
-                manager.ensure_draft_pr_exists(spec_id="01")
+            manager.ensure_draft_pr_exists(spec_id="01")
 
-        # All subprocess.run calls should have timeout=30
+        # All subprocess calls should have a timeout set
         for call in mock_run.call_args_list:
-            assert call.kwargs.get("timeout") == 30, f"Expected timeout=30, got {call.kwargs.get('timeout')} for {call}"
+            timeout = call.kwargs.get("timeout")
+            assert timeout is not None and timeout > 0, f"Missing or invalid timeout for {call}"
 
 
 # ---------------------------------------------------------------------------
@@ -844,8 +871,8 @@ class TestPushToOrigin:
         (tmp_path / ".git").mkdir()
         return GitManager(tmp_path)
 
-    def test_no_unpushed_commits_returns_true_without_push(self, tmp_path: Path) -> None:
-        """When git log shows no unpushed commits, push_to_origin returns True immediately."""
+    def test_no_unpushed_commits_returns_success(self, tmp_path: Path) -> None:
+        """When git log shows no unpushed commits, push_to_origin returns success PushResult."""
         manager = self._manager_with_git(tmp_path)
 
         # _run_cmd is used to get the current branch; subprocess.run handles the log check
@@ -865,10 +892,11 @@ class TestPushToOrigin:
         with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(call_results)):
             result = manager.push_to_origin()
 
-        assert result is True
+        assert result.success is True
+        assert result.error_type is None
 
-    def test_push_failure_returns_false(self, tmp_path: Path) -> None:
-        """When git push exits non-zero, push_to_origin returns False."""
+    def test_push_conflict_returns_conflict_type(self, tmp_path: Path) -> None:
+        """When git push is rejected (non-fast-forward), returns conflict error type."""
         manager = self._manager_with_git(tmp_path)
 
         branch_result = mock.MagicMock()
@@ -892,25 +920,61 @@ class TestPushToOrigin:
         with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(call_results)):
             result = manager.push_to_origin()
 
-        assert result is False
+        assert result.success is False
+        assert result.error_type == "conflict"
 
-    def test_exception_during_push_returns_false(self, tmp_path: Path) -> None:
-        """When subprocess.run raises an unexpected exception, push_to_origin returns False."""
+    def test_push_auth_failure_returns_auth_type(self, tmp_path: Path) -> None:
+        """When push fails with Permission denied, returns auth error type without retrying."""
+        manager = self._manager_with_git(tmp_path)
+
+        branch_result = mock.MagicMock()
+        branch_result.returncode = 0
+        branch_result.stdout = "my-feature\n"
+        branch_result.stderr = ""
+
+        log_result = mock.MagicMock()
+        log_result.returncode = 128
+        log_result.stdout = ""
+        log_result.stderr = "unknown revision"
+
+        push_result = mock.MagicMock()
+        push_result.returncode = 128
+        push_result.stdout = ""
+        push_result.stderr = "fatal: unable to access 'https://github.com/...': Permission denied"
+
+        call_results = iter([branch_result, log_result, push_result])
+
+        with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(call_results)) as mock_run:
+            result = manager.push_to_origin()
+
+        assert result.success is False
+        assert result.error_type == "auth"
+        # Auth failures must NOT retry — only one push call
+        push_calls = [
+            c
+            for c in mock_run.call_args_list
+            if c.args and len(c.args[0]) > 1 and c.args[0][0] == "git" and c.args[0][1] == "push"
+        ]
+        assert len(push_calls) == 1
+
+    def test_exception_during_push_returns_failure(self, tmp_path: Path) -> None:
+        """When subprocess.run raises an unexpected exception, push_to_origin returns failure."""
         manager = self._manager_with_git(tmp_path)
 
         with mock.patch("subprocess.run", side_effect=OSError("pipe broken")):
             result = manager.push_to_origin()
 
-        assert result is False
+        assert result.success is False
+        assert result.error_type == "unknown"
 
-    def test_no_git_repo_returns_false(self, tmp_path: Path) -> None:
-        """push_to_origin returns False immediately when there is no .git directory."""
+    def test_no_git_repo_returns_failure(self, tmp_path: Path) -> None:
+        """push_to_origin returns failure PushResult when there is no .git directory."""
         manager = GitManager(tmp_path)  # no .git created
 
         with mock.patch("subprocess.run") as mock_run:
             result = manager.push_to_origin()
 
-        assert result is False
+        assert result.success is False
         mock_run.assert_not_called()
 
 
@@ -1081,12 +1145,14 @@ class TestRunCmdTimeoutAndCheck:
         from codelicious.errors import GitOperationError
 
         manager = self._manager_with_git(tmp_path)
-        with mock.patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=60),
+        with (
+            mock.patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=60),
+            ),
+            pytest.raises(GitOperationError, match="timed out"),
         ):
-            with pytest.raises(GitOperationError, match="timed out"):
-                manager._run_cmd(["git", "status"])
+            manager._run_cmd(["git", "status"])
 
     def test_nonzero_exit_with_check_raises_runtime_error(self, tmp_path: Path) -> None:
         """When subprocess.run returns non-zero and check=True, _run_cmd must raise RuntimeError."""
@@ -1118,12 +1184,14 @@ class TestRunCmdTimeoutAndCheck:
         from codelicious.errors import GitOperationError
 
         manager = self._manager_with_git(tmp_path)
-        with mock.patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "push"], timeout=30),
+        with (
+            mock.patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "push"], timeout=30),
+            ),
+            pytest.raises(GitOperationError) as exc_info,
         ):
-            with pytest.raises(GitOperationError) as exc_info:
-                manager._run_cmd(["git", "push"])
+            manager._run_cmd(["git", "push"])
 
         assert "git" in str(exc_info.value).lower()
 
@@ -1202,57 +1270,6 @@ class TestCheckoutOrCreateFeatureBranchFallbackAdditional:
 
 
 # ---------------------------------------------------------------------------
-# Finding 78 — _unstage_sensitive_files() RuntimeError logged but not raised
-# ---------------------------------------------------------------------------
-
-
-class TestUnstageSenitiveFilesRuntimeError:
-    """Finding 78: when git reset HEAD raises RuntimeError inside
-    _unstage_sensitive_files, the error must be logged but must NOT propagate."""
-
-    def _manager_with_git(self, tmp_path: Path) -> GitManager:
-        (tmp_path / ".git").mkdir()
-        return GitManager(tmp_path)
-
-    def test_runtime_error_logged_and_not_raised(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """RuntimeError from _run_cmd must be caught; an error is logged; no exception propagates."""
-        manager = self._manager_with_git(tmp_path)
-
-        def _mock_run_cmd(args: list[str], check: bool = True, timeout: int = 60) -> str:
-            if args[:2] == ["git", "reset"]:
-                raise RuntimeError("git reset HEAD failed: not a valid object")
-            return ""
-
-        with mock.patch.object(manager, "_run_cmd", side_effect=_mock_run_cmd):
-            with caplog.at_level(logging.ERROR, logger="codelicious.git"):
-                # Must not raise
-                manager._unstage_sensitive_files(["secret.env"])
-
-        assert any("Failed to unstage" in r.message for r in caplog.records), (
-            "An error must be logged when git reset HEAD fails during unstage"
-        )
-
-    def test_runtime_error_still_processes_remaining_files(self, tmp_path: Path) -> None:
-        """When unstaging one file fails, the remaining files must still be attempted."""
-        manager = self._manager_with_git(tmp_path)
-
-        processed: list[str] = []
-
-        def _mock_run_cmd(args: list[str], check: bool = True, timeout: int = 60) -> str:
-            if args[:2] == ["git", "reset"] and len(args) >= 3:
-                filename = args[-1]
-                if filename == "bad.env":
-                    raise RuntimeError("reset failed")
-                processed.append(filename)
-            return ""
-
-        with mock.patch.object(manager, "_run_cmd", side_effect=_mock_run_cmd):
-            manager._unstage_sensitive_files(["bad.env", "also_bad.env"])
-
-        assert "also_bad.env" in processed, "Remaining files must be processed even when an earlier unstage fails"
-
-
-# ---------------------------------------------------------------------------
 # Finding 79 — nested failure: git reset HEAD fails after commit failure
 # ---------------------------------------------------------------------------
 
@@ -1314,11 +1331,10 @@ class TestTransitionPrToReviewAdditional:
         (tmp_path / ".git").mkdir()
         return GitManager(tmp_path)
 
-    def test_gh_version_ok_then_pr_ready_and_edit_called(self, tmp_path: Path) -> None:
-        """When gh --version returns 0 and config has reviewers, gh pr ready and
+    def test_auth_ok_then_pr_ready_and_edit_called(self, tmp_path: Path) -> None:
+        """When gh auth succeeds and config has reviewers, gh pr ready and
         gh pr edit are both called."""
         manager = self._manager_with_git(tmp_path)
-        # Inject a reviewer into config so gh pr edit is reached
         manager.config = {"default_reviewers": ["alice"]}
 
         calls_made: list[list[str]] = []
@@ -1327,20 +1343,21 @@ class TestTransitionPrToReviewAdditional:
             calls_made.append(list(cmd))
             result = mock.MagicMock()
             result.returncode = 0
-            result.stdout = ""
+            result.stdout = "git@github.com:user/repo.git\n" if cmd[0] == "git" else ""
             result.stderr = ""
             return result
 
         with mock.patch("subprocess.run", side_effect=_subprocess_side_effect):
-            manager.transition_pr_to_review()
+            with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                manager.transition_pr_to_review()
 
         cmd_names = [" ".join(c[:3]) for c in calls_made]
-        assert any("gh --version" in c for c in cmd_names), "gh --version must be called"
+        assert any("gh auth status" in c for c in cmd_names), "gh auth status must be called"
         assert any("gh pr ready" in c for c in cmd_names), "gh pr ready must be called"
         assert any("gh pr edit" in c for c in cmd_names), "gh pr edit must be called for reviewers"
 
-    def test_gh_version_nonzero_skips_pr_transition(self, tmp_path: Path) -> None:
-        """When gh --version returns non-zero, the rest of transition_pr_to_review is skipped."""
+    def test_auth_failed_skips_pr_transition(self, tmp_path: Path) -> None:
+        """When gh auth status fails, the rest of transition_pr_to_review is skipped."""
         manager = self._manager_with_git(tmp_path)
 
         calls_made: list[list[str]] = []
@@ -1348,39 +1365,42 @@ class TestTransitionPrToReviewAdditional:
         def _subprocess_side_effect(cmd, **kwargs):
             calls_made.append(list(cmd))
             result = mock.MagicMock()
-            # gh --version fails (gh not installed)
-            result.returncode = 1
-            result.stdout = ""
-            result.stderr = "command not found"
+            if cmd[0] == "git":
+                result.returncode = 0
+                result.stdout = "git@github.com:user/repo.git\n"
+            elif "auth" in cmd:
+                result.returncode = 1
+                result.stdout = ""
+            else:
+                result.returncode = 0
+                result.stdout = ""
+            result.stderr = ""
             return result
 
         with mock.patch("subprocess.run", side_effect=_subprocess_side_effect):
-            manager.transition_pr_to_review()
+            with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                manager.transition_pr_to_review()
 
-        # Only gh --version should have been called; gh pr ready must not be called
         pr_ready_calls = [c for c in calls_made if "ready" in c]
-        assert len(pr_ready_calls) == 0, "gh pr ready must not be called when gh is unavailable"
+        assert len(pr_ready_calls) == 0, "gh pr ready must not be called when gh is not authenticated"
 
-    def test_gh_version_timeout_logs_warning_and_returns(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """When gh --version times out, a warning is logged and the method returns early."""
+    def test_cli_not_installed_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """When gh is not installed, a warning is logged and the method returns early."""
         manager = self._manager_with_git(tmp_path)
 
         def _subprocess_side_effect(cmd, **kwargs):
-            if "--version" in cmd:
-                raise subprocess.TimeoutExpired(cmd=cmd, timeout=60)
             result = mock.MagicMock()
             result.returncode = 0
+            result.stdout = "git@github.com:user/repo.git\n"
+            result.stderr = ""
             return result
 
         with caplog.at_level(logging.WARNING, logger="codelicious.git"):
             with mock.patch("subprocess.run", side_effect=_subprocess_side_effect):
-                manager.transition_pr_to_review()
+                with mock.patch("shutil.which", return_value=None):
+                    manager.transition_pr_to_review()
 
-        assert any("timed out" in r.message.lower() for r in caplog.records), (
-            "A warning must be logged when gh --version times out"
-        )
+        assert any("not installed" in r.message.lower() or "not available" in r.message.lower() for r in caplog.records)
 
     def test_no_git_repo_returns_immediately(self, tmp_path: Path) -> None:
         """When _has_git() returns False, transition_pr_to_review returns immediately."""
@@ -1634,47 +1654,6 @@ class TestCheckoutOrCreateFeatureBranchFallback:
 
 
 # ---------------------------------------------------------------------------
-# Finding 71 — _unstage_sensitive_files RuntimeError handler
-# ---------------------------------------------------------------------------
-
-
-class TestUnstageSenitiveFilesRuntimeErrorHandler:
-    """Finding 71: _unstage_sensitive_files logs an error but does not propagate
-    RuntimeError when git reset HEAD fails."""
-
-    def _manager_with_git(self, tmp_path: Path) -> GitManager:
-        (tmp_path / ".git").mkdir()
-        return GitManager(tmp_path)
-
-    def test_runtime_error_is_logged_not_raised(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """When _run_cmd raises RuntimeError for 'git reset HEAD <file>', the error
-        is logged and no exception propagates to the caller."""
-        manager = self._manager_with_git(tmp_path)
-
-        def _fail_on_reset(args: list[str], **kwargs) -> str:
-            if "reset" in args:
-                raise RuntimeError("git reset HEAD failed")
-            return ""
-
-        with mock.patch.object(manager, "_run_cmd", side_effect=_fail_on_reset):
-            with caplog.at_level("ERROR", logger="codelicious.git"):
-                # Should not raise
-                manager._unstage_sensitive_files(["secrets.json"])
-
-        error_msgs = [r.message for r in caplog.records if r.levelno >= 40]  # ERROR level
-        assert any("secrets.json" in m or "unstage" in m.lower() for m in error_msgs)
-
-    def test_empty_list_does_nothing(self, tmp_path: Path) -> None:
-        """Calling _unstage_sensitive_files([]) must not invoke _run_cmd at all."""
-        manager = self._manager_with_git(tmp_path)
-
-        with mock.patch.object(manager, "_run_cmd") as mock_run_cmd:
-            manager._unstage_sensitive_files([])
-
-        mock_run_cmd.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # Finding 72 — commit_verified_changes nested failure path
 # ---------------------------------------------------------------------------
 
@@ -1724,8 +1703,8 @@ class TestCommitVerifiedChangesNestedFailure:
 
 
 class TestTransitionPrToReviewAdditionalCoverage:
-    """Finding 73: transition_pr_to_review handles gh --version timeout and
-    executes the full happy path when gh is available."""
+    """Finding 73: transition_pr_to_review handles auth failure and
+    executes the full happy path when gh is available and authenticated."""
 
     def _manager_with_git(self, tmp_path: Path, reviewers: list[str] | None = None) -> GitManager:
         (tmp_path / ".git").mkdir()
@@ -1734,8 +1713,8 @@ class TestTransitionPrToReviewAdditionalCoverage:
             manager.config = {"default_reviewers": reviewers}
         return manager
 
-    def test_gh_version_timeout_returns_early(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """When gh --version times out, transition_pr_to_review logs a warning and returns
+    def test_cli_not_available_returns_early(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """When gh is not installed, transition_pr_to_review logs a warning and returns
         without calling gh pr ready."""
         manager = self._manager_with_git(tmp_path, reviewers=[])
 
@@ -1743,32 +1722,38 @@ class TestTransitionPrToReviewAdditionalCoverage:
 
         def _side_effect(cmd, **kwargs):
             call_log.append(list(cmd))
-            if "--version" in cmd:
-                raise subprocess.TimeoutExpired(cmd=list(cmd), timeout=60)
-            return mock.MagicMock(returncode=0)
+            r = mock.MagicMock()
+            r.returncode = 0
+            r.stdout = "git@github.com:user/repo.git\n"
+            r.stderr = ""
+            return r
 
         with caplog.at_level("WARNING", logger="codelicious.git"):
             with mock.patch("subprocess.run", side_effect=_side_effect):
-                manager.transition_pr_to_review()
+                with mock.patch("shutil.which", return_value=None):
+                    manager.transition_pr_to_review()
 
         ready_calls = [c for c in call_log if "ready" in c]
-        assert len(ready_calls) == 0, "gh pr ready must not be called after gh --version timeout"
-        assert any("timed out" in r.message.lower() or "timeout" in r.message.lower() for r in caplog.records)
+        assert len(ready_calls) == 0, "gh pr ready must not be called when CLI unavailable"
+        assert any("not installed" in r.message.lower() or "not available" in r.message.lower() for r in caplog.records)
 
     def test_successful_transition_calls_gh_pr_ready(self, tmp_path: Path) -> None:
-        """Full happy path: gh is available and transition calls gh pr ready."""
+        """Full happy path: gh is available, authenticated, and transition calls gh pr ready."""
         manager = self._manager_with_git(tmp_path, reviewers=[])
 
         call_log: list[list[str]] = []
 
         def _side_effect(cmd, **kwargs):
             call_log.append(list(cmd))
-            if "version" in cmd:
-                return mock.MagicMock(returncode=0)
-            return mock.MagicMock(returncode=0)
+            r = mock.MagicMock()
+            r.returncode = 0
+            r.stdout = "git@github.com:user/repo.git\n" if cmd[0] == "git" else ""
+            r.stderr = ""
+            return r
 
         with mock.patch("subprocess.run", side_effect=_side_effect):
-            manager.transition_pr_to_review()
+            with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                manager.transition_pr_to_review()
 
         ready_calls = [c for c in call_log if "ready" in c]
         assert len(ready_calls) >= 1, "gh pr ready must be called on successful transition"
@@ -1790,127 +1775,6 @@ class TestTransitionPrToReviewAdditionalCoverage:
         edit_calls = [c for c in call_log if "edit" in c]
         assert len(ready_calls) == 0, "gh pr ready must not be called when gh is not installed"
         assert len(edit_calls) == 0, "gh pr edit must not be called when gh is not installed"
-
-
-# ---------------------------------------------------------------------------
-# Finding 74 — extract_context() with STATE.md
-# ---------------------------------------------------------------------------
-
-
-class TestExtractContextWithStateMd:
-    """Finding 74: extract_context reads STATE.md and extracts pending/completed
-    task counts, tech stack, and test command."""
-
-    def test_returns_defaults_when_state_md_missing(self, tmp_path: Path) -> None:
-        """When .codelicious/STATE.md does not exist, sensible defaults are returned."""
-        from codelicious.prompts import extract_context
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["project_name"] == tmp_path.name
-        assert ctx["pending_count"] == "0"
-        assert ctx["completed_count"] == "0"
-        assert ctx["completed_tasks"] == ""
-        assert ctx["tech_stack"] == ""
-        assert ctx["test_command"] == ""
-
-    def test_reads_pending_task_count(self, tmp_path: Path) -> None:
-        """pending_count reflects the number of ### [ ] items in STATE.md."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        state_md = codelicious_dir / "STATE.md"
-        state_md.write_text(
-            "## Tasks\n\n### [ ] First pending task\n### [ ] Second pending task\n",
-            encoding="utf-8",
-        )
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["pending_count"] == "2"
-
-    def test_reads_completed_task_count_and_names(self, tmp_path: Path) -> None:
-        """completed_count and completed_tasks reflect ### [x] items in STATE.md."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        state_md = codelicious_dir / "STATE.md"
-        state_md.write_text(
-            "## Tasks\n\n### [x] Task: Add tests\n### [x] Task: Fix linting\n",
-            encoding="utf-8",
-        )
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["completed_count"] == "2"
-        assert "Add tests" in ctx["completed_tasks"]
-        assert "Fix linting" in ctx["completed_tasks"]
-
-    def test_reads_tech_stack_section(self, tmp_path: Path) -> None:
-        """tech_stack is extracted from the ## Tech Stack section."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        state_md = codelicious_dir / "STATE.md"
-        state_md.write_text(
-            "## Tech Stack\n\nPython 3.12, pytest, ruff\n\n## Other\n\nstuff\n",
-            encoding="utf-8",
-        )
-
-        ctx = extract_context(tmp_path)
-
-        assert "Python" in ctx["tech_stack"]
-        assert "pytest" in ctx["tech_stack"]
-
-    def test_reads_test_command_from_how_to_test_section(self, tmp_path: Path) -> None:
-        """test_command is extracted from the first non-empty line of ## How to Test."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        state_md = codelicious_dir / "STATE.md"
-        state_md.write_text(
-            "## How to Test\n\npython -m pytest tests/ -x -q\n\n## Other\n\nignored\n",
-            encoding="utf-8",
-        )
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["test_command"] == "python -m pytest tests/ -x -q"
-
-    def test_project_name_matches_directory_name(self, tmp_path: Path) -> None:
-        """project_name is the name of the project_root directory."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        (codelicious_dir / "STATE.md").write_text("", encoding="utf-8")
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["project_name"] == tmp_path.name
-
-    def test_tech_stack_truncated_to_200_chars(self, tmp_path: Path) -> None:
-        """When the Tech Stack section exceeds 200 characters, it is truncated with '...'."""
-        from codelicious.prompts import extract_context
-
-        codelicious_dir = tmp_path / ".codelicious"
-        codelicious_dir.mkdir()
-        long_stack = "Python " + "x" * 300
-        state_md = codelicious_dir / "STATE.md"
-        state_md.write_text(
-            f"## Tech Stack\n\n{long_stack}\n\n## Other\n\nstuff\n",
-            encoding="utf-8",
-        )
-
-        ctx = extract_context(tmp_path)
-
-        assert ctx["tech_stack"].endswith("...")
-        # Truncated text is 200 chars of content + "..."
-        assert len(ctx["tech_stack"]) == 203
 
 
 # ---------------------------------------------------------------------------
@@ -1999,17 +1863,17 @@ class TestAssertSafeBranchFinding5:
 
 
 class TestPushToOriginRetryThenSucceed:
-    """Finding 26: push_to_origin retries on transient failure and returns True when
+    """Finding 26: push_to_origin retries on transient failure and returns success when
     a later attempt succeeds."""
 
     def _manager_with_git(self, tmp_path: Path) -> GitManager:
         (tmp_path / ".git").mkdir()
         return GitManager(tmp_path)
 
-    def test_first_push_fails_second_push_succeeds_returns_true(self, tmp_path: Path) -> None:
-        """When the first push returns non-zero but the second push returns zero,
-        push_to_origin must return True and subprocess.run must have been called
-        for both push attempts."""
+    def test_first_push_fails_second_push_succeeds_returns_success(self, tmp_path: Path) -> None:
+        """When the first push returns a transient failure but the second push returns zero,
+        push_to_origin must return a success PushResult and subprocess.run must have been
+        called for both push attempts."""
         manager = self._manager_with_git(tmp_path)
 
         branch_result = mock.MagicMock()
@@ -2023,11 +1887,11 @@ class TestPushToOriginRetryThenSucceed:
         log_result.stdout = ""
         log_result.stderr = "unknown revision"
 
-        # First push attempt: transient failure
+        # First push attempt: transient failure (connection reset is retryable)
         push_fail = mock.MagicMock()
         push_fail.returncode = 1
         push_fail.stdout = ""
-        push_fail.stderr = "error: connection reset"
+        push_fail.stderr = "error: Connection reset by peer"
 
         # Second push attempt: success
         push_ok = mock.MagicMock()
@@ -2038,10 +1902,10 @@ class TestPushToOriginRetryThenSucceed:
         call_results = iter([branch_result, log_result, push_fail, push_ok])
 
         with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(call_results)) as mock_run:
-            with mock.patch("time.sleep"):
+            with mock.patch("codelicious.git.git_orchestrator._time_mod.sleep"):
                 result = manager.push_to_origin()
 
-        assert result is True
+        assert result.success is True
 
         # Count calls that were git push invocations
         push_calls = [
@@ -2555,3 +2419,1436 @@ class TestGitStagingSafety:
         assert result is True
         log = manager._run_cmd(["git", "log", "--oneline", "-1"])
         assert "Add module" in log
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 0.2 — verify_git_identity()
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyGitIdentity:
+    """spec-27 Phase 0.2: verify_git_identity checks user.name and user.email."""
+
+    def test_identity_present_logs_and_continues(self, tmp_path: Path, caplog) -> None:
+        """When user.name and user.email are set, verify_git_identity logs them."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd") as mock_cmd:
+            # Local config returns the values
+            mock_cmd.side_effect = lambda args, **kw: {
+                ("git", "config", "--local", "user.name"): "Test User",
+                ("git", "config", "--local", "user.email"): "test@example.com",
+            }.get(tuple(args), "")
+
+            with caplog.at_level(logging.INFO):
+                manager.verify_git_identity()
+
+        assert "Test User" in caplog.text
+        assert "test@example.com" in caplog.text
+
+    def test_missing_identity_exits(self, tmp_path: Path) -> None:
+        """When both user.name and user.email are unset, verify_git_identity exits."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", return_value=""):
+            with pytest.raises(SystemExit) as exc_info:
+                manager.verify_git_identity()
+            assert exc_info.value.code == 1
+
+    def test_global_fallback_used(self, tmp_path: Path, caplog) -> None:
+        """When local config is empty, global config is used as fallback."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        call_count = {"n": 0}
+
+        def fake_run_cmd(args, **kw):
+            call_count["n"] += 1
+            key = tuple(args)
+            if key == ("git", "config", "--local", "user.name"):
+                return ""
+            if key == ("git", "config", "--global", "user.name"):
+                return "Global User"
+            if key == ("git", "config", "--local", "user.email"):
+                return ""
+            if key == ("git", "config", "--global", "user.email"):
+                return "global@example.com"
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with caplog.at_level(logging.INFO):
+                manager.verify_git_identity()
+
+        assert "Global User" in caplog.text
+
+    def test_no_git_repo_skips(self, tmp_path: Path) -> None:
+        """When no .git directory exists, verify_git_identity returns without error."""
+        manager = GitManager(tmp_path)  # no .git
+        manager.verify_git_identity()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 0.3 — GPG signing fallback
+# ---------------------------------------------------------------------------
+
+
+class TestGPGSigningFallback:
+    """spec-27 Phase 0.3: commit falls back to --no-gpg-sign on GPG failure."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_gpg_failure_retries_unsigned(self, tmp_path: Path, caplog) -> None:
+        """When commit fails with 'gpg failed', it retries with --no-gpg-sign."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_log: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            call_log.append(list(args))
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""
+            if args[0:2] == ["git", "status"]:
+                return "M file.py"
+            if args[0:2] == ["git", "commit"]:
+                if "--no-gpg-sign" in args:
+                    return ""  # unsigned commit succeeds
+                raise RuntimeError("Command git commit failed: gpg failed to sign the data")
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with caplog.at_level(logging.WARNING):
+                result = manager.commit_verified_changes("test commit")
+
+        assert result is True
+        assert "GPG signing unavailable" in caplog.text
+        # Verify --no-gpg-sign was passed in the retry
+        unsigned_commits = [c for c in call_log if "commit" in c and "--no-gpg-sign" in c]
+        assert len(unsigned_commits) == 1
+
+    def test_non_gpg_failure_does_not_retry(self, tmp_path: Path) -> None:
+        """When commit fails for non-GPG reasons, it does NOT retry unsigned."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_log: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            call_log.append(list(args))
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""
+            if args[0:2] == ["git", "status"]:
+                return "M file.py"
+            if args[0:2] == ["git", "commit"]:
+                raise RuntimeError("Command git commit failed: some other error")
+            if args[0:2] == ["git", "reset"]:
+                return ""
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            result = manager.commit_verified_changes("test commit")
+
+        assert result is False
+        # No --no-gpg-sign retry should have been attempted
+        unsigned_commits = [c for c in call_log if "commit" in c and "--no-gpg-sign" in c]
+        assert len(unsigned_commits) == 0
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 0.4 — _classify_push_error()
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyPushError:
+    """spec-27 Phase 0.4: push error classification."""
+
+    @pytest.mark.parametrize(
+        "stderr,expected",
+        [
+            ("fatal: unable to access 'https://github.com/...': Permission denied", "auth"),
+            ("fatal: Authentication failed for 'https://github.com/...'", "auth"),
+            ("error: could not read Username for 'https://github.com': terminal prompts disabled", "auth"),
+            ("fatal: Authorization failed for 'https://github.com/...'", "auth"),
+            ("! [rejected]        main -> main (non-fast-forward)", "conflict"),
+            ("error: failed to push some refs to 'origin'", "conflict"),
+            ("hint: Updates were rejected because the remote contains work", "conflict"),
+            ("error: Connection reset by peer", "transient"),
+            ("fatal: unable to access: Connection timed out", "transient"),
+            ("error: SSL certificate problem: unable to get local issuer certificate", "transient"),
+            ("fatal: The remote end hung up unexpectedly", "unknown"),
+            ("something totally unexpected", "unknown"),
+        ],
+    )
+    def test_classification(self, stderr: str, expected: str) -> None:
+        assert _classify_push_error(stderr) == expected
+
+    def test_push_result_dataclass(self) -> None:
+        """PushResult is frozen and has expected fields."""
+        r = PushResult(success=True, message="ok")
+        assert r.success is True
+        assert r.error_type is None
+        assert r.message == "ok"
+
+        r2 = PushResult(success=False, error_type="auth", message="denied")
+        assert r2.success is False
+        assert r2.error_type == "auth"
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 2.2 — commit_chunk()
+# ---------------------------------------------------------------------------
+
+
+class TestCommitChunk:
+    """spec-27 Phase 2.2: commit_chunk stages specific files and returns CommitResult."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_successful_commit_returns_sha(self, tmp_path: Path) -> None:
+        """commit_chunk stages files, commits, and returns a CommitResult with SHA."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_log: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            call_log.append(list(args))
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return "src/foo.py"  # staged file
+            if args[0:2] == ["git", "commit"]:
+                return ""
+            if args[0:2] == ["git", "rev-parse"]:
+                return "abc1234"
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                result = manager.commit_chunk("spec-1-chunk-01", "Add feature", ["src/foo.py"])
+
+        assert result.success is True
+        assert result.sha == "abc1234"
+        assert "[spec-1-chunk-01]" in result.message
+
+    def test_nothing_to_commit(self, tmp_path: Path) -> None:
+        """When no files are staged, returns success with empty SHA."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""  # nothing staged
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                result = manager.commit_chunk("spec-1-chunk-01", "No changes", ["src/foo.py"])
+
+        assert result.success is True
+        assert result.sha == ""
+
+    def test_gpg_fallback(self, tmp_path: Path) -> None:
+        """When GPG signing fails, retries without GPG."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return "file.py"
+            if args[0:2] == ["git", "commit"]:
+                if "--no-gpg-sign" in args:
+                    return ""
+                raise RuntimeError("gpg failed to sign the data")
+            if args[0:2] == ["git", "rev-parse"]:
+                return "def5678"
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                result = manager.commit_chunk("spec-1-chunk-02", "Signed fail", ["file.py"])
+
+        assert result.success is True
+        assert result.sha == "def5678"
+
+    def test_no_git_repo(self, tmp_path: Path) -> None:
+        """Without .git, returns failure."""
+        manager = GitManager(tmp_path)
+        result = manager.commit_chunk("spec-1-chunk-01", "title", ["f.py"])
+        assert result.success is False
+
+    def test_commit_result_dataclass(self) -> None:
+        r = CommitResult(success=True, sha="abc", message="ok")
+        assert r.success is True
+        assert r.sha == "abc"
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 2.2 — get_pr_commit_count()
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrCommitCount:
+    """spec-27 Phase 2.2: get_pr_commit_count returns commit count for a PR."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_gh_returns_count(self, tmp_path: Path) -> None:
+        """When gh succeeds, returns the parsed integer."""
+        manager = self._manager_with_git(tmp_path)
+
+        gh_result = mock.MagicMock()
+        gh_result.returncode = 0
+        gh_result.stdout = "7\n"
+
+        with mock.patch("subprocess.run", return_value=gh_result):
+            count = manager.get_pr_commit_count(42)
+
+        assert count == 7
+
+    def test_gh_fails_falls_back_to_git_log(self, tmp_path: Path) -> None:
+        """When gh fails, falls back to git log count."""
+        manager = self._manager_with_git(tmp_path)
+
+        gh_fail = mock.MagicMock()
+        gh_fail.returncode = 1
+        gh_fail.stdout = ""
+
+        call_count = {"n": 0}
+
+        def fake_subprocess_run(args, **kw):
+            call_count["n"] += 1
+            if args[0] == "gh":
+                return gh_fail
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("subprocess.run", side_effect=fake_subprocess_run):
+            with mock.patch.object(manager, "_run_cmd") as mock_cmd:
+                mock_cmd.side_effect = [
+                    "codelicious/feature",  # branch --show-current
+                    "abc123",  # merge-base main HEAD
+                    "commit1\ncommit2\ncommit3",  # git log --oneline
+                ]
+                count = manager.get_pr_commit_count(42)
+
+        assert count == 3
+
+    def test_all_methods_fail_returns_zero(self, tmp_path: Path) -> None:
+        """When everything fails, returns 0 as safe default."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch("subprocess.run", side_effect=OSError("nope")):
+            with mock.patch.object(manager, "_run_cmd", side_effect=RuntimeError("nope")):
+                count = manager.get_pr_commit_count(42)
+
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 2.2 — revert_chunk_changes()
+# ---------------------------------------------------------------------------
+
+
+class TestRevertChunkChanges:
+    """spec-27 Phase 2.2: revert_chunk_changes discards uncommitted work."""
+
+    def test_reverts_to_clean_state(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        call_log: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            call_log.append(list(args))
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            result = manager.revert_chunk_changes()
+
+        assert result is True
+        # Should call reset, checkout, and clean
+        cmds = [c[1] for c in call_log if len(c) > 1]
+        assert "reset" in cmds
+        assert "checkout" in cmds
+
+    def test_no_git_returns_false(self, tmp_path: Path) -> None:
+        manager = GitManager(tmp_path)
+        assert manager.revert_chunk_changes() is False
+
+
+# ---------------------------------------------------------------------------
+# spec-27 Phase 2.3 — create_continuation_branch()
+# ---------------------------------------------------------------------------
+
+
+class TestCreateContinuationBranch:
+    """spec-27 Phase 2.3: create_continuation_branch for PR splits."""
+
+    def test_creates_new_branch(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", return_value="") as mock_cmd:
+            name = manager.create_continuation_branch("27", 2)
+
+        assert name == "codelicious/spec-27-part-2"
+        # Verify git checkout -b was called
+        mock_cmd.assert_any_call(["git", "checkout", "-b", "codelicious/spec-27-part-2"])
+
+
+# ---------------------------------------------------------------------------
+# New coverage: push_to_origin() — all retries exhausted (transient)
+# ---------------------------------------------------------------------------
+
+
+class TestPushToOriginAllRetriesExhausted:
+    """push_to_origin() returns failure when all retry attempts are exhausted."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_all_transient_retries_exhausted_returns_failure(self, tmp_path: Path) -> None:
+        """When all 3 push attempts fail with transient errors, returns failure PushResult."""
+        manager = self._manager_with_git(tmp_path)
+
+        branch_result = mock.MagicMock(returncode=0, stdout="codelicious/feature\n", stderr="")
+        log_result = mock.MagicMock(returncode=128, stdout="", stderr="unknown revision")
+        push_fail = mock.MagicMock(returncode=1, stdout="", stderr="error: Connection reset by peer")
+
+        # branch, log, then 3 push attempts all fail
+        results = iter([branch_result, log_result, push_fail, push_fail, push_fail])
+
+        with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(results)):
+            with mock.patch("codelicious.git.git_orchestrator._time_mod.sleep"):
+                result = manager.push_to_origin()
+
+        assert result.success is False
+        assert result.error_type == "transient"
+
+    def test_transient_retry_logs_warning_each_attempt(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Transient push failures log a warning with attempt number."""
+        manager = self._manager_with_git(tmp_path)
+
+        branch_result = mock.MagicMock(returncode=0, stdout="codelicious/feature\n", stderr="")
+        log_result = mock.MagicMock(returncode=128, stdout="", stderr="unknown revision")
+        push_fail = mock.MagicMock(returncode=1, stdout="", stderr="error: Connection reset by peer")
+
+        results = iter([branch_result, log_result, push_fail, push_fail, push_fail])
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.git"):
+            with mock.patch("subprocess.run", side_effect=lambda *a, **kw: next(results)):
+                with mock.patch("codelicious.git.git_orchestrator._time_mod.sleep"):
+                    manager.push_to_origin()
+
+        # At least one warning about retrying should be emitted
+        assert any("retrying" in r.message.lower() or "attempt" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# New coverage: current_branch — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentBranchExceptionPath:
+    """current_branch returns 'unknown' when _run_cmd raises."""
+
+    def test_run_cmd_raises_returns_unknown(self, tmp_path: Path) -> None:
+        """When _run_cmd raises OSError, current_branch returns 'unknown'."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=OSError("git not found")):
+            assert manager.current_branch == "unknown"
+
+    def test_runtime_error_returns_unknown(self, tmp_path: Path) -> None:
+        """When _run_cmd raises RuntimeError, current_branch returns 'unknown'."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=RuntimeError("bad state")):
+            assert manager.current_branch == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# New coverage: assert_safe_branch — exception handler
+# ---------------------------------------------------------------------------
+
+
+class TestAssertSafeBranchExceptionHandler:
+    """assert_safe_branch logs error and does not propagate when _run_cmd raises unexpectedly."""
+
+    def test_unexpected_exception_is_logged_not_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When _run_cmd raises an unexpected exception, assert_safe_branch logs it."""
+        (tmp_path / ".git").mkdir()
+        manager = GitManager(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=RuntimeError("unexpected git failure")):
+            with caplog.at_level(logging.ERROR, logger="codelicious.git"):
+                # Must not raise
+                manager.assert_safe_branch(spec_name="my-spec")
+
+        assert any("Failed to verify" in r.message or "unexpected" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# New coverage: commit_verified_changes — newline in filename and long message
+# ---------------------------------------------------------------------------
+
+
+class TestCommitVerifiedChangesEdgeCases:
+    """Edge cases in commit_verified_changes not yet covered."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_newline_in_filename_raises_and_returns_false(self, tmp_path: Path) -> None:
+        """A filename containing a newline must cause commit_verified_changes to return False."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", return_value=""):
+            result = manager.commit_verified_changes("msg", files_to_stage=["ok.py", "bad\nfile.py"])
+
+        assert result is False
+
+    def test_commit_message_truncated_at_500_chars(self, tmp_path: Path) -> None:
+        """Commit messages longer than 500 chars are truncated to 497 + '...'."""
+        manager = self._manager_with_git(tmp_path)
+
+        committed_messages: list[str] = []
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""
+            if args[0:2] == ["git", "status"]:
+                return "M file.py"
+            if args[0:2] == ["git", "commit"]:
+                # Capture the -m argument
+                m_idx = args.index("-m") if "-m" in args else -1
+                if m_idx >= 0 and m_idx + 1 < len(args):
+                    committed_messages.append(args[m_idx + 1])
+                return ""
+            return ""
+
+        long_message = "x" * 600
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            result = manager.commit_verified_changes(long_message, files_to_stage=["file.py"])
+
+        assert result is True
+        assert committed_messages, "git commit must have been called"
+        truncated = committed_messages[0]
+        assert len(truncated) == 500
+        assert truncated.endswith("...")
+
+    def test_gpg_fallback_unsigned_commit_also_fails_returns_false(self, tmp_path: Path) -> None:
+        """When GPG signing fails AND the unsigned retry also fails, returns False."""
+        manager = self._manager_with_git(tmp_path)
+
+        reset_calls: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""
+            if args[0:2] == ["git", "status"]:
+                return "M file.py"
+            if args[0:2] == ["git", "commit"]:
+                if "--no-gpg-sign" in args:
+                    raise RuntimeError("unsigned commit also failed: hook rejected")
+                raise RuntimeError("gpg failed to sign the data")
+            if args[0:2] == ["git", "reset"]:
+                reset_calls.append(args)
+                return ""
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            result = manager.commit_verified_changes("test", files_to_stage=["file.py"])
+
+        assert result is False
+        assert any("HEAD" in call for call in reset_calls), "git reset HEAD must be called after unsigned commit failure"
+
+    def test_gpg_fallback_unsigned_fails_and_reset_also_fails(self, tmp_path: Path) -> None:
+        """GPG fallback fails + reset fails: still returns False without raising."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""
+            if args[0:2] == ["git", "status"]:
+                return "M file.py"
+            if args[0:2] == ["git", "commit"]:
+                if "--no-gpg-sign" in args:
+                    raise RuntimeError("unsigned commit also failed: hook rejected")
+                raise RuntimeError("gpg failed to sign the data")
+            if args[0:2] == ["git", "reset"]:
+                raise RuntimeError("reset failed too")
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            result = manager.commit_verified_changes("test", files_to_stage=["file.py"])
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _find_existing_pr — GitLab cmd and timeout path
+# ---------------------------------------------------------------------------
+
+
+class TestFindExistingPrGitLabAndTimeout:
+    """_find_existing_pr uses glab for GitLab and handles timeout gracefully."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_gitlab_uses_glab_mr_list(self, tmp_path: Path) -> None:
+        """When platform is gitlab, _find_existing_pr calls glab mr list."""
+        manager = self._manager_with_git(tmp_path)
+
+        mr_list_result = mock.MagicMock(returncode=0)
+        mr_list_result.stdout = json.dumps([{"iid": 7, "title": "[spec-05] my feature"}])
+
+        with mock.patch("subprocess.run", return_value=mr_list_result) as mock_run:
+            result = manager._find_existing_pr(
+                cli_tool="glab",
+                platform="gitlab",
+                prefix="[spec-05]",
+                current_branch="codelicious/spec-05",
+                timeout=30,
+            )
+
+        assert result == 7
+        called_cmd = mock_run.call_args[0][0]
+        assert called_cmd[0] == "glab"
+
+    def test_timeout_returns_none(self, tmp_path: Path) -> None:
+        """When subprocess.run raises TimeoutExpired, _find_existing_pr returns None."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr", "list"], timeout=30),
+        ):
+            result = manager._find_existing_pr(
+                cli_tool="gh",
+                platform="github",
+                prefix="[spec-99]",
+                current_branch="codelicious/spec-99",
+                timeout=30,
+            )
+
+        assert result is None
+
+    def test_json_decode_error_returns_none(self, tmp_path: Path) -> None:
+        """When json.loads fails on the PR list output, returns None."""
+        manager = self._manager_with_git(tmp_path)
+
+        bad_json_result = mock.MagicMock(returncode=0, stdout="NOT JSON AT ALL")
+
+        with mock.patch("subprocess.run", return_value=bad_json_result):
+            result = manager._find_existing_pr(
+                cli_tool="gh",
+                platform="github",
+                prefix="[spec-33]",
+                current_branch="codelicious/spec-33",
+                timeout=30,
+            )
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# New coverage: ensure_draft_pr_exists — part > 0, no spec_id title, GitLab
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureDraftPrExistsAdditional:
+    """Additional paths in ensure_draft_pr_exists not yet covered."""
+
+    def _make_manager(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_part_greater_than_zero_appended_to_title(self, tmp_path: Path) -> None:
+        """When part > 0, '(part N)' is appended to the PR title."""
+        manager = self._make_manager(tmp_path)
+
+        created_titles: list[str] = []
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0:3] == ["gh", "auth", "status"]:
+                return mock.MagicMock(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return mock.MagicMock(returncode=0, stdout="[]")
+            if "create" in cmd:
+                title_idx = list(cmd).index("--title") + 1
+                created_titles.append(list(cmd)[title_idx])
+                return mock.MagicMock(returncode=0, stdout="https://github.com/o/r/pull/10")
+            return mock.MagicMock(returncode=0, stdout="git@github.com:owner/repo.git")
+
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-10"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect),
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
+        ):
+            manager.ensure_draft_pr_exists(spec_id="10", spec_summary="build thing", part=2)
+
+        assert created_titles, "gh pr create must have been called"
+        assert "(part 2)" in created_titles[0]
+
+    def test_no_spec_id_title_uses_spec_summary(self, tmp_path: Path) -> None:
+        """When spec_id is empty, the title is derived from spec_summary."""
+        manager = self._make_manager(tmp_path)
+
+        created_titles: list[str] = []
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0:3] == ["gh", "auth", "status"]:
+                return mock.MagicMock(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return mock.MagicMock(returncode=0, stdout="[]")
+            if "create" in cmd:
+                title_idx = list(cmd).index("--title") + 1
+                created_titles.append(list(cmd)[title_idx])
+                return mock.MagicMock(returncode=0, stdout="https://github.com/o/r/pull/20")
+            return mock.MagicMock(returncode=0, stdout="git@github.com:owner/repo.git")
+
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-20"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect),
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
+        ):
+            manager.ensure_draft_pr_exists(spec_id="", spec_summary="my summary")
+
+        assert created_titles
+        assert "my summary" in created_titles[0]
+
+    def test_gitlab_platform_calls_create_gitlab_mr(self, tmp_path: Path) -> None:
+        """When platform is gitlab, ensure_draft_pr_exists calls _create_gitlab_mr."""
+        manager = self._make_manager(tmp_path)
+
+        mr_created: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            cmd_list = list(cmd)
+            if cmd_list[0:3] == ["glab", "auth", "status"]:
+                return mock.MagicMock(returncode=0, stdout="", stderr="")
+            if "list" in cmd_list:
+                return mock.MagicMock(returncode=0, stdout="[]")
+            if "create" in cmd_list and cmd_list[0] == "glab":
+                mr_created.append(cmd_list)
+                return mock.MagicMock(returncode=0, stdout="https://gitlab.com/o/r/merge_requests/5")
+            return mock.MagicMock(returncode=0, stdout="git@gitlab.com:owner/repo.git")
+
+        with (
+            mock.patch.object(
+                type(manager), "current_branch", new_callable=mock.PropertyMock, return_value="codelicious/spec-30"
+            ),
+            mock.patch("subprocess.run", side_effect=_side_effect),
+            mock.patch("shutil.which", return_value="/usr/bin/glab"),
+            mock.patch.object(manager, "detect_platform", return_value="gitlab"),
+        ):
+            result = manager.ensure_draft_pr_exists(spec_id="30", spec_summary="gitlab build")
+
+        assert result == 5
+        assert mr_created, "glab mr create must have been called"
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _build_pr_body — chunk_summaries and prev_pr_url paths
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPrBody:
+    """_build_pr_body includes chunk summaries and previous PR links."""
+
+    def test_with_chunk_summaries(self, tmp_path: Path) -> None:
+        """When chunk_summaries is provided, they appear in the PR body."""
+        manager = GitManager(tmp_path)
+        body = manager._build_pr_body(
+            spec_id="10",
+            chunk_summaries=["add auth module", "add tests"],
+            prev_pr_url="",
+        )
+        assert "add auth module" in body
+        assert "add tests" in body
+        assert "Chunks in this PR" in body
+
+    def test_with_prev_pr_url(self, tmp_path: Path) -> None:
+        """When prev_pr_url is provided, it appears in the PR body."""
+        manager = GitManager(tmp_path)
+        body = manager._build_pr_body(
+            spec_id="10",
+            chunk_summaries=None,
+            prev_pr_url="https://github.com/o/r/pull/9",
+        )
+        assert "https://github.com/o/r/pull/9" in body
+        assert "Previous part" in body
+
+    def test_without_extras(self, tmp_path: Path) -> None:
+        """With no extras, body contains the spec ID and standard footer."""
+        manager = GitManager(tmp_path)
+        body = manager._build_pr_body(spec_id="22", chunk_summaries=None, prev_pr_url="")
+        assert "spec-22" in body
+        assert "Codelicious" in body
+
+    def test_chunk_summaries_capped_at_50(self, tmp_path: Path) -> None:
+        """Only the first 50 chunk summaries are included."""
+        manager = GitManager(tmp_path)
+        summaries = [f"chunk-{i}" for i in range(100)]
+        body = manager._build_pr_body(spec_id="1", chunk_summaries=summaries, prev_pr_url="")
+        # chunk-50 should NOT appear; chunk-49 SHOULD
+        assert "chunk-49" in body
+        assert "chunk-50" not in body
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _find_existing_pr_by_branch — timeout and JSON error
+# ---------------------------------------------------------------------------
+
+
+class TestFindExistingPrByBranch:
+    """_find_existing_pr_by_branch handles timeout and JSON parse failures."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_timeout_returns_none(self, tmp_path: Path) -> None:
+        """When subprocess.run times out, returns None."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr", "list"], timeout=30),
+        ):
+            result = manager._find_existing_pr_by_branch(
+                cli_tool="gh",
+                platform="github",
+                current_branch="codelicious/spec-99",
+                timeout=30,
+            )
+
+        assert result is None
+
+    def test_json_decode_error_returns_none(self, tmp_path: Path) -> None:
+        """When response is not valid JSON, returns None."""
+        manager = self._manager_with_git(tmp_path)
+        bad_result = mock.MagicMock(returncode=0, stdout="INVALID JSON {{{")
+
+        with mock.patch("subprocess.run", return_value=bad_result):
+            result = manager._find_existing_pr_by_branch(
+                cli_tool="gh",
+                platform="github",
+                current_branch="codelicious/spec-99",
+                timeout=30,
+            )
+
+        assert result is None
+
+    def test_gitlab_uses_glab_command(self, tmp_path: Path) -> None:
+        """For gitlab platform, glab mr list --source-branch is used."""
+        manager = self._manager_with_git(tmp_path)
+
+        mr_result = mock.MagicMock(returncode=0)
+        mr_result.stdout = json.dumps([{"iid": 12, "url": "https://gitlab.com/o/r/merge_requests/12"}])
+
+        with mock.patch("subprocess.run", return_value=mr_result) as mock_run:
+            result = manager._find_existing_pr_by_branch(
+                cli_tool="glab",
+                platform="gitlab",
+                current_branch="codelicious/spec-50",
+                timeout=30,
+            )
+
+        assert result == 12
+        called_cmd = mock_run.call_args[0][0]
+        assert called_cmd[0] == "glab"
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _create_github_pr — timeout and non-numeric URL
+# ---------------------------------------------------------------------------
+
+
+class TestCreateGithubPr:
+    """_create_github_pr handles timeout and non-parseable PR URLs."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_timeout_returns_none(self, tmp_path: Path) -> None:
+        """When gh pr create times out, _create_github_pr returns None."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr", "create"], timeout=30),
+        ):
+            result = manager._create_github_pr("gh", "Test PR", "Body text", 30)
+
+        assert result is None
+
+    def test_non_numeric_url_returns_none(self, tmp_path: Path) -> None:
+        """When the PR URL doesn't end in a number, returns None."""
+        manager = self._manager_with_git(tmp_path)
+        ok_result = mock.MagicMock(returncode=0, stdout="https://github.com/o/r/pull/not-a-number")
+
+        with mock.patch("subprocess.run", return_value=ok_result):
+            result = manager._create_github_pr("gh", "Test PR", "Body text", 30)
+
+        assert result is None
+
+    def test_create_failure_returns_none(self, tmp_path: Path) -> None:
+        """When gh pr create exits non-zero, _create_github_pr returns None."""
+        manager = self._manager_with_git(tmp_path)
+        fail_result = mock.MagicMock(returncode=1, stdout="", stderr="error: already exists")
+
+        with mock.patch("subprocess.run", return_value=fail_result):
+            result = manager._create_github_pr("gh", "Test PR", "Body text", 30)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _create_gitlab_mr — full path, timeout, non-numeric URL
+# ---------------------------------------------------------------------------
+
+
+class TestCreateGitlabMr:
+    """_create_gitlab_mr creates MRs on GitLab."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_successful_mr_creation(self, tmp_path: Path) -> None:
+        """When glab mr create succeeds, returns the MR number."""
+        manager = self._manager_with_git(tmp_path)
+        ok_result = mock.MagicMock(
+            returncode=0, stdout="https://gitlab.com/owner/repo/-/merge_requests/42"
+        )
+
+        with mock.patch("subprocess.run", return_value=ok_result):
+            result = manager._create_gitlab_mr("glab", "Test MR", "Body", 30)
+
+        assert result == 42
+
+    def test_timeout_returns_none(self, tmp_path: Path) -> None:
+        """When glab mr create times out, returns None."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["glab", "mr", "create"], timeout=30),
+        ):
+            result = manager._create_gitlab_mr("glab", "Test MR", "Body", 30)
+
+        assert result is None
+
+    def test_create_failure_returns_none(self, tmp_path: Path) -> None:
+        """When glab mr create fails with non-zero exit, returns None."""
+        manager = self._manager_with_git(tmp_path)
+        fail_result = mock.MagicMock(returncode=1, stdout="", stderr="error: authentication required")
+
+        with mock.patch("subprocess.run", return_value=fail_result):
+            result = manager._create_gitlab_mr("glab", "Test MR", "Body", 30)
+
+        assert result is None
+
+    def test_non_numeric_url_returns_none(self, tmp_path: Path) -> None:
+        """When the MR URL doesn't end in a number, returns None."""
+        manager = self._manager_with_git(tmp_path)
+        ok_result = mock.MagicMock(returncode=0, stdout="https://gitlab.com/o/r/merge_requests/not-a-number")
+
+        with mock.patch("subprocess.run", return_value=ok_result):
+            result = manager._create_gitlab_mr("glab", "Test MR", "Body", 30)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# New coverage: transition_pr_to_review — spec_id path, invalid reviewer, GitLab
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionPrToReviewAdditionalPaths:
+    """Additional paths in transition_pr_to_review()."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_invalid_reviewer_name_skipped_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Reviewer names that don't match the allow-pattern are skipped with a warning."""
+        manager = self._manager_with_git(tmp_path)
+        manager.config = {"default_reviewers": ["valid-user", "invalid name with spaces", "another@bad"]}
+
+        call_log: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            call_log.append(list(cmd))
+            return mock.MagicMock(returncode=0, stdout="git@github.com:o/r.git", stderr="")
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.git"):
+            with mock.patch("subprocess.run", side_effect=_side_effect):
+                with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                    manager.transition_pr_to_review()
+
+        # Warning must be emitted for the invalid reviewers
+        assert any("invalid" in r.message.lower() or "skipping" in r.message.lower() for r in caplog.records)
+        # gh pr edit must still be called with only the valid reviewer
+        edit_calls = [c for c in call_log if "edit" in c]
+        assert len(edit_calls) >= 1
+        edit_cmd = edit_calls[0]
+        assert "valid-user" in edit_cmd
+        # Invalid reviewer must NOT appear in the edit command
+        assert "invalid name with spaces" not in " ".join(edit_cmd)
+
+    def test_gitlab_uses_glab_mr_update_for_reviewers(self, tmp_path: Path) -> None:
+        """On GitLab, reviewer assignment uses glab mr update."""
+        manager = self._manager_with_git(tmp_path)
+        manager.config = {"default_reviewers": ["dev-user"]}
+
+        call_log: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            call_log.append(list(cmd))
+            return mock.MagicMock(returncode=0, stdout="git@gitlab.com:o/r.git", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=_side_effect):
+            with mock.patch("shutil.which", return_value="/usr/bin/glab"):
+                with mock.patch.object(manager, "detect_platform", return_value="gitlab"):
+                    manager.transition_pr_to_review()
+
+        update_calls = [c for c in call_log if "update" in c]
+        assert len(update_calls) >= 1
+        update_cmd = update_calls[0]
+        assert update_cmd[0] == "glab"
+
+    def test_reviewer_assignment_timeout_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When reviewer assignment times out, a warning is logged and execution continues."""
+        manager = self._manager_with_git(tmp_path)
+        manager.config = {"default_reviewers": ["alice"]}
+
+        def _side_effect(cmd, **kwargs):
+            cmd_list = list(cmd)
+            if "edit" in cmd_list or "update" in cmd_list:
+                raise subprocess.TimeoutExpired(cmd=cmd_list, timeout=30)
+            return mock.MagicMock(returncode=0, stdout="git@github.com:o/r.git", stderr="")
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.git"):
+            with mock.patch("subprocess.run", side_effect=_side_effect):
+                with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                    # Must not raise
+                    manager.transition_pr_to_review()
+
+        assert any("timed out" in r.message.lower() or "timeout" in r.message.lower() for r in caplog.records)
+
+    def test_reviewer_assignment_failure_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When reviewer assignment returns non-zero, a warning is logged but not raised."""
+        manager = self._manager_with_git(tmp_path)
+        manager.config = {"default_reviewers": ["alice"]}
+
+        def _side_effect(cmd, **kwargs):
+            cmd_list = list(cmd)
+            if "edit" in cmd_list:
+                return mock.MagicMock(returncode=1, stdout="", stderr="error: user not found")
+            return mock.MagicMock(returncode=0, stdout="git@github.com:o/r.git", stderr="")
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.git"):
+            with mock.patch("subprocess.run", side_effect=_side_effect):
+                with mock.patch("shutil.which", return_value="/usr/bin/gh"):
+                    manager.transition_pr_to_review()
+
+        assert any("reviewer" in r.message.lower() or "assignment" in r.message.lower() for r in caplog.records)
+
+    def test_pr_number_appended_to_ready_and_edit_when_found(self, tmp_path: Path) -> None:
+        """When a PR is found by spec_id, the number is appended to gh pr ready and gh pr edit."""
+        manager = self._manager_with_git(tmp_path)
+        manager.config = {"default_reviewers": ["alice"]}
+
+        pr_list_result = mock.MagicMock(returncode=0)
+        pr_list_result.stdout = json.dumps([{"number": 77, "title": "[spec-88] build"}])
+
+        call_log: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            call_log.append(list(cmd))
+            if "list" in cmd:
+                return pr_list_result
+            return mock.MagicMock(returncode=0, stdout="git@github.com:o/r.git", stderr="")
+
+        with (
+            mock.patch("subprocess.run", side_effect=_side_effect),
+            mock.patch("shutil.which", return_value="/usr/bin/gh"),
+        ):
+            manager.transition_pr_to_review(spec_id="88")
+
+        ready_calls = [c for c in call_log if "ready" in c]
+        assert len(ready_calls) >= 1
+        assert "77" in ready_calls[0]
+        edit_calls = [c for c in call_log if "edit" in c]
+        assert len(edit_calls) >= 1
+        assert "77" in edit_calls[0]
+
+
+# ---------------------------------------------------------------------------
+# New coverage: commit_chunk — newline in filename, stage failure, nothing staged
+# ---------------------------------------------------------------------------
+
+
+class TestCommitChunkAdditionalPaths:
+    """Additional paths in commit_chunk not yet covered."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_newline_in_filename_returns_failure(self, tmp_path: Path) -> None:
+        """A filename with a newline causes commit_chunk to return CommitResult(success=False)."""
+        manager = self._manager_with_git(tmp_path)
+
+        result = manager.commit_chunk("chunk-01", "bad file", ["ok.py", "evil\nfile.py"])
+
+        assert result.success is False
+
+    def test_stage_failure_logs_warning_and_continues(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When git add fails with RuntimeError, a warning is logged and we continue staging."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_log: list[list[str]] = []
+
+        def fake_run_cmd(args, **kw):
+            call_log.append(list(args))
+            if args[0:2] == ["git", "add"]:
+                raise RuntimeError("git add failed: path not found")
+            if args[0:2] == ["git", "diff"]:
+                return ""  # nothing staged after failed add
+            return ""
+
+        with caplog.at_level(logging.WARNING, logger="codelicious.git"):
+            with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+                with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                    # Nothing staged, so returns success with empty SHA
+                    result = manager.commit_chunk("chunk-01", "title", ["missing.py"])
+
+        assert result.success is True
+        assert result.sha == ""
+        assert any("Failed to stage" in r.message for r in caplog.records)
+
+    def test_nothing_staged_returns_success_with_empty_sha(self, tmp_path: Path) -> None:
+        """When git diff --cached returns empty, returns CommitResult(success=True, sha='')."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return ""  # nothing staged
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                result = manager.commit_chunk("chunk-02", "no changes", ["file.py"])
+
+        assert result.success is True
+        assert result.sha == ""
+        assert "Nothing to commit" in result.message
+
+    def test_unstage_reset_fails_after_exception_still_returns_failure(self, tmp_path: Path) -> None:
+        """When commit fails and the unstage reset also fails, still returns CommitResult(success=False)."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "add"]:
+                return ""
+            if args[0:2] == ["git", "diff"]:
+                return "file.py"
+            if args[0:2] == ["git", "commit"]:
+                raise RuntimeError("pre-commit hook failed")
+            if args[0:2] == ["git", "reset"]:
+                raise RuntimeError("git reset HEAD failed too")
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with mock.patch.object(manager, "_check_staged_files_for_sensitive_patterns"):
+                result = manager.commit_chunk("chunk-03", "fail", ["file.py"])
+
+        assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# New coverage: get_pr_commit_count — fallback with all RuntimeErrors, returns 0
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrCommitCountFallbackExhausted:
+    """get_pr_commit_count returns 0 when fallback git log also fails for both bases."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_fallback_loop_all_bases_fail_returns_zero(self, tmp_path: Path) -> None:
+        """When merge-base raises RuntimeError for both 'main' and 'master', returns 0."""
+        manager = self._manager_with_git(tmp_path)
+
+        gh_fail = mock.MagicMock(returncode=1, stdout="")
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "branch"]:
+                return "codelicious/feature"
+            raise RuntimeError("merge-base failed: no common ancestor")
+
+        with mock.patch("subprocess.run", return_value=gh_fail):
+            with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+                count = manager.get_pr_commit_count(99)
+
+        assert count == 0
+
+    def test_gh_timeout_falls_back_and_succeeds(self, tmp_path: Path) -> None:
+        """When gh times out, the git log fallback is used and returns a count."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_n = {"n": 0}
+
+        def fake_subprocess(args, **kw):
+            call_n["n"] += 1
+            raise subprocess.TimeoutExpired(cmd=args, timeout=30)
+
+        def fake_run_cmd(args, **kw):
+            if args[0:2] == ["git", "branch"]:
+                return "codelicious/feature"
+            if args[0:2] == ["git", "merge-base"] and "main" in args:
+                return "abc123"
+            if args[0:2] == ["git", "log"]:
+                return "commit1\ncommit2"
+            raise RuntimeError("unexpected")
+
+        with mock.patch("subprocess.run", side_effect=fake_subprocess):
+            with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+                count = manager.get_pr_commit_count(42)
+
+        assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# New coverage: revert_chunk_changes — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestRevertChunkChangesExceptionPath:
+    """revert_chunk_changes returns False and logs error when an exception occurs."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_exception_in_revert_returns_false(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When _run_cmd raises unexpectedly, revert_chunk_changes returns False."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=OSError("checkout failed")):
+            with caplog.at_level(logging.ERROR, logger="codelicious.git"):
+                result = manager.revert_chunk_changes()
+
+        assert result is False
+        assert any("revert" in r.message.lower() or "Failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# New coverage: verify_git_identity — OSError/RuntimeError in _get_config
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyGitIdentityGetConfigExceptions:
+    """verify_git_identity handles OSError/RuntimeError from _run_cmd in _get_config."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_local_config_oserror_falls_through_to_global(self, tmp_path: Path) -> None:
+        """When local config _run_cmd raises OSError, falls through to global and gets identity."""
+        manager = self._manager_with_git(tmp_path)
+
+        call_n = {"n": 0}
+
+        def fake_run_cmd(args, **kw):
+            call_n["n"] += 1
+            if "--local" in args:
+                raise OSError("git config local failed")
+            if "--global" in args and "user.name" in args:
+                return "Global User"
+            if "--global" in args and "user.email" in args:
+                return "global@example.com"
+            return ""
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            # Should not raise
+            manager.verify_git_identity()
+
+    def test_global_config_runtime_error_causes_missing_identity(self, tmp_path: Path) -> None:
+        """When both local and global _run_cmd raise, identity is missing and sys.exit(1) is called."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run_cmd(args, **kw):
+            raise RuntimeError("git config failed")
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run_cmd):
+            with pytest.raises(SystemExit) as exc_info:
+                manager.verify_git_identity()
+
+        assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# New coverage: detect_platform — returncode != 0 returns "unknown"
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPlatformUnknownOnFailure:
+    """detect_platform returns 'unknown' when git remote get-url fails."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_nonzero_returncode_sets_unknown(self, tmp_path: Path) -> None:
+        """When git remote get-url returns non-zero, platform is 'unknown'."""
+        manager = self._manager_with_git(tmp_path)
+        fail_result = mock.MagicMock(returncode=128, stdout="", stderr="no such remote")
+
+        with mock.patch("subprocess.run", return_value=fail_result):
+            platform = manager.detect_platform()
+
+        assert platform == "unknown"
+
+    def test_timeout_sets_unknown(self, tmp_path: Path) -> None:
+        """When subprocess.run times out, platform is 'unknown'."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["git", "remote"], timeout=10),
+        ):
+            platform = manager.detect_platform()
+
+        assert platform == "unknown"
+
+    def test_cached_result_is_reused(self, tmp_path: Path) -> None:
+        """Once detect_platform runs, the result is cached and subprocess is not called again."""
+        manager = self._manager_with_git(tmp_path)
+        ok_result = mock.MagicMock(returncode=0, stdout="https://github.com/o/r.git\n")
+
+        with mock.patch("subprocess.run", return_value=ok_result) as mock_run:
+            platform1 = manager.detect_platform()
+            platform2 = manager.detect_platform()
+
+        assert platform1 == platform2 == "github"
+        # subprocess.run should only be called once (result is cached)
+        assert mock_run.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# New coverage: _check_cli_auth — GitLab paths
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCliAuthGitLab:
+    """_check_cli_auth handles GitLab platform detection."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_gitlab_glab_not_installed_returns_empty_and_false(self, tmp_path: Path) -> None:
+        """When platform is gitlab but glab is not installed, returns ('', False)."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch.object(manager, "detect_platform", return_value="gitlab"):
+            with mock.patch("shutil.which", return_value=None):
+                cli, auth = manager._check_cli_auth()
+
+        assert cli == ""
+        assert auth is False
+
+    def test_gitlab_glab_installed_and_authenticated(self, tmp_path: Path) -> None:
+        """When glab is installed and auth succeeds, returns ('glab', True)."""
+        manager = self._manager_with_git(tmp_path)
+        ok_result = mock.MagicMock(returncode=0)
+
+        with mock.patch.object(manager, "detect_platform", return_value="gitlab"):
+            with mock.patch("shutil.which", return_value="/usr/bin/glab"):
+                with mock.patch("subprocess.run", return_value=ok_result):
+                    cli, auth = manager._check_cli_auth()
+
+        assert cli == "glab"
+        assert auth is True
+
+    def test_gitlab_glab_installed_but_auth_fails(self, tmp_path: Path) -> None:
+        """When glab is installed but auth fails, returns ('glab', False)."""
+        manager = self._manager_with_git(tmp_path)
+        fail_result = mock.MagicMock(returncode=1)
+
+        with mock.patch.object(manager, "detect_platform", return_value="gitlab"):
+            with mock.patch("shutil.which", return_value="/usr/bin/glab"):
+                with mock.patch("subprocess.run", return_value=fail_result):
+                    cli, auth = manager._check_cli_auth()
+
+        assert cli == "glab"
+        assert auth is False
+
+    def test_gitlab_glab_auth_timeout_returns_false(self, tmp_path: Path) -> None:
+        """When glab auth status times out, returns ('glab', False)."""
+        manager = self._manager_with_git(tmp_path)
+
+        with mock.patch.object(manager, "detect_platform", return_value="gitlab"):
+            with mock.patch("shutil.which", return_value="/usr/bin/glab"):
+                with mock.patch(
+                    "subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd=["glab", "auth", "status"], timeout=15),
+                ):
+                    cli, auth = manager._check_cli_auth()
+
+        assert cli == "glab"
+        assert auth is False

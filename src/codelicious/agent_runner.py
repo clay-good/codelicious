@@ -32,14 +32,14 @@ from codelicious.errors import (
 from codelicious.logger import sanitize_message
 
 __all__ = [
-    "AgentResult",
     "FORBIDDEN_CLI_FLAGS",
-    "run_agent",
-    "_sanitize_prompt",
-    "_process_stream_event",
-    "_validate_command_flags",
     "_MAX_PROMPT_LENGTH",
     "_POLL_INTERVAL_S",
+    "AgentResult",
+    "_process_stream_event",
+    "_sanitize_prompt",
+    "_validate_command_flags",
+    "run_agent",
 ]
 
 # Timeout constants

@@ -7,8 +7,9 @@ import logging
 import pathlib
 import re
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from codelicious.errors import (
     IntentRejectedError,
@@ -22,7 +23,6 @@ __all__ = [
     "DENIED_PATH_SEGMENTS",
     "Task",
     "_fully_decode_path",
-    "analyze_spec_drift",
     "classify_intent",
     "create_plan",
     "load_plan",
@@ -322,7 +322,7 @@ def _validate_no_circular_dependencies(tasks: list[Task]) -> None:
             if state.get(neighbor, 2) == 1:
                 # Found a cycle — extract the cycle portion from the stack
                 cycle_start = stack.index(neighbor)
-                cycle = stack[cycle_start:] + [neighbor]
+                cycle = [*stack[cycle_start:], neighbor]
                 raise InvalidPlanError(f"Circular dependency detected: {' -> '.join(cycle)}")
             if state.get(neighbor, 2) == 0:
                 dfs(neighbor)
@@ -375,7 +375,7 @@ def _fully_decode_path(raw_path: str, max_rounds: int = _MAX_DECODE_ROUNDS) -> s
     for _ in range(max_rounds):
         try:
             next_decoded = urllib.parse.unquote(decoded)
-        except Exception:
+        except (ValueError, TypeError):
             # If decoding fails, stop with current value
             break
         if next_decoded == decoded:
@@ -643,63 +643,3 @@ def _write_plan_file(tasks: list[Task], path: pathlib.Path) -> None:
         json.dumps(data, indent=2) + "\n",
         encoding="utf-8",
     )
-
-
-# ---------------------------------------------------------------------------
-# Spec drift detection
-# ---------------------------------------------------------------------------
-
-_DRIFT_ANALYSIS_PROMPT: str = """\
-You are a software architect reviewing a spec that repeatedly fails to build.
-
-You will be given:
-1. The original spec document
-2. A list of failure summaries from previous build attempts
-
-Your job: produce a REVISED spec that addresses the root causes of the failures.
-
-Rules:
-- Preserve the original intent — do not change what is being built
-- Remove ambiguities that led to implementation errors
-- Add concrete technical constraints where the original was vague
-- Split tasks that proved too large to implement in a single pass
-- Remove or defer anything that consistently causes test failures with no clear fix
-- Keep the revised spec concise — prefer fewer, clearer sections over many vague ones
-- Use the same Markdown format as the original spec
-- Do NOT include commentary, explanations, or any text outside the spec itself
-- Output the revised spec only
-
-If the original spec is fundamentally sound and the failures appear to be flaky
-infrastructure issues (network, timeouts, non-deterministic test failures), output
-the original spec unchanged.
-"""
-
-
-def analyze_spec_drift(
-    original_spec: str,
-    failure_summaries: list[str],
-    llm_call: Callable[[str, str], str],
-) -> str:
-    """Generate a revised spec from recurring failure patterns.
-
-    Returns the revised spec as a string.  On LLM error: returns the original
-    spec unchanged (fail safe — do not lose the customer's spec).
-
-    Args:
-        original_spec:     The full text of the original spec file.
-        failure_summaries: List of failure descriptions from previous build runs.
-        llm_call:          Callable[system_prompt, user_prompt] -> response.
-    """
-    logger.info("Analyzing spec drift: %d failure summaries", len(failure_summaries))
-    if not failure_summaries:
-        return original_spec
-
-    numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(failure_summaries))
-    user_prompt = f"## Original spec\n\n{original_spec}\n\n## Failure summaries\n\n{numbered}"
-
-    try:
-        revised = llm_call(_DRIFT_ANALYSIS_PROMPT, user_prompt)
-        return revised.strip() if revised.strip() else original_spec
-    except Exception as exc:
-        logger.warning("analyze_spec_drift failed, returning original spec: %s", exc)
-        return original_spec

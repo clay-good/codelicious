@@ -68,8 +68,8 @@ def scaffold(project_root: pathlib.Path, dry_run: bool = False) -> None:
     resolved_root = project_root.resolve()
     try:
         resolved.relative_to(resolved_root)
-    except ValueError:
-        raise ValueError(f"CLAUDE.md path {resolved} escapes project root {resolved_root}")
+    except ValueError as exc:
+        raise ValueError(f"CLAUDE.md path {resolved} escapes project root {resolved_root}") from exc
 
     # Try to read existing file first; use exception handling to avoid TOCTOU race
     existing: str | None = None

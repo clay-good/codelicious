@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codelicious._env import parse_env_csv, parse_env_float, parse_env_int, parse_env_str
-
+from codelicious._env import parse_env_csv, parse_env_float, parse_env_int
 
 # -- parse_env_int -----------------------------------------------------------
 
@@ -67,23 +66,6 @@ class TestParseEnvFloat:
     def test_above_max_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_FLOAT", "999.0")
         assert parse_env_float("TEST_FLOAT", 5.0, max_val=100.0) == 5.0
-
-
-# -- parse_env_str -----------------------------------------------------------
-
-
-class TestParseEnvStr:
-    def test_returns_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEST_STR", raising=False)
-        assert parse_env_str("TEST_STR", "hello") == "hello"
-
-    def test_returns_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEST_STR", "world")
-        assert parse_env_str("TEST_STR", "hello") == "world"
-
-    def test_empty_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEST_STR", "  ")
-        assert parse_env_str("TEST_STR", "hello") == "hello"
 
 
 # -- parse_env_csv -----------------------------------------------------------

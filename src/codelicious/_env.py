@@ -5,21 +5,20 @@ value, validating constraints, and falling back to a default with a
 warning log.  All functions are pure (no side effects beyond logging)
 and depend only on the standard library.
 
-Extracted in spec-19 Phase 9 (CD-1) to eliminate duplicated parsing in
-config.py, budget_guard.py, verifier.py, sandbox.py, and progress.py.
+Extracted to eliminate duplicated parsing across modules like
+config.py, verifier.py, and sandbox.py.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Callable
+from collections.abc import Callable
 
 __all__ = [
     "parse_env_csv",
     "parse_env_float",
     "parse_env_int",
-    "parse_env_str",
 ]
 
 logger = logging.getLogger("codelicious.env")
@@ -78,21 +77,6 @@ def parse_env_float(
         logger.warning("%s=%.2f is above maximum %.2f, using default %.2f", name, val, max_val, default)
         return default
     logger.debug("%s override active: %.4f", name, val)
-    return val
-
-
-def parse_env_str(name: str, default: str) -> str:
-    """Parse a string environment variable with fallback to *default*.
-
-    Returns the raw value (stripped) or *default* if unset or empty.
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    val = raw.strip()
-    if not val:
-        return default
-    logger.debug("%s override active: %s", name, val)
     return val
 
 

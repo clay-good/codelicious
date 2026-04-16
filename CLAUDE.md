@@ -1,37 +1,55 @@
-<!-- codelicious:start -->
+# Codelicious Development Guide
 
-# codelicious
+## Project Overview
 
-This project is managed by codelicious. Read `.codelicious/STATE.md` for
-the current task list and progress.
+Codelicious is a headless, autonomous developer CLI that transforms markdown specs into Pull Requests. It uses a dual-engine architecture (Claude Code CLI + HuggingFace) with zero runtime dependencies.
 
-## Rules
-- Read existing files before modifying them.
-- Run `/verify-all` after changes to catch issues early.
-- Update `.codelicious/STATE.md` as you complete tasks.
-- When done, write "DONE" to `.codelicious/BUILD_COMPLETE`.
+## How to Run
 
-## How to Work
-- Use the **builder** agent for parallel code implementation.
-- Use the **tester** agent to run tests and fix failures.
-- Use the **reviewer** agent for security and quality checks.
-- Use `/run-tests`, `/lint-fix`, `/verify-all` skills for common workflows.
-- Use TodoWrite to track sub-steps within complex tasks.
+```bash
+# Install
+pip install -e ".[dev]"
 
-## Security Policy (spec-20)
-- Never use `git add .` — always stage files explicitly or use `git add -u`.
-- Never pass `--dangerously-skip-permissions` to the Claude CLI.
-- All LLM endpoint URLs must be validated for HTTPS and non-private IP.
-- Never commit sensitive files (.env, .pem, .key, .p12, .pfx, .netrc, credentials).
-- Sanitize all user-supplied values (spec_filter, filenames, config) before rendering into prompts.
+# Run tests
+pytest
 
-## Git & PR Policy
-- The codelicious orchestrator owns all git operations: add, commit, push, branch creation.
-- You MUST NOT run git or gh commands. The orchestrator handles them.
-- Write clear, descriptive commit messages that explain what changed and why.
-- One commit per logical unit of work (e.g. one task, one fix).
-- Create PRs with meaningful titles and descriptions summarizing actual changes.
-- NEVER push to main/master/develop/release branches directly.
-- NEVER force-push or amend published commits.
+# Lint
+ruff check src/ tests/
+ruff format src/ tests/
 
-<!-- codelicious:end -->
+# Security scan
+bandit -r src/
+```
+
+## Architecture
+
+- `src/codelicious/cli.py` -- entry point, engine selection, CLI arg parsing
+- `src/codelicious/orchestrator.py` -- 4-phase orchestration (BUILD, MERGE, REVIEW, FIX)
+- `src/codelicious/engines/` -- dual engine system (Claude Code CLI + HuggingFace)
+- `src/codelicious/tools/` -- tool dispatch (read/write files, run commands, search)
+- `src/codelicious/git/` -- deterministic git operations (branch, commit, PR)
+- `src/codelicious/sandbox.py` -- filesystem isolation, TOCTOU-safe operations
+- `src/codelicious/verifier.py` -- lint, test, security, coverage checks
+
+## Conventions
+
+- Python 3.10+, line length 120, double quotes
+- Zero runtime dependencies (stdlib only)
+- All tests in `tests/`, named `test_*.py`
+- Use pytest fixtures, not setUp/tearDown
+
+## Resilience Rules
+
+- Always check the build deadline before starting a new phase
+- LLM calls use exponential backoff with jitter for transient errors (429, 5xx)
+- SIGTERM triggers graceful shutdown via SystemExit(143)
+- Subprocess timeouts use process groups (start_new_session=True) with SIGTERM then SIGKILL
+
+## Security Rules
+
+- Never use `eval()`, `exec()`, or `shell=True`
+- Never hardcode API keys or secrets
+- All file writes go through `Sandbox` (atomic, TOCTOU-safe)
+- Command execution uses denylist model (see `security_constants.py`)
+- All LLM endpoint URLs validated for HTTPS
+- Credential redaction on all log output

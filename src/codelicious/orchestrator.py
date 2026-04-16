@@ -33,11 +33,12 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("codelicious.orchestrator")
 
 __all__ = [
+    "REVIEWER_PROMPTS",
     "Finding",
     "Orchestrator",
     "OrchestratorResult",
     "ReviewRole",
-    "REVIEWER_PROMPTS",
+    "V2Orchestrator",
 ]
 
 
@@ -231,8 +232,8 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
             text=True,
             timeout=_WORKTREE_TIMEOUT_S,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Timed out creating worktree for branch {branch_name}")
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out creating worktree for branch {branch_name}") from exc
 
     if result.returncode != 0:
         # Branch might already exist — try without -b
@@ -244,8 +245,8 @@ def _create_worktree(repo_path: pathlib.Path, branch_name: str) -> pathlib.Path:
                 text=True,
                 timeout=_WORKTREE_TIMEOUT_S,
             )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Timed out creating worktree (fallback) for branch {branch_name}")
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Timed out creating worktree (fallback) for branch {branch_name}") from exc
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create worktree: {result.stderr}")
 
@@ -572,9 +573,8 @@ class Orchestrator:
 
         Returns (branch_name, success).
         """
-        from codelicious.prompts import AGENT_BUILD_SPEC, render
-
         from codelicious.git.git_orchestrator import spec_branch_name
+        from codelicious.prompts import AGENT_BUILD_SPEC, render
 
         branch_name = spec_branch_name(spec_path.name)
         worktree_dir: pathlib.Path | None = None
@@ -870,7 +870,7 @@ class Orchestrator:
 
         logger.info("PHASE 4 FIX: applying %d P1/P2 findings", len(actionable))
 
-        from codelicious.prompts import clear_build_complete, check_build_complete
+        from codelicious.prompts import check_build_complete, clear_build_complete
 
         clear_build_complete(self.repo_path)
         fix_prompt = _render_fix_prompt(self.project_name, actionable)
@@ -1008,7 +1008,9 @@ class Orchestrator:
 
             # Push even if commit_verified_changes found nothing new to
             # commit — merge commits need to be pushed too.
-            self.git_manager.push_to_origin()
+            push = self.git_manager.push_to_origin()
+            if not push.success:
+                logger.warning("Mid-cycle push failed (type=%s): %s", push.error_type, push.message)
 
             # Update incomplete list for next iteration
             incomplete_specs = still_incomplete
@@ -1050,7 +1052,9 @@ class Orchestrator:
 
         # Always push — commit_verified_changes skips push when working
         # tree is clean, but merge commits still need to be pushed.
-        self.git_manager.push_to_origin()
+        push = self.git_manager.push_to_origin()
+        if not push.success:
+            logger.error("Final push failed (type=%s): %s", push.error_type, push.message)
 
         if push_pr:
             # Create/reuse one PR per successfully built spec (spec-22 Phase 4)
@@ -1077,4 +1081,273 @@ class Orchestrator:
             findings=findings,
             elapsed_s=elapsed,
             cycles_completed=cycles,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# spec-27 Phase 4: V2 Orchestrator — chunk-based serial loop
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class V2Orchestrator:
+    """Chunk-based orchestrator for codelicious v2 (spec-27 Phase 4.1).
+
+    Runs the simplified workflow::
+
+        for each spec:
+            chunk the spec → for each chunk:
+                execute → verify → fix → commit → push
+            transition PR to review
+
+    No worktree isolation.  Each spec gets a branch.  Chunks are
+    executed serially.  One commit per chunk.
+    """
+
+    def __init__(
+        self,
+        repo_path: pathlib.Path,
+        git_manager: object,
+        engine: object,
+        max_commits_per_pr: int = 50,
+        model: str = "",
+    ) -> None:
+        self.repo_path = pathlib.Path(repo_path).resolve()
+        self.git_manager = git_manager
+        self.engine = engine
+        self.max_commits_per_pr = max_commits_per_pr
+        self.model = model
+
+    def run(
+        self,
+        specs: list[pathlib.Path],
+        deadline: float = 0.0,
+        push_pr: bool = True,
+    ) -> OrchestratorResult:
+        """Run the v2 chunk-based orchestration loop.
+
+        Parameters
+        ----------
+        specs:
+            List of incomplete spec file paths.
+        deadline:
+            Monotonic clock deadline (0 = no deadline).
+        push_pr:
+            Whether to create/update PRs on GitHub/GitLab.
+        """
+        from codelicious.chunker import chunk_spec
+        from codelicious.engines.base import EngineContext
+        from codelicious.git.git_orchestrator import spec_branch_name
+        from codelicious.spec_discovery import mark_chunk_complete
+
+        start = time.monotonic()
+        total_chunks_completed = 0
+        total_chunks_failed = 0
+        specs_completed = 0
+
+        for spec in specs:
+            spec_id = re.match(r"^(\d+)", spec.stem)
+            spec_id_str = spec_id.group(1) if spec_id else spec.stem
+
+            # ── Chunk the spec ────────────────────────────────────
+            try:
+                chunks = chunk_spec(spec, self.repo_path)
+            except Exception as e:
+                logger.error("Failed to chunk spec %s: %s", spec.name, e)
+                continue
+
+            if not chunks:
+                logger.info("Spec %s has no chunks to build.", spec.name)
+                specs_completed += 1
+                continue
+
+            total_chunks = len(chunks)
+            logger.info("[codelicious] Spec: %s (%d chunks)", spec.name, total_chunks)
+
+            # ── Ensure branch ─────────────────────────────────────
+            spec_branch_name(spec)  # Validates branch name derivation
+            self.git_manager.assert_safe_branch(spec_name=str(spec), spec_id=spec_id_str)
+
+            # ── Ensure PR exists ──────────────────────────────────
+            spec_title = spec.stem.replace("_", " ")
+            pr_number = None
+            pr_part = 0
+            chunk_summaries: list[str] = []
+
+            if push_pr:
+                push_result = self.git_manager.push_to_origin()
+                if push_result.success:
+                    pr_number = self.git_manager.ensure_draft_pr_exists(
+                        spec_id=spec_id_str,
+                        spec_summary=spec_title,
+                        chunk_summaries=[c.title for c in chunks[:20]],
+                    )
+
+            # ── Build context ─────────────────────────────────────
+            try:
+                spec_content = spec.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                spec_content = ""
+
+            previous_chunks: list[str] = []
+
+            # ── Execute each chunk ────────────────────────────────
+            all_chunks_ok = True
+            for chunk_idx, chunk in enumerate(chunks, 1):
+                # Deadline check
+                if deadline and time.monotonic() > deadline:
+                    logger.warning("Build deadline reached during spec %s, chunk %d.", spec.name, chunk_idx)
+                    all_chunks_ok = False
+                    break
+
+                logger.info("[codelicious] Chunk %d/%d: %s — executing...", chunk_idx, total_chunks, chunk.title)
+
+                # PR commit cap check
+                if push_pr and pr_number and self.max_commits_per_pr > 0:
+                    commit_count = self.git_manager.get_pr_commit_count(pr_number)
+                    if commit_count >= self.max_commits_per_pr:
+                        logger.info(
+                            "PR #%d reached %d commits (cap=%d). Splitting.",
+                            pr_number,
+                            commit_count,
+                            self.max_commits_per_pr,
+                        )
+                        self.git_manager.transition_pr_to_review(spec_id=spec_id_str)
+                        pr_part += 1
+                        self.git_manager.create_continuation_branch(spec_id_str, pr_part)
+                        push_result = self.git_manager.push_to_origin()
+                        if push_result.success:
+                            pr_number = self.git_manager.ensure_draft_pr_exists(
+                                spec_id=spec_id_str,
+                                spec_summary=spec_title,
+                                part=pr_part,
+                                chunk_summaries=[],
+                            )
+                        chunk_summaries = []
+
+                context = EngineContext(
+                    spec_path=spec,
+                    spec_content=spec_content,
+                    previous_chunks=list(previous_chunks),
+                    deadline=deadline,
+                    model=self.model,
+                )
+
+                # ── Execute ───────────────────────────────────────
+                result = self.engine.execute_chunk(chunk, self.repo_path, context)
+
+                # ── Verify ────────────────────────────────────────
+                if result.success:
+                    logger.info("[codelicious] Chunk %d/%d: %s — verifying...", chunk_idx, total_chunks, chunk.title)
+                    verification = self.engine.verify_chunk(chunk, self.repo_path)
+                    if not verification.success and verification.message:
+                        logger.info("[codelicious] Chunk %d/%d: %s — fixing...", chunk_idx, total_chunks, chunk.title)
+                        fix_result = self.engine.fix_chunk(chunk, self.repo_path, [verification.message])
+                        if fix_result.success:
+                            # Re-verify
+                            verification = self.engine.verify_chunk(chunk, self.repo_path)
+                            # Merge file lists
+                            all_files = list(set(list(result.files_modified) + list(fix_result.files_modified)))
+                            result = type(result)(
+                                success=verification.success,
+                                files_modified=all_files,
+                                message=result.message,
+                                retries_used=result.retries_used + 1,
+                            )
+
+                # ── Commit ────────────────────────────────────────
+                if result.success:
+                    files_str = [str(f) for f in result.files_modified] if result.files_modified else []
+                    if not files_str:
+                        # Collect any uncommitted changes
+                        try:
+                            diff_out = subprocess.run(
+                                ["git", "diff", "--name-only"],
+                                cwd=self.repo_path,
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if diff_out.returncode == 0 and diff_out.stdout.strip():
+                                files_str = diff_out.stdout.strip().splitlines()
+                            # Also check untracked
+                            untracked = subprocess.run(
+                                ["git", "ls-files", "--others", "--exclude-standard"],
+                                cwd=self.repo_path,
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if untracked.returncode == 0 and untracked.stdout.strip():
+                                files_str.extend(untracked.stdout.strip().splitlines())
+                        except Exception:  # nosec B110
+                            pass  # Untracked file listing is best-effort
+
+                    if files_str:
+                        commit_result = self.git_manager.commit_chunk(chunk.id, chunk.title, files_str)
+                        if commit_result.success and commit_result.sha:
+                            logger.info(
+                                "[codelicious] Chunk %d/%d: %s — committed (%s)",
+                                chunk_idx,
+                                total_chunks,
+                                chunk.title,
+                                commit_result.sha,
+                            )
+                            chunk_summaries.append(f"{chunk.id}: {chunk.title}")
+
+                            # Push
+                            if push_pr:
+                                push_result = self.git_manager.push_to_origin()
+                                if push_result.success:
+                                    logger.info(
+                                        "[codelicious] Chunk %d/%d: %s — pushed", chunk_idx, total_chunks, chunk.title
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[codelicious] Push failed for chunk %d: %s",
+                                        chunk_idx,
+                                        push_result.message,
+                                    )
+                        else:
+                            logger.info("[codelicious] Chunk %d/%d: nothing to commit.", chunk_idx, total_chunks)
+                    else:
+                        logger.info("[codelicious] Chunk %d/%d: no files changed.", chunk_idx, total_chunks)
+
+                    # Mark checkbox complete in spec
+                    mark_chunk_complete(spec, chunk.title)
+                    previous_chunks.append(f"{chunk.id}: {chunk.title}")
+                    total_chunks_completed += 1
+                else:
+                    logger.warning(
+                        "[codelicious] Chunk %d/%d: %s — FAILED: %s",
+                        chunk_idx,
+                        total_chunks,
+                        chunk.title,
+                        result.message,
+                    )
+                    # Revert failed chunk's changes
+                    self.git_manager.revert_chunk_changes()
+                    total_chunks_failed += 1
+                    all_chunks_ok = False
+
+            # ── Transition PR to review ───────────────────────────
+            if all_chunks_ok:
+                specs_completed += 1
+                if push_pr:
+                    logger.info("[codelicious] Spec %s complete. Transitioning PR to review.", spec.name)
+                    self.git_manager.transition_pr_to_review(spec_id=spec_id_str)
+                else:
+                    logger.info("[codelicious] Spec %s complete.", spec.name)
+            else:
+                logger.warning("[codelicious] Spec %s incomplete (%d chunks failed).", spec.name, total_chunks_failed)
+
+        elapsed = time.monotonic() - start
+        all_ok = total_chunks_failed == 0 and specs_completed == len(specs)
+        return OrchestratorResult(
+            success=all_ok,
+            message=(
+                f"V2: {total_chunks_completed} chunks completed, {total_chunks_failed} failed, "
+                f"{specs_completed}/{len(specs)} specs done in {elapsed:.1f}s"
+            ),
+            elapsed_s=elapsed,
+            cycles_completed=1,
         )
