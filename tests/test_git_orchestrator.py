@@ -2837,9 +2837,7 @@ class TestPushToOriginAllRetriesExhausted:
         assert result.success is False
         assert result.error_type == "transient"
 
-    def test_transient_retry_logs_warning_each_attempt(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_transient_retry_logs_warning_each_attempt(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Transient push failures log a warning with attempt number."""
         manager = self._manager_with_git(tmp_path)
 
@@ -2891,9 +2889,7 @@ class TestCurrentBranchExceptionPath:
 class TestAssertSafeBranchExceptionHandler:
     """assert_safe_branch logs error and does not propagate when _run_cmd raises unexpectedly."""
 
-    def test_unexpected_exception_is_logged_not_raised(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_unexpected_exception_is_logged_not_raised(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """When _run_cmd raises an unexpected exception, assert_safe_branch logs it."""
         (tmp_path / ".git").mkdir()
         manager = GitManager(tmp_path)
@@ -2985,7 +2981,9 @@ class TestCommitVerifiedChangesEdgeCases:
             result = manager.commit_verified_changes("test", files_to_stage=["file.py"])
 
         assert result is False
-        assert any("HEAD" in call for call in reset_calls), "git reset HEAD must be called after unsigned commit failure"
+        assert any("HEAD" in call for call in reset_calls), (
+            "git reset HEAD must be called after unsigned commit failure"
+        )
 
     def test_gpg_fallback_unsigned_fails_and_reset_also_fails(self, tmp_path: Path) -> None:
         """GPG fallback fails + reset fails: still returns False without raising."""
@@ -3353,9 +3351,7 @@ class TestCreateGitlabMr:
     def test_successful_mr_creation(self, tmp_path: Path) -> None:
         """When glab mr create succeeds, returns the MR number."""
         manager = self._manager_with_git(tmp_path)
-        ok_result = mock.MagicMock(
-            returncode=0, stdout="https://gitlab.com/owner/repo/-/merge_requests/42"
-        )
+        ok_result = mock.MagicMock(returncode=0, stdout="https://gitlab.com/owner/repo/-/merge_requests/42")
 
         with mock.patch("subprocess.run", return_value=ok_result):
             result = manager._create_gitlab_mr("glab", "Test MR", "Body", 30)
@@ -3407,9 +3403,7 @@ class TestTransitionPrToReviewAdditionalPaths:
         (tmp_path / ".git").mkdir()
         return GitManager(tmp_path)
 
-    def test_invalid_reviewer_name_skipped_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_invalid_reviewer_name_skipped_with_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Reviewer names that don't match the allow-pattern are skipped with a warning."""
         manager = self._manager_with_git(tmp_path)
         manager.config = {"default_reviewers": ["valid-user", "invalid name with spaces", "another@bad"]}
@@ -3456,9 +3450,7 @@ class TestTransitionPrToReviewAdditionalPaths:
         update_cmd = update_calls[0]
         assert update_cmd[0] == "glab"
 
-    def test_reviewer_assignment_timeout_logs_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_reviewer_assignment_timeout_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """When reviewer assignment times out, a warning is logged and execution continues."""
         manager = self._manager_with_git(tmp_path)
         manager.config = {"default_reviewers": ["alice"]}
@@ -3477,9 +3469,7 @@ class TestTransitionPrToReviewAdditionalPaths:
 
         assert any("timed out" in r.message.lower() or "timeout" in r.message.lower() for r in caplog.records)
 
-    def test_reviewer_assignment_failure_logs_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_reviewer_assignment_failure_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """When reviewer assignment returns non-zero, a warning is logged but not raised."""
         manager = self._manager_with_git(tmp_path)
         manager.config = {"default_reviewers": ["alice"]}
@@ -3547,9 +3537,7 @@ class TestCommitChunkAdditionalPaths:
 
         assert result.success is False
 
-    def test_stage_failure_logs_warning_and_continues(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_stage_failure_logs_warning_and_continues(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """When git add fails with RuntimeError, a warning is logged and we continue staging."""
         manager = self._manager_with_git(tmp_path)
 
@@ -3681,9 +3669,7 @@ class TestRevertChunkChangesExceptionPath:
         (tmp_path / ".git").mkdir()
         return GitManager(tmp_path)
 
-    def test_exception_in_revert_returns_false(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_exception_in_revert_returns_false(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """When _run_cmd raises unexpectedly, revert_chunk_changes returns False."""
         manager = self._manager_with_git(tmp_path)
 

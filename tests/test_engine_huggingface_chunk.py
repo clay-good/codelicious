@@ -150,7 +150,9 @@ class TestIsTransient:
 
     def test_is_transient_http_500(self) -> None:
         """HTTPError with code 500 is transient (server error)."""
-        exc = urllib.error.HTTPError(url="https://example.com", code=500, msg="Internal Server Error", hdrs=None, fp=None)
+        exc = urllib.error.HTTPError(
+            url="https://example.com", code=500, msg="Internal Server Error", hdrs=None, fp=None
+        )
         assert _is_transient(exc) is True
 
     def test_is_transient_http_400(self) -> None:
@@ -596,7 +598,9 @@ class TestRunBuildCycle:
         mock_orch_instance.run.return_value = fake_orch_result
 
         with mock.patch("codelicious.spec_discovery.discover_incomplete_specs", return_value=[fake_spec]):
-            with mock.patch("codelicious.orchestrator.V2Orchestrator", return_value=mock_orch_instance) as mock_orch_cls:
+            with mock.patch(
+                "codelicious.orchestrator.V2Orchestrator", return_value=mock_orch_instance
+            ) as mock_orch_cls:
                 result = engine.run_build_cycle(
                     repo_path=tmp_path,
                     git_manager=mock.MagicMock(),

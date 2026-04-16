@@ -1028,9 +1028,7 @@ class TestDryRunMainPath:
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
                     with walk_patch, discover_patch:
-                        with mock.patch.object(
-                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
-                        ):
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]):
                             with pytest.raises(SystemExit) as exc_info:
                                 main()
 
@@ -1050,9 +1048,7 @@ class TestDryRunMainPath:
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
                     with walk_patch, discover_patch:
-                        with mock.patch.object(
-                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
-                        ):
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]):
                             with pytest.raises(SystemExit):
                                 main()
 
@@ -1073,9 +1069,7 @@ class TestDryRunMainPath:
             with mock.patch("codelicious.cli.GitManager", return_value=mock_git_manager):
                 with mock.patch("codelicious.cli.CacheManager"):
                     with walk_patch, discover_patch:
-                        with mock.patch.object(
-                            sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]
-                        ):
+                        with mock.patch.object(sys, "argv", ["codelicious", str(mock_repo), "--dry-run"]):
                             with pytest.raises(SystemExit):
                                 main()
 
