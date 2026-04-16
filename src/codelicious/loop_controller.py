@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import time
@@ -176,10 +178,9 @@ class BuildLoop:
         Executes a singular probabilistic dialogue cycle with the LLM, passing tool definitions
         and capturing JSON payloads for the deterministic ToolRegistry execution.
         """
-        # Safety net: auto-truncate if message count exceeds limit (spec-18 Phase 9: DP-3)
+        # Safety net: warn if message count exceeds limit (spec-18 Phase 9: DP-3)
         if len(self.messages) > _MAX_HISTORY_MESSAGES:
             logger.warning("Message history exceeded %d messages, auto-truncating", _MAX_HISTORY_MESSAGES)
-            self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
 
         # Truncate message history to prevent OOM and API rejection from large payloads
         self.messages = truncate_history(self.messages, MAX_HISTORY_TOKENS)
@@ -299,37 +300,38 @@ class BuildLoop:
         completed = False
         consecutive_errors = 0
 
-        for iteration in range(max_iterations):
-            logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
-            self.tool_registry.reset_call_count()
+        try:
+            for iteration in range(max_iterations):
+                logger.info("--- Iteration %d/%d ---", iteration + 1, max_iterations)
+                self.tool_registry.reset_call_count()
 
-            try:
-                completed = self._execute_agentic_iteration()
-                consecutive_errors = 0  # Reset on success
-            except Exception as iter_exc:
-                consecutive_errors += 1
-                logger.error(
-                    "Agentic iteration %d failed: %s (consecutive errors: %d/%d)",
-                    iteration + 1,
-                    iter_exc,
-                    consecutive_errors,
-                    _LLM_MAX_CONSECUTIVE_ERRORS,
-                )
-                if consecutive_errors >= _LLM_MAX_CONSECUTIVE_ERRORS:
+                try:
+                    completed = self._execute_agentic_iteration()
+                    consecutive_errors = 0  # Reset on success
+                except Exception as iter_exc:
+                    consecutive_errors += 1
                     logger.error(
-                        "Aborting loop after %d consecutive LLM errors.",
+                        "Agentic iteration %d failed: %s (consecutive errors: %d/%d)",
+                        iteration + 1,
+                        iter_exc,
                         consecutive_errors,
+                        _LLM_MAX_CONSECUTIVE_ERRORS,
                     )
-                    return False
-                continue
+                    if consecutive_errors >= _LLM_MAX_CONSECUTIVE_ERRORS:
+                        logger.error(
+                            "Aborting loop after %d consecutive LLM errors.",
+                            consecutive_errors,
+                        )
+                        return False
+                    continue
 
-            if completed:
-                # Ensure final changes are committed deterministically
-                self.git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
-                break
-
-        # Close tool registry to release file handles (Finding 1: AuditLogger leak)
-        self.tool_registry.close()
+                if completed:
+                    # Ensure final changes are committed deterministically
+                    self.git_manager.commit_verified_changes(commit_message="Auto-Implementation: All specs complete.")
+                    break
+        finally:
+            # Close tool registry to release file handles (Finding 1: AuditLogger leak)
+            self.tool_registry.close()
 
         if not completed:
             logger.error("Build cycle exhausted maximum iteration patience threshold.")

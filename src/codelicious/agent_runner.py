@@ -222,7 +222,17 @@ def _check_agent_errors(
     # Sanitize stderr before logging or embedding in exceptions (Finding 39)
     safe_stderr = sanitize_message(stderr_text[:500])
 
-    if "auth" in stderr_lower:
+    if any(
+        phrase in stderr_lower
+        for phrase in [
+            "authentication failed",
+            "auth failed",
+            "not logged in",
+            "auth error",
+            "unauthorized",
+            "auth token",
+        ]
+    ):
         raise ClaudeAuthError(
             f"Claude CLI authentication failed. Run 'claude' interactively to log in. (exit code {returncode})"
         )

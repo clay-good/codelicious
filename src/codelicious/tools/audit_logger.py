@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 import logging
@@ -122,7 +124,7 @@ class AuditLogger:
         """Best-effort cleanup of file handles on garbage collection."""
         self.close()
 
-    def __enter__(self) -> "AuditLogger":
+    def __enter__(self) -> AuditLogger:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

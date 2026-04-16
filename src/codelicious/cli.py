@@ -105,7 +105,11 @@ def _run_auth_preflight(repo_path: Path, skip: bool = False) -> PreFlightResult:
             _logger.warning("glab is not authenticated. Launching interactive login...")
             print("\n  glab is installed but not authenticated.")
             print("  Please complete the login flow below to continue.\n")
-            login_result = subprocess.run(["glab", "auth", "login"], timeout=300)
+            try:
+                login_result = subprocess.run(["glab", "auth", "login"], timeout=300)
+            except subprocess.TimeoutExpired:
+                print("Error: glab auth login timed out after 5 minutes.", file=sys.stderr)
+                sys.exit(1)
             if login_result.returncode != 0:
                 print("Error: glab authentication failed. Cannot create MRs.", file=sys.stderr)
                 sys.exit(1)
@@ -151,7 +155,11 @@ def _run_auth_preflight(repo_path: Path, skip: bool = False) -> PreFlightResult:
         _logger.warning("gh is not authenticated. Launching interactive login...")
         print("\n  gh is installed but not authenticated.")
         print("  Please complete the login flow below to continue.\n")
-        login_result = subprocess.run(["gh", "auth", "login"], timeout=300)
+        try:
+            login_result = subprocess.run(["gh", "auth", "login"], timeout=300)
+        except subprocess.TimeoutExpired:
+            print("Error: gh auth login timed out after 5 minutes.", file=sys.stderr)
+            sys.exit(1)
         if login_result.returncode != 0:
             print("Error: gh authentication failed. Cannot create PRs.", file=sys.stderr)
             sys.exit(1)

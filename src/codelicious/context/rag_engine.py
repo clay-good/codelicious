@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import atexit
 import heapq
 import json
@@ -122,7 +124,7 @@ class RagEngine:
             logger.warning("RagEngine.close() WAL flush failed: %s", exc)
         logger.debug("RagEngine closed")
 
-    def __enter__(self) -> "RagEngine":
+    def __enter__(self) -> RagEngine:
         return self
 
     def __exit__(self, *exc: object) -> None:

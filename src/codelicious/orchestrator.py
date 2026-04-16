@@ -1136,7 +1136,6 @@ class V2Orchestrator:
         """
         from codelicious.chunker import chunk_spec
         from codelicious.engines.base import EngineContext
-        from codelicious.git.git_orchestrator import spec_branch_name
         from codelicious.spec_discovery import mark_chunk_complete
 
         start = time.monotonic()
@@ -1164,7 +1163,6 @@ class V2Orchestrator:
             logger.info("[codelicious] Spec: %s (%d chunks)", spec.name, total_chunks)
 
             # ── Ensure branch ─────────────────────────────────────
-            spec_branch_name(spec)  # Validates branch name derivation
             self.git_manager.assert_safe_branch(spec_name=str(spec), spec_id=spec_id_str)
 
             # ── Ensure PR exists ──────────────────────────────────
@@ -1192,6 +1190,7 @@ class V2Orchestrator:
 
             # ── Execute each chunk ────────────────────────────────
             all_chunks_ok = True
+            spec_chunks_failed = 0
             for chunk_idx, chunk in enumerate(chunks, 1):
                 # Deadline check
                 if deadline and time.monotonic() > deadline:
@@ -1327,6 +1326,7 @@ class V2Orchestrator:
                     # Revert failed chunk's changes
                     self.git_manager.revert_chunk_changes()
                     total_chunks_failed += 1
+                    spec_chunks_failed += 1
                     all_chunks_ok = False
 
             # ── Transition PR to review ───────────────────────────
@@ -1338,7 +1338,7 @@ class V2Orchestrator:
                 else:
                     logger.info("[codelicious] Spec %s complete.", spec.name)
             else:
-                logger.warning("[codelicious] Spec %s incomplete (%d chunks failed).", spec.name, total_chunks_failed)
+                logger.warning("[codelicious] Spec %s incomplete (%d chunks failed).", spec.name, spec_chunks_failed)
 
         elapsed = time.monotonic() - start
         all_ok = total_chunks_failed == 0 and specs_completed == len(specs)

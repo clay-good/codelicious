@@ -127,7 +127,7 @@ def chunk_spec(
             chunk_num = len(chunks) + 1
             chunk_id = f"spec-{spec_id}-chunk-{chunk_num:02d}"
 
-            depends: list[str] = []
+            depends = []
             if prev_section_last_chunk_id:
                 depends = [prev_section_last_chunk_id]
 
