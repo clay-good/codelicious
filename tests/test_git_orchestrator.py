@@ -3838,3 +3838,83 @@ class TestCheckCliAuthGitLab:
 
         assert cli == "glab"
         assert auth is False
+
+
+# ---------------------------------------------------------------------------
+# spec 28 Phase 2.1 — get_pr_diff_loc()
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrDiffLoc:
+    """spec 28 Phase 2.1: get_pr_diff_loc returns total LOC changed vs. main."""
+
+    def _manager_with_git(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_parses_shortstat_insertions_and_deletions(self, tmp_path: Path) -> None:
+        """Parses ' 3 files changed, 42 insertions(+), 7 deletions(-)' to 49."""
+        manager = self._manager_with_git(tmp_path)
+        with mock.patch.object(manager, "_run_cmd") as mock_cmd:
+            mock_cmd.side_effect = [
+                "abc123",
+                " 3 files changed, 42 insertions(+), 7 deletions(-)\n",
+            ]
+            assert manager.get_pr_diff_loc(99) == 49
+
+    def test_insertions_only(self, tmp_path: Path) -> None:
+        """Shortstat with insertions only is parsed correctly."""
+        manager = self._manager_with_git(tmp_path)
+        with mock.patch.object(manager, "_run_cmd") as mock_cmd:
+            mock_cmd.side_effect = [
+                "abc123",
+                " 1 file changed, 12 insertions(+)\n",
+            ]
+            assert manager.get_pr_diff_loc(99) == 12
+
+    def test_empty_diff_returns_zero(self, tmp_path: Path) -> None:
+        """Empty shortstat output returns 0."""
+        manager = self._manager_with_git(tmp_path)
+        with mock.patch.object(manager, "_run_cmd") as mock_cmd:
+            mock_cmd.side_effect = ["abc123", ""]
+            assert manager.get_pr_diff_loc(99) == 0
+
+    def test_falls_back_to_master_when_main_missing(self, tmp_path: Path) -> None:
+        """If merge-base with main fails, falls back to master."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run(args, check=True, timeout=60):
+            if args[:2] == ["git", "merge-base"]:
+                if args[2] == "main":
+                    raise RuntimeError("no main")
+                return "deadbeef"
+            if args[:3] == ["git", "diff", "--shortstat"]:
+                return " 2 files changed, 5 insertions(+), 5 deletions(-)\n"
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run):
+            assert manager.get_pr_diff_loc(99) == 10
+
+    def test_no_merge_base_returns_zero(self, tmp_path: Path) -> None:
+        """When neither main nor master has a merge base, returns 0."""
+        manager = self._manager_with_git(tmp_path)
+        with mock.patch.object(manager, "_run_cmd", side_effect=RuntimeError("nope")):
+            assert manager.get_pr_diff_loc(99) == 0
+
+    def test_diff_subprocess_failure_returns_zero(self, tmp_path: Path) -> None:
+        """If git diff itself raises, returns 0 (advisory cap, never raises)."""
+        manager = self._manager_with_git(tmp_path)
+
+        def fake_run(args, check=True, timeout=60):
+            if args[:2] == ["git", "merge-base"]:
+                return "abc123"
+            raise RuntimeError("diff blew up")
+
+        with mock.patch.object(manager, "_run_cmd", side_effect=fake_run):
+            assert manager.get_pr_diff_loc(99) == 0
+
+    def test_no_git_returns_zero(self, tmp_path: Path) -> None:
+        """Without git available, returns 0."""
+        manager = self._manager_with_git(tmp_path)
+        with mock.patch.object(manager, "_has_git", return_value=False):
+            assert manager.get_pr_diff_loc(99) == 0

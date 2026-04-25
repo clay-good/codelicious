@@ -1108,14 +1108,41 @@ class V2Orchestrator:
         repo_path: pathlib.Path,
         git_manager: object,
         engine: object,
-        max_commits_per_pr: int = 50,
+        max_commits_per_pr: int = 8,
+        max_loc_per_pr: int = 400,
         model: str = "",
     ) -> None:
         self.repo_path = pathlib.Path(repo_path).resolve()
         self.git_manager = git_manager
         self.engine = engine
         self.max_commits_per_pr = max_commits_per_pr
+        self.max_loc_per_pr = max_loc_per_pr
         self.model = model
+
+    def _split_pr_and_continue(
+        self,
+        spec_id_str: str,
+        spec_title: str,
+        pr_part: int,
+    ) -> tuple[int, int | None]:
+        """Transition the current PR to review, open a continuation branch,
+        push it, and ensure a fresh draft PR exists (spec 28 Phase 2.2).
+
+        Returns ``(new_pr_part, new_pr_number_or_None)``.
+        """
+        self.git_manager.transition_pr_to_review(spec_id=spec_id_str)
+        new_part = pr_part + 1
+        self.git_manager.create_continuation_branch(spec_id_str, new_part)
+        push_result = self.git_manager.push_to_origin()
+        new_pr_number: int | None = None
+        if push_result.success:
+            new_pr_number = self.git_manager.ensure_draft_pr_exists(
+                spec_id=spec_id_str,
+                spec_summary=spec_title,
+                part=new_part,
+                chunk_summaries=[],
+            )
+        return new_part, new_pr_number
 
     def run(
         self,
@@ -1200,27 +1227,20 @@ class V2Orchestrator:
 
                 logger.info("[codelicious] Chunk %d/%d: %s — executing...", chunk_idx, total_chunks, chunk.title)
 
-                # PR commit cap check
-                if push_pr and pr_number and self.max_commits_per_pr > 0:
-                    commit_count = self.git_manager.get_pr_commit_count(pr_number)
-                    if commit_count >= self.max_commits_per_pr:
-                        logger.info(
-                            "PR #%d reached %d commits (cap=%d). Splitting.",
-                            pr_number,
-                            commit_count,
-                            self.max_commits_per_pr,
-                        )
-                        self.git_manager.transition_pr_to_review(spec_id=spec_id_str)
-                        pr_part += 1
-                        self.git_manager.create_continuation_branch(spec_id_str, pr_part)
-                        push_result = self.git_manager.push_to_origin()
-                        if push_result.success:
-                            pr_number = self.git_manager.ensure_draft_pr_exists(
-                                spec_id=spec_id_str,
-                                spec_summary=spec_title,
-                                part=pr_part,
-                                chunk_summaries=[],
-                            )
+                # PR size caps: split when commit count OR diff LOC exceeds limit
+                if push_pr and pr_number:
+                    split_reason = ""
+                    if self.max_commits_per_pr > 0:
+                        commit_count = self.git_manager.get_pr_commit_count(pr_number)
+                        if commit_count >= self.max_commits_per_pr:
+                            split_reason = f"commits ({commit_count} >= cap {self.max_commits_per_pr})"
+                    if not split_reason and self.max_loc_per_pr > 0:
+                        diff_loc = self.git_manager.get_pr_diff_loc(pr_number)
+                        if diff_loc >= self.max_loc_per_pr:
+                            split_reason = f"LOC ({diff_loc} >= cap {self.max_loc_per_pr})"
+                    if split_reason:
+                        logger.info("PR #%d reached %s. Splitting.", pr_number, split_reason)
+                        pr_part, pr_number = self._split_pr_and_continue(spec_id_str, spec_title, pr_part)
                         chunk_summaries = []
 
                 context = EngineContext(

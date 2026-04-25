@@ -59,6 +59,172 @@ def _detect_platform(repo_path: Path) -> str:
     return "unknown"
 
 
+def _probe_git_credentials(repo_path: Path) -> dict:
+    """Inspect git push transport and credential agent status (spec 28 Phase 4.1).
+
+    Probes (each 15 s timeout, no shell, never raises):
+      * ``git config --get remote.origin.url``  → transport classification
+      * ``git config --get commit.gpgsign``      → whether commits will be signed
+      * ``ssh-add -l``                           → whether any SSH key is loaded
+      * ``gpg --list-secret-keys --with-colons`` → whether GPG agent has a usable key
+
+    Returns a dict with keys: ``transport`` (``"ssh"|"https"|"unknown"``),
+    ``gpg_signing`` (bool), ``ssh_key_loaded`` (bool), ``gpg_agent_warm`` (bool).
+    On any failure the conservative value is used so the orchestrator
+    surfaces an interactive prompt rather than letting an autonomous
+    cycle hang on an invisible passphrase prompt.
+    """
+    _T = 15
+    info: dict = {
+        "transport": "unknown",
+        "gpg_signing": False,
+        "ssh_key_loaded": False,
+        "gpg_agent_warm": False,
+    }
+
+    # ── Remote URL → transport ────────────────────────────────────────
+    try:
+        url_result = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=_T,
+        )
+        url = url_result.stdout.strip() if url_result.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, OSError):
+        url = ""
+
+    if url.startswith("git@") or url.startswith("ssh://"):
+        info["transport"] = "ssh"
+    elif url.startswith("https://") or url.startswith("http://"):
+        info["transport"] = "https"
+
+    # ── commit.gpgsign ────────────────────────────────────────────────
+    try:
+        sign_result = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "commit.gpgsign"],
+            capture_output=True,
+            text=True,
+            timeout=_T,
+        )
+        info["gpg_signing"] = sign_result.returncode == 0 and sign_result.stdout.strip().lower() == "true"
+    except (subprocess.TimeoutExpired, OSError):
+        info["gpg_signing"] = False
+
+    # ── SSH key probe (only meaningful for ssh transport) ────────────
+    if info["transport"] == "ssh":
+        try:
+            ssh_result = subprocess.run(
+                ["ssh-add", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=_T,
+            )
+            # ssh-add -l: rc 0 → keys loaded; rc 1 → no keys; rc 2 → no agent
+            info["ssh_key_loaded"] = ssh_result.returncode == 0 and bool(ssh_result.stdout.strip())
+        except (subprocess.TimeoutExpired, OSError):
+            info["ssh_key_loaded"] = False
+    else:
+        # Not an SSH push; key state is irrelevant — treat as "ready"
+        info["ssh_key_loaded"] = True
+
+    # ── GPG agent probe (only meaningful when signing) ────────────────
+    if info["gpg_signing"]:
+        try:
+            gpg_result = subprocess.run(
+                ["gpg", "--list-secret-keys", "--with-colons"],
+                capture_output=True,
+                text=True,
+                timeout=_T,
+            )
+            info["gpg_agent_warm"] = gpg_result.returncode == 0 and bool(gpg_result.stdout.strip())
+        except (subprocess.TimeoutExpired, OSError):
+            info["gpg_agent_warm"] = False
+    else:
+        info["gpg_agent_warm"] = True
+
+    return info
+
+
+def _ensure_git_credentials_unlocked(
+    repo_path: Path,
+    *,
+    skip: bool = False,
+    continuous: bool = False,
+) -> dict:
+    """Probe git credentials and prompt the user to unlock SSH/GPG agents
+    if needed (spec 28 Phase 4.2).
+
+    On a normal interactive run, locked credentials trigger an
+    interactive prompt (``ssh-add`` or a one-shot GPG sign) so the
+    autonomous loop never blocks waiting for an unseen passphrase. If
+    ``continuous`` is True, a still-locked agent after the prompt is a
+    hard error — the loop must not start.
+
+    When ``skip`` is True (``--skip-credential-probe``), returns a stub
+    ``{"skipped": True}`` dict and does nothing else — useful for CI.
+    """
+    _logger = logging.getLogger("codelicious")
+
+    if skip:
+        _logger.info("Credential probe skipped (--skip-credential-probe).")
+        return {"skipped": True}
+
+    info = _probe_git_credentials(repo_path)
+    _logger.info(
+        "Credential probe: transport=%s, gpg_signing=%s, ssh_key_loaded=%s, gpg_agent_warm=%s",
+        info["transport"],
+        info["gpg_signing"],
+        info["ssh_key_loaded"],
+        info["gpg_agent_warm"],
+    )
+
+    # ── SSH key prompt ───────────────────────────────────────────────
+    if info["transport"] == "ssh" and not info["ssh_key_loaded"]:
+        print("\n  SSH push transport detected, but no key is loaded in the agent.")
+        print("  Codelicious will run `ssh-add` so you can unlock your key now —")
+        print("  otherwise the autonomous loop would block on a passphrase prompt.\n")
+        try:
+            subprocess.run(["ssh-add"], timeout=300)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"Error: ssh-add failed or timed out: {e}", file=sys.stderr)
+            if continuous:
+                sys.exit(1)
+        info = _probe_git_credentials(repo_path)
+        if not info["ssh_key_loaded"]:
+            msg = "SSH key still not loaded after prompt. Push will hang on passphrase."
+            if continuous:
+                print(f"Error: {msg} Refusing to start --continuous mode.", file=sys.stderr)
+                sys.exit(1)
+            _logger.warning(msg)
+
+    # ── GPG agent prompt ─────────────────────────────────────────────
+    if info["gpg_signing"] and not info["gpg_agent_warm"]:
+        print("\n  commit.gpgsign=true, but the GPG agent has no usable key cached.")
+        print("  Codelicious will run a one-shot GPG sign so you can enter the passphrase now —")
+        print("  otherwise `git commit -S` would block mid-cycle.\n")
+        try:
+            subprocess.run(
+                ["gpg", "--clearsign", "--output", os.devnull],
+                input="codelicious-credential-warmup\n",
+                text=True,
+                timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"Error: gpg warm-up failed or timed out: {e}", file=sys.stderr)
+            if continuous:
+                sys.exit(1)
+        info = _probe_git_credentials(repo_path)
+        if not info["gpg_agent_warm"]:
+            msg = "GPG agent still cold after prompt. Signed commits will hang."
+            if continuous:
+                print(f"Error: {msg} Refusing to start --continuous mode.", file=sys.stderr)
+                sys.exit(1)
+            _logger.warning(msg)
+
+    return info
+
+
 def _run_auth_preflight(repo_path: Path, skip: bool = False) -> PreFlightResult:
     """Validate git hosting authentication at startup (spec-27 Phase 0.1).
 
@@ -346,14 +512,19 @@ def _parse_args(argv: list[str]) -> dict:
         --agent-timeout SECONDS
         --spec PATH              Build a single spec file
         --dry-run                Plan only, no writes
-        --max-commits-per-pr N   PR commit cap (default: 50, max: 100)
+        --max-commits-per-pr N   PR commit cap (default: 8, max: 100)
+        --max-loc-per-pr N       PR line-of-code cap (default: 400, range: 50-5000)
         --platform auto|github|gitlab
+        --continuous             Re-run discovery+build until no incomplete specs remain
+        --cycle-sleep-s SECS     Sleep between cycles in --continuous mode (default: 60)
     """
     _USAGE = (
         "Usage: codelicious <repo_path> [--engine ENGINE] [--model MODEL]\n"
         "                              [--agent-timeout SECS] [--spec PATH]\n"
         "                              [--dry-run] [--max-commits-per-pr N]\n"
+        "                              [--max-loc-per-pr N]\n"
         "                              [--platform auto|github|gitlab]\n"
+        "                              [--continuous] [--cycle-sleep-s SECS]\n"
         "                              [--parallel N] [--skip-auth-check]"
     )
 
@@ -368,8 +539,12 @@ def _parse_args(argv: list[str]) -> dict:
         "skip_auth_check": False,
         "dry_run": False,
         "spec": "",
-        "max_commits_per_pr": 50,
+        "max_commits_per_pr": 8,
+        "max_loc_per_pr": 400,
         "platform": "auto",
+        "continuous": False,
+        "cycle_sleep_s": 60,
+        "skip_credential_probe": False,
     }
 
     # Flags that take a value
@@ -381,16 +556,26 @@ def _parse_args(argv: list[str]) -> dict:
         "--parallel": "parallel",
         "--spec": "spec",
         "--max-commits-per-pr": "max_commits_per_pr",
+        "--max-loc-per-pr": "max_loc_per_pr",
         "--platform": "platform",
+        "--cycle-sleep-s": "cycle_sleep_s",
     }
 
     # Integer-valued flags that need int() conversion
-    _INT_KEYS = {"agent_timeout_s", "parallel", "max_commits_per_pr"}
+    _INT_KEYS = {
+        "agent_timeout_s",
+        "parallel",
+        "max_commits_per_pr",
+        "max_loc_per_pr",
+        "cycle_sleep_s",
+    }
 
     # Boolean flags that take no value
     _BOOL_FLAGS = {
         "--skip-auth-check": "skip_auth_check",
+        "--skip-credential-probe": "skip_credential_probe",
         "--dry-run": "dry_run",
+        "--continuous": "continuous",
     }
 
     i = 0
@@ -413,10 +598,14 @@ def _parse_args(argv: list[str]) -> dict:
             print("  --agent-timeout SECS   Max seconds per agent run (default: 1800)")
             print("  --spec PATH            Build a single spec file (skip discovery)")
             print("  --dry-run              Discover specs and print plan, no execution")
-            print("  --max-commits-per-pr N PR commit cap (default: 50, max: 100)")
+            print("  --max-commits-per-pr N PR commit cap (default: 8, max: 100)")
+            print("  --max-loc-per-pr N     PR line-of-code cap (default: 400, range: 50-5000)")
             print("  --platform PLATFORM    github, gitlab, or auto (default: auto)")
+            print("  --continuous           Re-run discovery+build until no incomplete specs remain")
+            print("  --cycle-sleep-s SECS   Sleep between cycles in --continuous mode (default: 60, 0-3600)")
             print("  --parallel N           Concurrent agentic loops, HF engine only (default: 1)")
             print("  --skip-auth-check      Skip gh/glab auth validation (for CI with GITHUB_TOKEN)")
+            print("  --skip-credential-probe Skip SSH/GPG credential probe (for headless/CI environments)")
             print()
             print("Environment variables:")
             print("  CODELICIOUS_ENGINE           Same as --engine (CLI flag takes precedence)")
@@ -457,6 +646,16 @@ def _parse_args(argv: list[str]) -> dict:
         print(f"Error: --max-commits-per-pr must be between 1 and 100, got {opts['max_commits_per_pr']}")
         sys.exit(2)
 
+    # Validate --max-loc-per-pr range
+    if not (50 <= opts["max_loc_per_pr"] <= 5000):
+        print(f"Error: --max-loc-per-pr must be between 50 and 5000, got {opts['max_loc_per_pr']}")
+        sys.exit(2)
+
+    # Validate --cycle-sleep-s range (spec 28 Phase 3.1)
+    if not (0 <= opts["cycle_sleep_s"] <= 3600):
+        print(f"Error: --cycle-sleep-s must be between 0 and 3600, got {opts['cycle_sleep_s']}")
+        sys.exit(2)
+
     # Validate --platform
     if opts["platform"] not in ("auto", "github", "gitlab"):
         print(f"Error: --platform must be auto, github, or gitlab, got '{opts['platform']}'")
@@ -492,6 +691,14 @@ def main():
         preflight.authenticated_user or "(none)",
         preflight.cli_tool or "(none)",
         preflight.skipped,
+    )
+
+    # 0.2: Credential pre-flight — probe SSH/GPG agents (spec 28 Phase 4.2)
+    skip_cred = opts.get("skip_credential_probe", False) or bool(os.environ.get("GITHUB_TOKEN"))
+    _ensure_git_credentials_unlocked(
+        repo_path,
+        skip=skip_cred,
+        continuous=opts.get("continuous", False),
     )
 
     # 1. Select build engine
@@ -558,39 +765,111 @@ def main():
             except OSError:
                 pass
         print()
-        print(f"[codelicious] Max commits per PR: {opts.get('max_commits_per_pr', 50)}")
+        print(f"[codelicious] Max commits per PR: {opts.get('max_commits_per_pr', 8)}")
+        print(f"[codelicious] Max LOC per PR: {opts.get('max_loc_per_pr', 400)}")
         print(f"[codelicious] Platform: {opts.get('platform', 'auto')}")
         print()
         sys.exit(0)
 
     initial_incomplete = len(incomplete_specs)
     build_start = time.monotonic()
-    build_deadline = build_start + opts["agent_timeout_s"]
+
+    # 5. Run the v2 chunk-based orchestration loop (spec-27 Phase 4.1)
+    from codelicious.orchestrator import V2Orchestrator
+
+    v2_orch = V2Orchestrator(
+        repo_path=repo_path,
+        git_manager=git_manager,
+        engine=engine,
+        max_commits_per_pr=opts.get("max_commits_per_pr", 8),
+        max_loc_per_pr=opts.get("max_loc_per_pr", 400),
+        model=opts.get("model", ""),
+    )
+
+    continuous = opts.get("continuous", False)
+    cycle_sleep_s = opts.get("cycle_sleep_s", 60)
 
     try:
-        # 5. Run the v2 chunk-based orchestration loop (spec-27 Phase 4.1)
-        from codelicious.orchestrator import V2Orchestrator
+        # First cycle uses the specs we already discovered above.
+        cycle = 1
+        cycle_specs = incomplete_specs
+        cycle_initial_count = initial_incomplete
+        last_result = None
+        # Continuous-mode aggregates (spec 28 Phase 3.2)
+        cycles_run = 0
+        total_cycle_elapsed = 0.0
 
-        v2_orch = V2Orchestrator(
-            repo_path=repo_path,
-            git_manager=git_manager,
-            engine=engine,
-            max_commits_per_pr=opts.get("max_commits_per_pr", 50),
-            model=opts.get("model", ""),
-        )
-        result = v2_orch.run(
-            specs=incomplete_specs,
-            deadline=build_deadline,
-            push_pr=True,
-        )
+        while True:
+            if continuous:
+                logger.info("[codelicious] Continuous cycle %d starting (%d spec(s)).", cycle, len(cycle_specs))
+            cycle_start = time.monotonic()
+            result = v2_orch.run(
+                specs=cycle_specs,
+                deadline=cycle_start + opts["agent_timeout_s"],
+                push_pr=True,
+            )
+            elapsed = time.monotonic() - cycle_start
+            _print_result(repo_path, result, elapsed, cycle_initial_count)
+            last_result = result
+            cycles_run += 1
+            total_cycle_elapsed += elapsed
 
-        elapsed = time.monotonic() - build_start
-        _print_result(repo_path, result, elapsed, initial_incomplete)
+            if result.success:
+                logger.info("Cycle %d completed successfully. %s", cycle, result.message)
+            else:
+                logger.error("Cycle %d failed: %s", cycle, result.message)
+                if not continuous:
+                    sys.exit(1)
 
-        if result.success:
-            logger.info("Build completed successfully. %s", result.message)
-        else:
-            logger.error("Build failed: %s", result.message)
+            if continuous:
+                logger.info(
+                    "[codelicious] Cycle %d summary: %s (cycle elapsed %.1fs).",
+                    cycle,
+                    result.message,
+                    elapsed,
+                )
+
+            if not continuous:
+                break
+
+            # Re-discover incomplete specs for next cycle
+            cycle += 1
+            all_specs = walk_for_specs(repo_path)
+            cycle_specs = discover_incomplete_specs(repo_path, all_specs=all_specs)
+            cycle_initial_count = len(cycle_specs)
+            if not cycle_specs:
+                logger.info("No specs remaining; exiting continuous mode.")
+                break
+
+            # Re-probe credentials before next cycle (spec 28 Phase 4.3).
+            # SSH agents and GPG caches can expire mid-run; if they have, prompt
+            # the user once now rather than letting the next push/commit hang.
+            if not skip_cred:
+                cycle_probe = _probe_git_credentials(repo_path)
+                ssh_expired = cycle_probe["transport"] == "ssh" and not cycle_probe["ssh_key_loaded"]
+                gpg_expired = cycle_probe["gpg_signing"] and not cycle_probe["gpg_agent_warm"]
+                if ssh_expired or gpg_expired:
+                    logger.warning(
+                        "[codelicious] Credential cache expired between cycles "
+                        "(ssh_expired=%s, gpg_expired=%s). Re-prompting.",
+                        ssh_expired,
+                        gpg_expired,
+                    )
+                    _ensure_git_credentials_unlocked(repo_path, skip=False, continuous=True)
+
+            if cycle_sleep_s > 0:
+                logger.info("[codelicious] Sleeping %ds before next cycle.", cycle_sleep_s)
+                time.sleep(cycle_sleep_s)
+
+        if continuous:
+            logger.info(
+                "[codelicious] Continuous mode finished: %d cycle(s), %.1fs total build time.",
+                cycles_run,
+                total_cycle_elapsed,
+            )
+
+        # In continuous mode, exit non-zero only if the final cycle failed.
+        if continuous and last_result is not None and not last_result.success:
             sys.exit(1)
 
     except KeyboardInterrupt:

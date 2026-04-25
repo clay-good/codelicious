@@ -127,7 +127,8 @@ Options:
   --agent-timeout SECS     Max seconds per agent run (default: 1800)
   --spec PATH              Build a single spec file (skip discovery)
   --dry-run                Discover specs and print plan, no execution
-  --max-commits-per-pr N   PR commit cap (default: 50, max: 100)
+  --max-commits-per-pr N   PR commit cap (default: 8, max: 100)
+  --max-loc-per-pr N       PR line-of-code cap (default: 400, range: 50-5000)
   --platform PLATFORM      github, gitlab, or auto (default: auto)
   --parallel N             Concurrent agentic loops, HF engine only (default: 1)
   --skip-auth-check        Skip gh/glab auth validation (for CI with GITHUB_TOKEN)
@@ -139,6 +140,39 @@ Environment variables:
   HF_TOKEN                 HuggingFace API token (required for HF engine)
   ANTHROPIC_API_KEY        Anthropic API key (used by Claude engine)
 ```
+
+### Bite-sized PR mode
+
+Codelicious produces small, focused, human-reviewable PRs by default:
+
+- **8 commits max per PR** (`--max-commits-per-pr`, range 1–100)
+- **400 LOC max per PR** (`--max-loc-per-pr`, range 50–5000)
+
+When either cap is hit, the current PR is transitioned to review and a
+continuation branch (`<branch>-part-2`, `-part-3`, ...) is opened so work
+keeps flowing. To opt out of the small-PR defaults, raise the caps:
+
+```
+codelicious . --max-commits-per-pr 50 --max-loc-per-pr 2000
+```
+
+### Continuous mode + credential pre-flight
+
+Use `--continuous` to keep producing PRs until every spec is complete:
+
+```
+codelicious . --continuous --cycle-sleep-s 60
+```
+
+At startup codelicious probes your push transport (`ssh` vs `https`) and
+`commit.gpgsign` setting. If your SSH agent has no key loaded — or your
+GPG agent has no cached passphrase — it will prompt you interactively
+once, *before* the autonomous loop begins, so subsequent `git push` /
+`git commit -S` calls do not silently hang on a passphrase prompt.
+Between cycles in `--continuous` mode codelicious re-probes the agents
+and re-prompts if their caches have expired, so a long-running session
+recovers cleanly. Pass `--skip-credential-probe` (or set `GITHUB_TOKEN`)
+in headless/CI environments where credentials are pre-provisioned.
 
 ---
 

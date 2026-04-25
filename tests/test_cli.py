@@ -17,9 +17,11 @@ import codelicious.cli as cli_module
 from codelicious.cli import (
     PreFlightResult,
     _detect_platform,
+    _ensure_git_credentials_unlocked,
     _parse_args,
     _print_banner,
     _print_result,
+    _probe_git_credentials,
     _run_auth_preflight,
     _validate_dependencies,
     main,
@@ -86,6 +88,7 @@ def mock_git_manager():
     manager.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
     manager.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
     manager.get_pr_commit_count.return_value = 0
+    manager.get_pr_diff_loc.return_value = 0
     manager.ensure_draft_pr_exists.return_value = 42
     manager.revert_chunk_changes.return_value = True
     return manager
@@ -836,11 +839,11 @@ class TestNewCLIFlags:
             opts = _parse_args(sys.argv)
         assert opts["max_commits_per_pr"] == 75
 
-    def test_max_commits_per_pr_default_50(self):
-        """max_commits_per_pr defaults to 50."""
+    def test_max_commits_per_pr_default_8(self):
+        """max_commits_per_pr defaults to 8 (spec 28: bite-sized PRs)."""
         with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
             opts = _parse_args(sys.argv)
-        assert opts["max_commits_per_pr"] == 50
+        assert opts["max_commits_per_pr"] == 8
 
     def test_max_commits_per_pr_over_100_exits(self):
         """--max-commits-per-pr > 100 exits with code 2."""
@@ -852,6 +855,38 @@ class TestNewCLIFlags:
     def test_max_commits_per_pr_zero_exits(self):
         """--max-commits-per-pr 0 exits with code 2."""
         with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "0"]):
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(sys.argv)
+            assert exc_info.value.code == 2
+
+    def test_continuous_default_false(self):
+        """continuous defaults to False (spec 28 Phase 3.1)."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["continuous"] is False
+        assert opts["cycle_sleep_s"] == 60
+
+    def test_continuous_flag_sets_true(self):
+        """--continuous sets the flag to True."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--continuous"]):
+            opts = _parse_args(sys.argv)
+        assert opts["continuous"] is True
+
+    def test_cycle_sleep_s_accepts_value(self):
+        """--cycle-sleep-s 30 sets cycle_sleep_s to 30."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--cycle-sleep-s", "30"]):
+            opts = _parse_args(sys.argv)
+        assert opts["cycle_sleep_s"] == 30
+
+    def test_cycle_sleep_s_zero_allowed(self):
+        """--cycle-sleep-s 0 is accepted (no sleep between cycles)."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--cycle-sleep-s", "0"]):
+            opts = _parse_args(sys.argv)
+        assert opts["cycle_sleep_s"] == 0
+
+    def test_cycle_sleep_s_over_3600_exits(self):
+        """--cycle-sleep-s > 3600 exits with code 2."""
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--cycle-sleep-s", "3601"]):
             with pytest.raises(SystemExit) as exc_info:
                 _parse_args(sys.argv)
             assert exc_info.value.code == 2
@@ -880,6 +915,235 @@ class TestNewCLIFlags:
             with pytest.raises(SystemExit) as exc_info:
                 _parse_args(sys.argv)
             assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# spec 28 Phase 4.1 — _probe_git_credentials
+# ---------------------------------------------------------------------------
+
+
+class TestProbeGitCredentials:
+    """spec 28 Phase 4.1: _probe_git_credentials inspects push transport + cred state."""
+
+    @staticmethod
+    def _result(rc: int, stdout: str = "", stderr: str = "") -> mock.MagicMock:
+        r = mock.MagicMock()
+        r.returncode = rc
+        r.stdout = stdout
+        r.stderr = stderr
+        return r
+
+    def test_https_repo_skips_ssh_probe(self, tmp_path: Path) -> None:
+        """HTTPS remote: ssh_key_loaded defaults to True (probe skipped)."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "https://github.com/o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(1, "")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["transport"] == "https"
+        assert info["ssh_key_loaded"] is True
+        assert info["gpg_signing"] is False
+        assert info["gpg_agent_warm"] is True
+
+    def test_ssh_repo_with_loaded_key(self, tmp_path: Path) -> None:
+        """SSH remote with a loaded key → ssh_key_loaded True."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "git@github.com:o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(1, "")
+            if args[0] == "ssh-add":
+                return cls._result(0, "2048 SHA256:abc /Users/x/.ssh/id_rsa (RSA)\n")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["transport"] == "ssh"
+        assert info["ssh_key_loaded"] is True
+
+    def test_ssh_repo_with_no_keys(self, tmp_path: Path) -> None:
+        """SSH remote with no agent keys → ssh_key_loaded False."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "ssh://git@github.com/o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(1, "")
+            if args[0] == "ssh-add":
+                return cls._result(1, "", "The agent has no identities.\n")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["transport"] == "ssh"
+        assert info["ssh_key_loaded"] is False
+
+    def test_gpgsign_true_with_warm_agent(self, tmp_path: Path) -> None:
+        """commit.gpgsign=true + secret keys present → gpg_agent_warm True."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "https://github.com/o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(0, "true\n")
+            if args[0] == "gpg":
+                return cls._result(0, "sec:u:4096:1:ABCDEF...\n")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["gpg_signing"] is True
+        assert info["gpg_agent_warm"] is True
+
+    def test_gpgsign_false_short_circuits_gpg_probe(self, tmp_path: Path) -> None:
+        """gpgsign=false → gpg_agent_warm True without invoking gpg."""
+        cls = self.__class__
+        gpg_called = {"n": 0}
+
+        def fake_run(args, **kw):
+            if args[0] == "gpg":
+                gpg_called["n"] += 1
+                return cls._result(0, "")
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "https://github.com/o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(0, "false\n")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["gpg_signing"] is False
+        assert info["gpg_agent_warm"] is True
+        assert gpg_called["n"] == 0
+
+    def test_subprocess_failures_use_conservative_defaults(self, tmp_path: Path) -> None:
+        """Any OSError/timeout falls back to conservative defaults (don't auto-skip prompts)."""
+        with mock.patch("subprocess.run", side_effect=OSError("nope")):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["transport"] == "unknown"
+        assert info["gpg_signing"] is False
+        # transport is unknown (not ssh) so ssh_key_loaded defaults True
+        assert info["ssh_key_loaded"] is True
+        # gpg_signing is False so gpg_agent_warm defaults True
+        assert info["gpg_agent_warm"] is True
+
+
+# ---------------------------------------------------------------------------
+# spec 28 Phase 4.2 — _ensure_git_credentials_unlocked
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureGitCredentialsUnlocked:
+    """spec 28 Phase 4.2: interactive prompt when SSH/GPG agents are locked."""
+
+    def test_skip_short_circuits(self, tmp_path: Path) -> None:
+        """skip=True returns immediately without probing or prompting."""
+        with mock.patch("codelicious.cli._probe_git_credentials") as probe:
+            result = _ensure_git_credentials_unlocked(tmp_path, skip=True)
+        probe.assert_not_called()
+        assert result == {"skipped": True}
+
+    def test_no_prompt_when_credentials_ready(self, tmp_path: Path) -> None:
+        """When probe reports everything ready, no subprocess prompt is run."""
+        ready = {
+            "transport": "https",
+            "gpg_signing": False,
+            "ssh_key_loaded": True,
+            "gpg_agent_warm": True,
+        }
+        with mock.patch("codelicious.cli._probe_git_credentials", return_value=ready):
+            with mock.patch("subprocess.run") as run:
+                _ensure_git_credentials_unlocked(tmp_path)
+        run.assert_not_called()
+
+    def test_ssh_locked_prompts_ssh_add(self, tmp_path: Path) -> None:
+        """SSH transport with no loaded key triggers ssh-add interactively."""
+        locked = {
+            "transport": "ssh",
+            "gpg_signing": False,
+            "ssh_key_loaded": False,
+            "gpg_agent_warm": True,
+        }
+        unlocked = {**locked, "ssh_key_loaded": True}
+        with mock.patch("codelicious.cli._probe_git_credentials", side_effect=[locked, unlocked]):
+            with mock.patch("subprocess.run") as run:
+                _ensure_git_credentials_unlocked(tmp_path)
+        # ssh-add should have been invoked exactly once
+        ssh_calls = [c for c in run.call_args_list if c.args and c.args[0] == ["ssh-add"]]
+        assert len(ssh_calls) == 1
+
+    def test_continuous_mode_exits_when_ssh_still_locked(self, tmp_path: Path) -> None:
+        """In --continuous mode, refuse to start if ssh key is still locked after prompt."""
+        locked = {
+            "transport": "ssh",
+            "gpg_signing": False,
+            "ssh_key_loaded": False,
+            "gpg_agent_warm": True,
+        }
+        with mock.patch("codelicious.cli._probe_git_credentials", side_effect=[locked, locked]):
+            with mock.patch("subprocess.run"):
+                with pytest.raises(SystemExit) as exc:
+                    _ensure_git_credentials_unlocked(tmp_path, continuous=True)
+        assert exc.value.code == 1
+
+    def test_gpg_cold_prompts_warmup(self, tmp_path: Path) -> None:
+        """gpgsign=true with cold agent triggers a one-shot gpg sign."""
+        cold = {
+            "transport": "https",
+            "gpg_signing": True,
+            "ssh_key_loaded": True,
+            "gpg_agent_warm": False,
+        }
+        warm = {**cold, "gpg_agent_warm": True}
+        with mock.patch("codelicious.cli._probe_git_credentials", side_effect=[cold, warm]):
+            with mock.patch("subprocess.run") as run:
+                _ensure_git_credentials_unlocked(tmp_path)
+        gpg_calls = [c for c in run.call_args_list if c.args and c.args[0] and c.args[0][0] == "gpg"]
+        assert len(gpg_calls) == 1
+
+    def test_continuous_mode_exits_when_gpg_still_cold(self, tmp_path: Path) -> None:
+        """In --continuous mode, refuse to start if GPG agent is still cold after prompt."""
+        cold = {
+            "transport": "https",
+            "gpg_signing": True,
+            "ssh_key_loaded": True,
+            "gpg_agent_warm": False,
+        }
+        with mock.patch("codelicious.cli._probe_git_credentials", side_effect=[cold, cold]):
+            with mock.patch("subprocess.run"):
+                with pytest.raises(SystemExit) as exc:
+                    _ensure_git_credentials_unlocked(tmp_path, continuous=True)
+        assert exc.value.code == 1
+
+
+class TestSkipCredentialProbeFlag:
+    """spec 28 Phase 4.2: --skip-credential-probe parses correctly."""
+
+    def test_default_false(self):
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["skip_credential_probe"] is False
+
+    def test_flag_sets_true(self):
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--skip-credential-probe"]):
+            opts = _parse_args(sys.argv)
+        assert opts["skip_credential_probe"] is True
 
 
 # ---------------------------------------------------------------------------

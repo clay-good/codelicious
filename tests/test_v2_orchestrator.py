@@ -94,6 +94,7 @@ class TestV2Orchestrator:
         git.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
         git.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
         git.get_pr_commit_count.return_value = 0
+        git.get_pr_diff_loc.return_value = 0
         git.ensure_draft_pr_exists.return_value = 42
         git.revert_chunk_changes.return_value = True
         git.repo_path = pathlib.Path("/tmp/repo")
@@ -225,3 +226,96 @@ class TestV2Orchestrator:
         # Both checkboxes should be marked (2 chunks, 2 successes)
         assert content.count("- [x]") == 2
         assert content.count("- [ ]") == 0
+
+
+class TestV2OrchestratorPrSplitCaps:
+    """spec 28 Phase 2.2/2.3: PR splits when commit cap OR LOC cap is reached."""
+
+    def _make_spec(self, tmp_path: pathlib.Path, content: str) -> pathlib.Path:
+        spec_dir = tmp_path / "docs" / "specs"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        spec = spec_dir / "01_feature.md"
+        spec.write_text(content, encoding="utf-8")
+        return spec
+
+    def _mock_engine(self) -> mock.MagicMock:
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+        engine.execute_chunk.return_value = ChunkResult(
+            success=True, files_modified=[pathlib.Path("src/a.py")], message="done"
+        )
+        engine.verify_chunk.return_value = ChunkResult(success=True, message="passed")
+        engine.fix_chunk.return_value = ChunkResult(success=True, message="fixed")
+        return engine
+
+    def _mock_git(self) -> mock.MagicMock:
+        git = mock.MagicMock()
+        git.assert_safe_branch = mock.MagicMock()
+        git.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
+        git.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
+        git.get_pr_commit_count.return_value = 0
+        git.get_pr_diff_loc.return_value = 0
+        git.ensure_draft_pr_exists.return_value = 42
+        git.revert_chunk_changes.return_value = True
+        git.create_continuation_branch.return_value = "codelicious/spec-01-part-2"
+        git.repo_path = pathlib.Path("/tmp/repo")
+        return git
+
+    def test_loc_cap_triggers_split(self, tmp_path: pathlib.Path) -> None:
+        """When diff LOC reaches the cap, a continuation PR is opened."""
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        # First check sees 0; second sees over the cap (triggers split before chunk 2)
+        git.get_pr_diff_loc.side_effect = [0, 500]
+
+        orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=100, max_loc_per_pr=400)
+        orch.run(specs=[spec], push_pr=True)
+
+        git.create_continuation_branch.assert_called_once()
+        # ensure_draft_pr_exists called once for initial PR + once for continuation
+        assert git.ensure_draft_pr_exists.call_count >= 2
+
+    def test_commit_cap_triggers_split(self, tmp_path: pathlib.Path) -> None:
+        """When commit count reaches the cap, a continuation PR is opened."""
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        git.get_pr_commit_count.side_effect = [0, 8]
+
+        orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=8, max_loc_per_pr=0)
+        orch.run(specs=[spec], push_pr=True)
+
+        git.create_continuation_branch.assert_called_once()
+
+    def test_both_caps_zero_disables_splitting(self, tmp_path: pathlib.Path) -> None:
+        """Caps set to 0 disable splitting even with large diffs."""
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        git.get_pr_diff_loc.return_value = 999_999
+        git.get_pr_commit_count.return_value = 999_999
+
+        orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=0, max_loc_per_pr=0)
+        orch.run(specs=[spec], push_pr=True)
+
+        git.create_continuation_branch.assert_not_called()
+        # get_pr_diff_loc / get_pr_commit_count must not even be polled when caps are 0
+        git.get_pr_diff_loc.assert_not_called()
+        git.get_pr_commit_count.assert_not_called()
+
+    def test_commit_cap_takes_precedence_over_loc_cap(self, tmp_path: pathlib.Path) -> None:
+        """When both caps would trigger, commit cap fires first (only one split per chunk)."""
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        git.get_pr_commit_count.side_effect = [0, 8]
+        git.get_pr_diff_loc.side_effect = [0, 500]
+
+        orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=8, max_loc_per_pr=400)
+        orch.run(specs=[spec], push_pr=True)
+
+        # Exactly one split (not two — commit cap short-circuits LOC check)
+        git.create_continuation_branch.assert_called_once()
+        # LOC check should not have been polled on the chunk that split via commits
+        assert git.get_pr_diff_loc.call_count == 1

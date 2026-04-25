@@ -1050,6 +1050,61 @@ class GitManager:
 
         return 0
 
+    def get_pr_diff_loc(self, pr_number: int) -> int:
+        """Total lines changed (additions + deletions) on the current branch
+        relative to its merge base with ``main`` or ``master`` (spec 28 Phase 2.1).
+
+        Used as an advisory cap: when the cumulative diff grows past a
+        threshold, the orchestrator splits the PR. ``pr_number`` is accepted
+        for symmetry with :meth:`get_pr_commit_count` and future use; the
+        current implementation operates on the local branch.
+
+        Returns 0 on any failure — the cap is advisory and must never raise.
+        """
+        del pr_number  # accepted for API symmetry; not currently needed
+        _DIFF_TIMEOUT_S = 30
+
+        if not self._has_git():
+            return 0
+
+        merge_base = ""
+        for base in ("main", "master"):
+            try:
+                merge_base = self._run_cmd(
+                    ["git", "merge-base", base, "HEAD"],
+                    timeout=_DIFF_TIMEOUT_S,
+                )
+                if merge_base:
+                    break
+            except RuntimeError:
+                continue
+
+        if not merge_base:
+            logger.warning("get_pr_diff_loc: could not determine merge base; returning 0.")
+            return 0
+
+        try:
+            shortstat = self._run_cmd(
+                ["git", "diff", "--shortstat", f"{merge_base}..HEAD"],
+                timeout=_DIFF_TIMEOUT_S,
+            )
+        except (RuntimeError, OSError) as e:
+            logger.warning("get_pr_diff_loc: git diff failed (%s); returning 0.", e)
+            return 0
+
+        if not shortstat.strip():
+            return 0
+
+        # Parse output like: " 3 files changed, 42 insertions(+), 7 deletions(-)"
+        total = 0
+        for match in re.finditer(r"(\d+)\s+(insertion|deletion)", shortstat):
+            try:
+                total += int(match.group(1))
+            except ValueError:
+                continue
+        logger.debug("PR diff LOC: %d (shortstat=%r)", total, shortstat.strip())
+        return total
+
     def revert_chunk_changes(self) -> bool:
         """Discard all unstaged and staged changes in the working tree (spec-27 Phase 2.2).
 

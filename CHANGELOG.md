@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Bite-sized PR defaults** (spec 28 Phase 1): `--max-commits-per-pr` default lowered from 50 to 8 so PRs stay human-reviewable at a glance.
+
+### Added
+
+- `--max-loc-per-pr` CLI flag (default 400, range 50–5000) — wired through to `V2Orchestrator`. Diff-cap split logic lands in spec 28 Phase 2.
+
 ## [1.0.0] - 2025-12-01
 
 ### Added

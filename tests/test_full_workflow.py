@@ -40,6 +40,7 @@ def _mock_git() -> mock.MagicMock:
     git.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
     git.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
     git.get_pr_commit_count.return_value = 0
+    git.get_pr_diff_loc.return_value = 0
     git.ensure_draft_pr_exists.return_value = 42
     git.revert_chunk_changes.return_value = True
     git.transition_pr_to_review.return_value = None
