@@ -1111,6 +1111,7 @@ class V2Orchestrator:
         max_commits_per_pr: int = 8,
         max_loc_per_pr: int = 400,
         model: str = "",
+        progress_callback: object = None,
     ) -> None:
         self.repo_path = pathlib.Path(repo_path).resolve()
         self.git_manager = git_manager
@@ -1118,6 +1119,25 @@ class V2Orchestrator:
         self.max_commits_per_pr = max_commits_per_pr
         self.max_loc_per_pr = max_loc_per_pr
         self.model = model
+        self.progress_callback = progress_callback
+
+    def _report(
+        self,
+        spec_idx: int,
+        total_specs: int,
+        chunk_idx: int,
+        total_chunks: int,
+        spec_name: str,
+        chunk_title: str,
+        state: str,
+    ) -> None:
+        cb = self.progress_callback
+        if cb is None:
+            return
+        try:
+            cb(spec_idx, total_specs, chunk_idx, total_chunks, spec_name, chunk_title, state)
+        except Exception as e:  # nosec B110
+            logger.debug("Progress callback raised: %s", e)
 
     def _split_pr_and_continue(
         self,
@@ -1170,7 +1190,8 @@ class V2Orchestrator:
         total_chunks_failed = 0
         specs_completed = 0
 
-        for spec in specs:
+        total_specs_in_run = len(specs)
+        for spec_run_idx, spec in enumerate(specs, 1):
             spec_id = re.match(r"^(\d+)", spec.stem)
             spec_id_str = spec_id.group(1) if spec_id else spec.stem
 
@@ -1192,20 +1213,14 @@ class V2Orchestrator:
             # ── Ensure branch ─────────────────────────────────────
             self.git_manager.assert_safe_branch(spec_name=str(spec), spec_id=spec_id_str)
 
-            # ── Ensure PR exists ──────────────────────────────────
+            # ── PR creation is deferred ───────────────────────────
+            # Creating a draft PR before any commits exist fails with
+            # "No commits between main and <branch>". We open the PR lazily
+            # after the first successful chunk commit+push below.
             spec_title = spec.stem.replace("_", " ")
             pr_number = None
             pr_part = 0
             chunk_summaries: list[str] = []
-
-            if push_pr:
-                push_result = self.git_manager.push_to_origin()
-                if push_result.success:
-                    pr_number = self.git_manager.ensure_draft_pr_exists(
-                        spec_id=spec_id_str,
-                        spec_summary=spec_title,
-                        chunk_summaries=[c.title for c in chunks[:20]],
-                    )
 
             # ── Build context ─────────────────────────────────────
             try:
@@ -1226,6 +1241,9 @@ class V2Orchestrator:
                     break
 
                 logger.info("[codelicious] Chunk %d/%d: %s — executing...", chunk_idx, total_chunks, chunk.title)
+                self._report(
+                    spec_run_idx, total_specs_in_run, chunk_idx, total_chunks, spec.name, chunk.title, "executing"
+                )
 
                 # PR size caps: split when commit count OR diff LOC exceeds limit
                 if push_pr and pr_number:
@@ -1320,6 +1338,17 @@ class V2Orchestrator:
                                     logger.info(
                                         "[codelicious] Chunk %d/%d: %s — pushed", chunk_idx, total_chunks, chunk.title
                                     )
+                                    # Lazily open the draft PR now that at least one
+                                    # commit exists between base and this branch.
+                                    if pr_number is None:
+                                        try:
+                                            pr_number = self.git_manager.ensure_draft_pr_exists(
+                                                spec_id=spec_id_str,
+                                                spec_summary=spec_title,
+                                                chunk_summaries=[c.title for c in chunks[:20]],
+                                            )
+                                        except Exception as e:  # nosec B110
+                                            logger.warning("Deferred PR creation failed: %s", e)
                                 else:
                                     logger.warning(
                                         "[codelicious] Push failed for chunk %d: %s",
@@ -1335,6 +1364,15 @@ class V2Orchestrator:
                     mark_chunk_complete(spec, chunk.title)
                     previous_chunks.append(f"{chunk.id}: {chunk.title}")
                     total_chunks_completed += 1
+                    self._report(
+                        spec_run_idx,
+                        total_specs_in_run,
+                        chunk_idx,
+                        total_chunks,
+                        spec.name,
+                        chunk.title,
+                        "committed",
+                    )
                 else:
                     logger.warning(
                         "[codelicious] Chunk %d/%d: %s — FAILED: %s",
@@ -1348,6 +1386,15 @@ class V2Orchestrator:
                     total_chunks_failed += 1
                     spec_chunks_failed += 1
                     all_chunks_ok = False
+                    self._report(
+                        spec_run_idx,
+                        total_specs_in_run,
+                        chunk_idx,
+                        total_chunks,
+                        spec.name,
+                        chunk.title,
+                        "failed",
+                    )
 
             # ── Transition PR to review ───────────────────────────
             if all_chunks_ok:

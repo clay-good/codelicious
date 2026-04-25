@@ -440,6 +440,42 @@ def _print_banner(repo_path: Path, engine_name: str, branch: str, all_specs, inc
     print()
 
 
+def _print_progress(
+    spec_idx: int,
+    total_specs: int,
+    chunk_idx: int,
+    total_chunks: int,
+    spec_name: str,
+    chunk_title: str,
+    state: str = "running",
+) -> None:
+    """Render a live progress bar for the current spec + chunk.
+
+    ``state`` is a short tag: running / committed / failed / verifying / done.
+    """
+    if total_specs <= 0:
+        return
+    spec_idx = max(0, min(spec_idx, total_specs))
+    total_chunks = max(1, total_chunks)
+    chunk_idx = max(0, min(chunk_idx, total_chunks))
+
+    spec_frac = (spec_idx - 1 + chunk_idx / total_chunks) / total_specs
+    spec_frac = max(0.0, min(1.0, spec_frac))
+
+    bar_width = 30
+    filled = int(bar_width * spec_frac)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    pct = spec_frac * 100
+
+    title = chunk_title if len(chunk_title) <= 60 else chunk_title[:57] + "..."
+    print(
+        f"  Progress: [{bar}] {pct:5.1f}%  "
+        f"spec {spec_idx}/{total_specs} · chunk {chunk_idx}/{total_chunks} "
+        f"· {state} · {spec_name}: {title}",
+        flush=True,
+    )
+
+
 def _print_result(repo_path: Path, result, elapsed: float, initial_incomplete: int):
     """Print a verbose completion summary."""
     # Re-scan to see what's left using the same logic as discover_incomplete_specs
@@ -784,6 +820,7 @@ def main():
         max_commits_per_pr=opts.get("max_commits_per_pr", 8),
         max_loc_per_pr=opts.get("max_loc_per_pr", 400),
         model=opts.get("model", ""),
+        progress_callback=_print_progress,
     )
 
     continuous = opts.get("continuous", False)

@@ -583,11 +583,11 @@ class TestProcessStreamEvent:
         assert sid == "sess-abc-123"
 
     def test_process_stream_event_unknown_type(self) -> None:
-        """Unknown event type returns empty strings for both session_id and display."""
+        """Unknown event types are surfaced verbosely (empty session, non-empty display)."""
         event = {"type": "unknown_event_xyz"}
         sid, display = _process_stream_event(event)
         assert sid == ""
-        assert display == ""
+        assert "unknown_event_xyz" in display
 
 
 # ---------------------------------------------------------------------------

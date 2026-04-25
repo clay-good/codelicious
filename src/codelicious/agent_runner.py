@@ -650,33 +650,145 @@ def run_agent(
     return result
 
 
-def _process_stream_event(event: dict) -> tuple[str, str]:
-    """Process a single stream-json event.
+_VERBOSE_TRUNCATE = 4000
 
-    Returns (session_id, display_text). Either or both may be empty.
+
+def _truncate(text: str, limit: int = _VERBOSE_TRUNCATE) -> str:
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"... [truncated {len(text) - limit} chars]"
+
+
+def _format_tool_input(tool_input: object) -> str:
+    if tool_input is None:
+        return ""
+    if isinstance(tool_input, str):
+        return _truncate(tool_input)
+    try:
+        return _truncate(json.dumps(tool_input, ensure_ascii=False, indent=2, default=str))
+    except (TypeError, ValueError):
+        return _truncate(repr(tool_input))
+
+
+def _format_tool_result(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return _truncate(content)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                else:
+                    parts.append(json.dumps(block, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(block))
+        return _truncate("\n".join(parts))
+    try:
+        return _truncate(json.dumps(content, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return _truncate(repr(content))
+
+
+def _process_stream_event(event: dict) -> tuple[str, str]:
+    """Process a single stream-json event into (session_id, display_text).
+
+    Surfaces FULL Claude Code CLI activity to the console: assistant text,
+    tool inputs, tool results, user messages, and system events. This is
+    intentionally verbose — the user wants to see exactly what the agent
+    is doing.
     """
     session_id = ""
-    display = ""
+    parts: list[str] = []
 
     event_type = event.get("type", "")
     logger.debug("Stream event: type=%s", event_type)
 
-    # Extract session ID from system init event
-    if event_type == "system" and event.get("subtype") == "init":
-        session_id = event.get("session_id", "")
+    if event_type == "system":
+        subtype = event.get("subtype", "")
+        if subtype == "init":
+            session_id = event.get("session_id", "")
+            model = event.get("model", "")
+            cwd = event.get("cwd", "")
+            tools = event.get("tools", [])
+            tools_str = ", ".join(tools) if isinstance(tools, list) else ""
+            parts.append(f"[system:init] session={session_id} model={model} cwd={cwd}")
+            if tools_str:
+                parts.append(f"[system:init] tools={tools_str}")
+        else:
+            parts.append(f"[system:{subtype}] {_truncate(json.dumps(event, default=str), 600)}")
 
-    # Extract assistant text and tool use from assistant events
-    if event_type == "assistant":
+    elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
-        parts = []
         for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif block.get("type") == "tool_use":
-                    tool_name = block.get("name", "unknown")
-                    parts.append(f"[tool_use: {tool_name}]")
-        display = "\n".join(parts)
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    parts.append(text)
+            elif btype == "thinking":
+                text = block.get("thinking", "")
+                if text:
+                    parts.append(f"[thinking]\n{_truncate(text)}")
+            elif btype == "tool_use":
+                tool_name = block.get("name", "unknown")
+                tool_id = block.get("id", "")
+                tool_input = _format_tool_input(block.get("input"))
+                header = f"[tool_use: {tool_name}] id={tool_id}"
+                parts.append(header if not tool_input else f"{header}\n{tool_input}")
+            else:
+                parts.append(f"[assistant:{btype}] {_truncate(json.dumps(block, default=str), 600)}")
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            parts.append(
+                f"[usage] in={usage.get('input_tokens', 0)} "
+                f"out={usage.get('output_tokens', 0)} "
+                f"cache_read={usage.get('cache_read_input_tokens', 0)} "
+                f"cache_create={usage.get('cache_creation_input_tokens', 0)}"
+            )
 
-    return session_id, display
+    elif event_type == "user":
+        message = event.get("message", {})
+        content = message.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+                if btype == "tool_result":
+                    tool_id = block.get("tool_use_id", "")
+                    is_error = block.get("is_error", False)
+                    body = _format_tool_result(block.get("content"))
+                    tag = "tool_result:error" if is_error else "tool_result"
+                    header = f"[{tag}] id={tool_id}"
+                    parts.append(header if not body else f"{header}\n{body}")
+                elif btype == "text":
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(f"[user]\n{_truncate(text)}")
+                else:
+                    parts.append(f"[user:{btype}] {_truncate(json.dumps(block, default=str), 600)}")
+        elif isinstance(content, str) and content:
+            parts.append(f"[user]\n{_truncate(content)}")
+
+    elif event_type == "result":
+        subtype = event.get("subtype", "")
+        duration_ms = event.get("duration_ms", 0)
+        num_turns = event.get("num_turns", 0)
+        cost = event.get("total_cost_usd", 0)
+        parts.append(
+            f"[result:{subtype}] turns={num_turns} duration={duration_ms}ms cost=${cost}"
+        )
+
+    else:
+        # Unknown event type — surface it raw so the user can see it.
+        parts.append(f"[{event_type or 'event'}] {_truncate(json.dumps(event, default=str), 600)}")
+
+    return session_id, "\n".join(p for p in parts if p)
