@@ -1089,6 +1089,38 @@ class Orchestrator:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+_INTERNAL_PREFIXES = (".codelicious/", ".codelicious")
+
+
+def _filter_internal_files(files: list[str]) -> list[str]:
+    """Drop codelicious-internal state files from a path list.
+
+    Internal cache/state under .codelicious/ should never be committed to
+    the user's repo or counted as agent-produced work.
+    """
+    return [f for f in files if not f.startswith(_INTERNAL_PREFIXES)]
+
+
+def _ensure_codelicious_gitignored(repo_path: pathlib.Path) -> None:
+    """Append `.codelicious/` to the repo's .gitignore if it isn't there.
+
+    Without this, the orchestrator's own cache/state can leak into the
+    user's diff and produce empty commits that look like progress.
+    """
+    gitignore = repo_path / ".gitignore"
+    needle = ".codelicious/"
+    try:
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        lines = {line.strip() for line in existing.splitlines()}
+        if needle in lines or ".codelicious" in lines:
+            return
+        new = existing + ("\n" if existing and not existing.endswith("\n") else "") + needle + "\n"
+        gitignore.write_text(new, encoding="utf-8")
+        logger.info("Added .codelicious/ to .gitignore")
+    except OSError as e:
+        logger.warning("Could not update .gitignore: %s", e)
+
+
 class V2Orchestrator:
     """Chunk-based orchestrator for codelicious v2 (spec-27 Phase 4.1).
 
@@ -1183,12 +1215,21 @@ class V2Orchestrator:
         """
         from codelicious.chunker import chunk_spec
         from codelicious.engines.base import EngineContext
+        from codelicious.scaffolder import scaffold_claude_dir
         from codelicious.spec_discovery import mark_chunk_complete
 
         start = time.monotonic()
         total_chunks_completed = 0
         total_chunks_failed = 0
         specs_completed = 0
+
+        # Scaffold .claude/ (deny list, agents) and ensure .codelicious/ is
+        # gitignored so internal state files never land in the user's PR.
+        try:
+            scaffold_claude_dir(self.repo_path)
+        except Exception as e:  # nosec B110
+            logger.warning("Failed to scaffold .claude/: %s", e)
+        _ensure_codelicious_gitignored(self.repo_path)
 
         total_specs_in_run = len(specs)
         for spec_run_idx, spec in enumerate(specs, 1):
@@ -1294,6 +1335,7 @@ class V2Orchestrator:
                 # ── Commit ────────────────────────────────────────
                 if result.success:
                     files_str = [str(f) for f in result.files_modified] if result.files_modified else []
+                    files_str = _filter_internal_files(files_str)
                     if not files_str:
                         # Collect any uncommitted changes
                         try:
@@ -1316,6 +1358,7 @@ class V2Orchestrator:
                             )
                             if untracked.returncode == 0 and untracked.stdout.strip():
                                 files_str.extend(untracked.stdout.strip().splitlines())
+                            files_str = _filter_internal_files(files_str)
                         except Exception:  # nosec B110
                             pass  # Untracked file listing is best-effort
 
@@ -1357,22 +1400,44 @@ class V2Orchestrator:
                                     )
                         else:
                             logger.info("[codelicious] Chunk %d/%d: nothing to commit.", chunk_idx, total_chunks)
+                            files_str = []  # treat commit-failure as no-op for checkbox gating
                     else:
-                        logger.info("[codelicious] Chunk %d/%d: no files changed.", chunk_idx, total_chunks)
+                        logger.warning(
+                            "[codelicious] Chunk %d/%d: agent reported success but produced no source-file "
+                            "changes. NOT marking checkbox complete — the spec task remains open.",
+                            chunk_idx,
+                            total_chunks,
+                        )
 
-                    # Mark checkbox complete in spec
-                    mark_chunk_complete(spec, chunk.title)
-                    previous_chunks.append(f"{chunk.id}: {chunk.title}")
-                    total_chunks_completed += 1
-                    self._report(
-                        spec_run_idx,
-                        total_specs_in_run,
-                        chunk_idx,
-                        total_chunks,
-                        spec.name,
-                        chunk.title,
-                        "committed",
-                    )
+                    # Only mark checkbox complete if real source-file work landed.
+                    # A vacuous "success" with no diff is treated as a soft failure
+                    # so the spec task stays open and the next run retries it.
+                    if files_str:
+                        mark_chunk_complete(spec, chunk.title)
+                        previous_chunks.append(f"{chunk.id}: {chunk.title}")
+                        total_chunks_completed += 1
+                        self._report(
+                            spec_run_idx,
+                            total_specs_in_run,
+                            chunk_idx,
+                            total_chunks,
+                            spec.name,
+                            chunk.title,
+                            "committed",
+                        )
+                    else:
+                        total_chunks_failed += 1
+                        spec_chunks_failed += 1
+                        all_chunks_ok = False
+                        self._report(
+                            spec_run_idx,
+                            total_specs_in_run,
+                            chunk_idx,
+                            total_chunks,
+                            spec.name,
+                            chunk.title,
+                            "failed",
+                        )
                 else:
                     logger.warning(
                         "[codelicious] Chunk %d/%d: %s — FAILED: %s",

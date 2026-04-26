@@ -389,6 +389,32 @@ def _validate_dependencies(engine_name: str) -> str:
     return engine_name
 
 
+def _attach_file_log_handler(repo_path: Path) -> None:
+    """Mirror all log output to ``.codelicious/logs/<timestamp>.log``.
+
+    Without persisted logs, post-mortem debugging of an autonomous run is
+    nearly impossible — terminal scrollback gets truncated and stream-json
+    agent output is too large to keep in memory.
+    """
+    import datetime as _dt
+    from codelicious.logger import SanitizingFilter
+
+    try:
+        log_dir = repo_path / ".codelicious" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = log_dir / f"build-{ts}.log"
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        fh.addFilter(SanitizingFilter())
+        logging.getLogger().addHandler(fh)
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("codelicious").info("Logging build to %s", log_path)
+    except OSError as e:
+        logging.getLogger("codelicious").warning("Could not attach file logger: %s", e)
+
+
 def setup_logger():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     # Attach SanitizingFilter to root logger and each of its handlers to ensure
@@ -712,6 +738,8 @@ def main():
     if not repo_path.is_dir():
         logger.error("Repository path %s does not exist or is not a directory.", repo_path)
         sys.exit(1)
+
+    _attach_file_log_handler(repo_path)
 
     logger.info("Starting Codelicious workflow in %s", repo_path)
 

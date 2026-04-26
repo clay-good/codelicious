@@ -740,6 +740,7 @@ class GitManager:
     ) -> int | None:
         """Search for an existing PR/MR by title prefix."""
         if platform == "gitlab":
+            # glab's --output json includes source_branch; no extra flag needed.
             cmd = ["glab", "mr", "list", "--state", "opened", "--output", "json"]
         else:
             cmd = ["gh", "pr", "list", "--state", "open", "--json", "number,title,headRefName", "--limit", "100"]
@@ -755,12 +756,26 @@ class GitManager:
                 prs = json.loads(result.stdout)
                 for pr in prs:
                     pr_title = pr.get("title", "")
-                    if pr_title.startswith(prefix):
-                        # GitLab uses "iid" for project-scoped MR numbers
-                        pr_num = pr.get("number") or pr.get("iid")
-                        if pr_num:
-                            logger.info("PR/MR #%s already exists for %s. Commits appended via push.", pr_num, prefix)
-                            return int(pr_num)
+                    if not pr_title.startswith(prefix):
+                        continue
+                    # An existing PR with the same spec-id prefix only counts as
+                    # the one for THIS branch if its headRefName matches.
+                    # Otherwise we'd return PR #1 (on auto-build) when called
+                    # from a continuation branch, and the orchestrator would
+                    # never open the part-N PR.
+                    pr_head = pr.get("headRefName") or pr.get("source_branch") or ""
+                    if pr_head and pr_head != current_branch:
+                        continue
+                    # GitLab uses "iid" for project-scoped MR numbers
+                    pr_num = pr.get("number") or pr.get("iid")
+                    if pr_num:
+                        logger.info(
+                            "PR/MR #%s already exists for %s on %s. Commits appended via push.",
+                            pr_num,
+                            prefix,
+                            current_branch,
+                        )
+                        return int(pr_num)
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
         return None

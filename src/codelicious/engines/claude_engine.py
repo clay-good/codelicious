@@ -134,7 +134,11 @@ class ClaudeCodeEngine(BuildEngine):
                 if r.returncode == 0 and r.stdout.strip():
                     all_names.update(r.stdout.strip().splitlines())
 
-            files_modified = [pathlib.Path(f) for f in sorted(all_names) if f]
+            files_modified = [
+                pathlib.Path(f)
+                for f in sorted(all_names)
+                if f and not f.startswith(".codelicious/") and f != ".codelicious"
+            ]
         except Exception as e:
             logger.warning("Could not collect modified files: %s", e)
             files_modified = []

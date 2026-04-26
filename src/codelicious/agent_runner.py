@@ -158,11 +158,14 @@ def _build_agent_command(
         "--output-format",
         "stream-json",
         "--verbose",
+        # bypassPermissions lets the agent edit/write/run shell commands inside
+        # the project working directory without per-action prompts. Codelicious
+        # runs headlessly, so an interactive prompt = a stuck build that produces
+        # no commits. Destructive ops are still blocked by the scaffolded
+        # .claude/settings.json deny list (git push --force, rm -rf /, etc.).
+        "--permission-mode",
+        "bypassPermissions",
     ]
-
-    # S20-P1-3: --dangerously-skip-permissions is no longer added under any
-    # circumstance.  The agent relies on the scoped .claude/settings.json
-    # allow-list scaffolded by scaffold_claude_dir() for its permissions.
 
     model = getattr(config, "model", "")
     if model:

@@ -266,8 +266,10 @@ class TestV2OrchestratorPrSplitCaps:
         spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
         engine = self._mock_engine()
         git = self._mock_git()
-        # First check sees 0; second sees over the cap (triggers split before chunk 2)
-        git.get_pr_diff_loc.side_effect = [0, 500]
+        # PR creation is deferred until after the first chunk pushes, so cap
+        # checks only run starting at chunk 2. A single 500-LOC reading on
+        # chunk 2 triggers the split.
+        git.get_pr_diff_loc.return_value = 500
 
         orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=100, max_loc_per_pr=400)
         orch.run(specs=[spec], push_pr=True)
@@ -281,7 +283,7 @@ class TestV2OrchestratorPrSplitCaps:
         spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
         engine = self._mock_engine()
         git = self._mock_git()
-        git.get_pr_commit_count.side_effect = [0, 8]
+        git.get_pr_commit_count.return_value = 8
 
         orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=8, max_loc_per_pr=0)
         orch.run(specs=[spec], push_pr=True)
@@ -309,8 +311,8 @@ class TestV2OrchestratorPrSplitCaps:
         spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
         engine = self._mock_engine()
         git = self._mock_git()
-        git.get_pr_commit_count.side_effect = [0, 8]
-        git.get_pr_diff_loc.side_effect = [0, 500]
+        git.get_pr_commit_count.return_value = 8
+        git.get_pr_diff_loc.return_value = 500
 
         orch = V2Orchestrator(tmp_path, git, engine, max_commits_per_pr=8, max_loc_per_pr=400)
         orch.run(specs=[spec], push_pr=True)
@@ -318,4 +320,4 @@ class TestV2OrchestratorPrSplitCaps:
         # Exactly one split (not two — commit cap short-circuits LOC check)
         git.create_continuation_branch.assert_called_once()
         # LOC check should not have been polled on the chunk that split via commits
-        assert git.get_pr_diff_loc.call_count == 1
+        assert git.get_pr_diff_loc.call_count == 0
