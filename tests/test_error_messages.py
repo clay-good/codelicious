@@ -65,7 +65,7 @@ class TestVerifierInstallGuidance:
         """EM-4: Lint FileNotFoundError message includes install guidance."""
         from codelicious.verifier import check_lint
 
-        with unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError):
+        with unittest.mock.patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError):
             result = check_lint(tmp_path, language="python", tool_available=True)
         assert "pip install ruff" in result.message
 
@@ -75,7 +75,7 @@ class TestVerifierInstallGuidance:
 
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        with unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError):
+        with unittest.mock.patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError):
             result = check_tests(tmp_path)
         assert "pip install pytest" in result.message
 
@@ -104,7 +104,7 @@ class TestVerifierInstallGuidance:
         """EM-4: Custom command not-found message includes guidance."""
         from codelicious.verifier import check_custom_command
 
-        with unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError):
+        with unittest.mock.patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError):
             result = check_custom_command(tmp_path, "nonexistent-tool --check")
         assert "not found" in result.message.lower()
 

@@ -102,8 +102,20 @@ class AuditLogger:
         # overhead of open/close on every tool call (Finding 18).
         # buffering=1 enables line-buffered mode so entries are flushed after
         # each newline without needing explicit flushes.
-        self._audit_fh = open(self.log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
-        self._security_fh = open(self.security_log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        # Degrade gracefully if the log directory is read-only or the disk is
+        # full — a partially-initialised AuditLogger that crashed mid-__init__
+        # would take the whole orchestrator down. Write methods already swallow
+        # exceptions, so None handles will surface as AttributeError → caught.
+        try:
+            self._audit_fh = open(self.log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        except OSError as exc:
+            console_logger.warning("AuditLogger: cannot open audit log %s: %s", self.log_file, exc)
+            self._audit_fh = None
+        try:
+            self._security_fh = open(self.security_log_file, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        except OSError as exc:
+            console_logger.warning("AuditLogger: cannot open security log %s: %s", self.security_log_file, exc)
+            self._security_fh = None
 
     def close(self) -> None:
         """Close the persistent file handles.
@@ -112,11 +124,13 @@ class AuditLogger:
         exit). After calling close(), further log calls will raise an error.
         """
         try:
-            self._audit_fh.close()
+            if self._audit_fh is not None:
+                self._audit_fh.close()
         except OSError:
             pass
         try:
-            self._security_fh.close()
+            if self._security_fh is not None:
+                self._security_fh.close()
         except OSError:
             pass
 

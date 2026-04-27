@@ -209,7 +209,7 @@ def test_check_tests_passing(tmp_path: pathlib.Path) -> None:
         stdout="1 passed\n",
         stderr="",
     )
-    with patch("codelicious.verifier.subprocess.run", return_value=passing):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=passing):
         result = check_tests(tmp_path)
     assert result.passed is True
     assert "passed" in result.message.lower()
@@ -228,7 +228,7 @@ def test_check_tests_failing(tmp_path: pathlib.Path) -> None:
         stdout="1 failed\n",
         stderr="",
     )
-    with patch("codelicious.verifier.subprocess.run", return_value=failing):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=failing):
         result = check_tests(tmp_path)
     assert result.passed is False
     assert "failed" in result.message.lower()
@@ -382,7 +382,7 @@ def test_check_tests_pytest_not_installed(tmp_path: pathlib.Path) -> None:
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     (tests_dir / "test_stub.py").write_text("def test_x(): pass\n", encoding="utf-8")
-    with patch("subprocess.run", side_effect=FileNotFoundError("pytest not found")):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError("pytest not found")):
         result = check_tests(tmp_path)
     assert result.passed is False
     assert "pytest not installed" in result.message
@@ -464,7 +464,7 @@ def test_check_lint_eslint_not_found(tmp_path: pathlib.Path) -> None:
     """check_lint for typescript returns skipped when eslint is not found."""
     from codelicious.verifier import check_lint
 
-    with patch("subprocess.run", side_effect=FileNotFoundError("eslint not found")):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError("eslint not found")):
         result = check_lint(tmp_path, "typescript", tool_available=True)
     assert result.passed is True
     assert "not found" in result.message.lower() or "skipped" in result.message.lower()
@@ -474,7 +474,7 @@ def test_check_lint_timeout(tmp_path: pathlib.Path) -> None:
     """check_lint returns passed=False when linter times out."""
     from codelicious.verifier import check_lint
 
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ruff", 60)):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=subprocess.TimeoutExpired("ruff", 60)):
         result = check_lint(tmp_path, "python", tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -486,7 +486,7 @@ def test_check_coverage_not_found(tmp_path: pathlib.Path) -> None:
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    with patch("subprocess.run", side_effect=FileNotFoundError("pytest")):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError("pytest")):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
     assert result.passed is True
     assert "skipped" in result.message.lower()
@@ -498,7 +498,7 @@ def test_check_coverage_timeout(tmp_path: pathlib.Path) -> None:
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pytest", 180)):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=subprocess.TimeoutExpired("pytest", 180)):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -508,7 +508,7 @@ def test_check_pip_audit_not_found(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns skipped when pip-audit is not found."""
     from codelicious.verifier import check_pip_audit
 
-    with patch("subprocess.run", side_effect=FileNotFoundError("pip-audit")):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError("pip-audit")):
         result = check_pip_audit(tmp_path, tool_available=True)
     assert result.passed is True
     assert "skipped" in result.message.lower()
@@ -518,7 +518,7 @@ def test_check_pip_audit_timeout(tmp_path: pathlib.Path) -> None:
     """check_pip_audit returns passed=False when it times out."""
     from codelicious.verifier import check_pip_audit
 
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=subprocess.TimeoutExpired("pip-audit", 120)):
         result = check_pip_audit(tmp_path, tool_available=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -529,7 +529,7 @@ def test_check_playwright_not_found(tmp_path: pathlib.Path) -> None:
     from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
-    with patch("subprocess.run", side_effect=FileNotFoundError("npx")):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=FileNotFoundError("npx")):
         result = check_playwright(tmp_path, tool_available=True, is_final_attempt=True)
     assert result.passed is True
     assert "skipped" in result.message.lower()
@@ -540,7 +540,7 @@ def test_check_playwright_timeout(tmp_path: pathlib.Path) -> None:
     from codelicious.verifier import check_playwright
 
     (tmp_path / "e2e").mkdir()
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("npx", 300)):
+    with patch("codelicious.verifier._run_with_pgroup_kill", side_effect=subprocess.TimeoutExpired("npx", 300)):
         result = check_playwright(tmp_path, tool_available=True, is_final_attempt=True)
     assert result.passed is False
     assert "timed out" in result.message.lower()
@@ -786,7 +786,7 @@ def test_check_syntax_oserror_triggers_subprocess_fallback(tmp_path: pathlib.Pat
     )
 
     with patch("codelicious.verifier.pathlib.Path.read_text", side_effect=OSError("permission denied")):
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result) as mock_run:
             result = check_syntax(tmp_path)
 
     # subprocess.run should have been called as the fallback
@@ -812,7 +812,7 @@ def test_check_syntax_oserror_subprocess_reports_error(tmp_path: pathlib.Path) -
     )
 
     with patch("codelicious.verifier.pathlib.Path.read_text", side_effect=OSError("permission denied")):
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
             result = check_syntax(tmp_path)
 
     assert result.passed is False
@@ -868,7 +868,7 @@ def test_check_lint_violations_python(tmp_path: pathlib.Path) -> None:
         stdout="src/foo.py:10:1: E501 Line too long\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_lint(tmp_path, "python", tool_available=True)
 
     assert result.passed is False
@@ -887,7 +887,7 @@ def test_check_lint_violations_typescript(tmp_path: pathlib.Path) -> None:
         stdout="src/index.ts: 3:1  error  'x' is not defined  no-undef\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_lint(tmp_path, "typescript", tool_available=True)
 
     assert result.passed is False
@@ -905,7 +905,7 @@ def test_check_lint_passes_on_zero_exit(tmp_path: pathlib.Path) -> None:
         stdout="All checks passed.\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_lint(tmp_path, "python", tool_available=True)
 
     assert result.passed is True
@@ -941,7 +941,7 @@ def test_check_coverage_passes_with_pct_extraction(tmp_path: pathlib.Path) -> No
         stdout=cov_output,
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
 
     assert result.passed is True
@@ -973,7 +973,7 @@ def test_check_coverage_fails_with_pct_extraction(tmp_path: pathlib.Path) -> Non
         stdout=cov_output,
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
 
     assert result.passed is False
@@ -995,7 +995,7 @@ def test_check_coverage_fails_without_pct_in_output(tmp_path: pathlib.Path) -> N
         stdout="some output without a TOTAL line\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
 
     assert result.passed is False
@@ -1019,7 +1019,7 @@ def test_check_pip_audit_no_cves(tmp_path: pathlib.Path) -> None:
         stdout="[]\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_pip_audit(tmp_path, tool_available=True)
 
     assert result.passed is True
@@ -1040,7 +1040,7 @@ def test_check_pip_audit_vulnerabilities_found(tmp_path: pathlib.Path) -> None:
         stdout=vuln_json,
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_pip_audit(tmp_path, tool_available=True)
 
     assert result.passed is False
@@ -1222,7 +1222,7 @@ def test_verify_coverage_threshold_branch(tmp_path: pathlib.Path) -> None:
     )
     mock_result = _sp.CompletedProcess(args=[], returncode=0, stdout=cov_output, stderr="")
 
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         with patch("codelicious.verifier._pytest_cov_available", return_value=True):
             result = verify(
                 tmp_path,
@@ -1398,7 +1398,7 @@ def test_check_lint_nonzero_exit_returns_failed(tmp_path: pathlib.Path) -> None:
         stdout="src/app.py:5:1: E302 Expected 2 blank lines\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_lint(tmp_path, "python", tool_available=True)
 
     assert result.passed is False
@@ -1424,7 +1424,7 @@ def test_check_coverage_regex_pass_at_threshold(tmp_path: pathlib.Path) -> None:
         "1 passed in 0.10s\n"
     )
     mock_result = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout=cov_output, stderr="")
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_coverage(tmp_path, language="python", threshold=50, tool_available=True)
 
     assert result.passed is True
@@ -1445,7 +1445,7 @@ def test_check_coverage_regex_fail_below_threshold(tmp_path: pathlib.Path) -> No
         "1 passed in 0.10s\n"
     )
     mock_result = subprocess.CompletedProcess(args=["pytest"], returncode=1, stdout=cov_output, stderr="")
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_coverage(tmp_path, language="python", threshold=80, tool_available=True)
 
     assert result.passed is False
@@ -1469,7 +1469,7 @@ def test_check_pip_audit_returncode_zero_passes(tmp_path: pathlib.Path) -> None:
         stdout="[]\n",
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_pip_audit(tmp_path, tool_available=True)
 
     assert result.passed is True
@@ -1488,7 +1488,7 @@ def test_check_pip_audit_returncode_one_fails(tmp_path: pathlib.Path) -> None:
         stdout=vuln_output,
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         result = check_pip_audit(tmp_path, tool_available=True)
 
     assert result.passed is False
@@ -1563,7 +1563,7 @@ def test_verify_coverage_check_present_when_threshold_nonzero(tmp_path: pathlib.
     cov_output = "TOTAL   1   0   100%\n1 passed in 0.01s\n"
     mock_result = _sp.CompletedProcess(args=[], returncode=0, stdout=cov_output, stderr="")
 
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result):
         with patch("codelicious.verifier._pytest_cov_available", return_value=True):
             result = verify(
                 tmp_path,
@@ -1763,7 +1763,7 @@ class TestBuildSummaryAndCoverage:
 
         mock_result = _sp.CompletedProcess(args=[], returncode=0, stdout="90%", stderr="")
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("codelicious.verifier._run_with_pgroup_kill", return_value=mock_result) as mock_run:
             with patch("codelicious.verifier._pytest_cov_available", return_value=True):
                 check_coverage(tmp_path, "python", 80, True, timeout=42)
 

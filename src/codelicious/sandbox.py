@@ -405,7 +405,16 @@ class Sandbox:
                     import errno
 
                     if exc.errno == errno.EXDEV:
-                        # Cross-filesystem move: fall back to shutil.move
+                        # Cross-filesystem move: fall back to shutil.move.
+                        # Re-check for symlink first — shutil.move follows
+                        # symlinks at the destination, so without this guard a
+                        # symlink swapped in after the O_NOFOLLOW check could
+                        # still redirect the write outside the sandbox.
+                        if os.path.islink(str(resolved)):
+                            raise PathTraversalError(
+                                "Target became a symlink before EXDEV fallback",
+                                path=relative_path,
+                            ) from exc
                         logger.warning(
                             "Cross-filesystem write detected for %s; using shutil.move fallback",
                             relative_path,

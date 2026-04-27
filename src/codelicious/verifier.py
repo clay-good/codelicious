@@ -22,6 +22,37 @@ from codelicious.security_constants import BLOCKED_METACHARACTERS, DENIED_COMMAN
 
 logger = logging.getLogger("codelicious.verifier")
 
+
+def _run_with_pgroup_kill(cmd, *, timeout, **kwargs):
+    """subprocess.run wrapper that reliably kills the whole process group on timeout.
+
+    subprocess.run's TimeoutExpired exposes no .pid, so the previous pattern
+    (os.killpg(os.getpgid(e.pid), ...)) silently AttributeError'd, leaking any
+    grandchildren that the immediate child had spawned in its new session.
+    Using Popen directly preserves the pid for killpg.
+    """
+    kwargs.setdefault("start_new_session", True)
+    # Popen has no capture_output convenience — translate to PIPE pair so
+    # callers can keep the subprocess.run-style signature.
+    if kwargs.pop("capture_output", False):
+        kwargs.setdefault("stdout", subprocess.PIPE)
+        kwargs.setdefault("stderr", subprocess.PIPE)
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = b"", b""
+        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr) from exc
+
+
 __all__ = [
     "CheckResult",
     "VerificationResult",
@@ -241,7 +272,7 @@ def check_lint(
     logger.debug("Lint command: %s", cmd)
 
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             cmd,
             capture_output=True,
             text=True,
@@ -258,11 +289,7 @@ def check_lint(
             message=f"Lint skipped: {cmd[0]} not found. "
             f"Install with: {_INSTALL_GUIDANCE.get(cmd[0], 'see documentation')}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="lint",
             passed=False,
@@ -322,7 +349,7 @@ def check_coverage(
         )
 
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             [
                 sys.executable,
                 "-m",
@@ -348,15 +375,11 @@ def check_coverage(
             passed=True,
             message=f"Coverage skipped: pytest not installed. Install with: {_INSTALL_GUIDANCE['pytest']}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="coverage",
             passed=False,
-            message="Coverage check timed out after 180s",
+            message=f"Coverage check timed out after {timeout}s",
         )
 
     output = _truncate(result.stdout + "\n" + result.stderr)
@@ -402,7 +425,7 @@ def check_pip_audit(
         )
 
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             ["pip-audit", "--format=json", "-q"],
             capture_output=True,
             text=True,
@@ -418,11 +441,7 @@ def check_pip_audit(
             passed=True,
             message=f"pip-audit skipped: not found. Install with: {_INSTALL_GUIDANCE['pip-audit']}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="pip_audit",
             passed=False,
@@ -481,7 +500,7 @@ def check_playwright(
         )
 
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             [sys.executable, "-m", "playwright", "test", "e2e/", "--reporter=line"],
             capture_output=True,
             text=True,
@@ -497,11 +516,7 @@ def check_playwright(
             passed=True,
             message=f"Playwright skipped: playwright not found. Install with: {_INSTALL_GUIDANCE['playwright']}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="playwright",
             passed=False,
@@ -610,7 +625,7 @@ def check_syntax(
             remaining_agg = aggregate_timeout - elapsed_agg
             file_timeout = min(_SYNTAX_PER_FILE_TIMEOUT_S, remaining_agg) if remaining_agg > 0 else 0.1
             try:
-                result = subprocess.run(
+                result = _run_with_pgroup_kill(
                     [sys.executable, "-m", "py_compile", str(py_file)],
                     capture_output=True,
                     text=True,
@@ -629,11 +644,7 @@ def check_syntax(
                     passed=False,
                     message="Python interpreter not found",
                 )
-            except subprocess.TimeoutExpired as e:
-                try:
-                    os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+            except subprocess.TimeoutExpired:
                 errors.append(f"{py_file.name}: compilation timed out")
             continue
 
@@ -678,7 +689,7 @@ def check_tests(project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S) -> Ch
     cmd = [sys.executable, "-m", "pytest", str(tests_dir), "-v", "--tb=short"]
     logger.debug("Test command: %s", cmd)
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             cmd,
             capture_output=True,
             text=True,
@@ -694,11 +705,7 @@ def check_tests(project_dir: pathlib.Path, timeout: int = _TEST_TIMEOUT_S) -> Ch
             passed=False,
             message=f"pytest not installed; cannot run tests. Install with: {_INSTALL_GUIDANCE['pytest']}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="tests",
             passed=False,
@@ -1120,7 +1127,7 @@ def check_custom_command(
         logger.info("Custom command validation: cmd=%s, basename=empty", command)
 
     try:
-        result = subprocess.run(
+        result = _run_with_pgroup_kill(
             args,
             capture_output=True,
             text=True,
@@ -1138,11 +1145,7 @@ def check_custom_command(
             message=f"Command not found: {args[0]}. "
             f"Install with: {_INSTALL_GUIDANCE.get(args[0], 'check your PATH or install the tool')}",
         )
-    except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(os.getpgid(e.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
+    except subprocess.TimeoutExpired:
         return CheckResult(
             name="custom",
             passed=False,
