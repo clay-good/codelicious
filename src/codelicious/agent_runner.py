@@ -786,9 +786,7 @@ def _process_stream_event(event: dict) -> tuple[str, str]:
         duration_ms = event.get("duration_ms", 0)
         num_turns = event.get("num_turns", 0)
         cost = event.get("total_cost_usd", 0)
-        parts.append(
-            f"[result:{subtype}] turns={num_turns} duration={duration_ms}ms cost=${cost}"
-        )
+        parts.append(f"[result:{subtype}] turns={num_turns} duration={duration_ms}ms cost=${cost}")
 
     else:
         # Unknown event type — surface it raw so the user can see it.

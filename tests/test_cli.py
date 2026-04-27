@@ -53,7 +53,7 @@ def mock_successful_engine():
         elapsed_s=10.5,
     )
     # v2 orchestrator chunk methods
-    engine.execute_chunk.return_value = ChunkResult(success=True, files_modified=[], message="done")
+    engine.execute_chunk.return_value = ChunkResult(success=True, files_modified=["src/foo.py"], message="done")
     engine.verify_chunk.return_value = ChunkResult(success=True, message="passed")
     engine.fix_chunk.return_value = ChunkResult(success=True, message="fixed")
     return engine

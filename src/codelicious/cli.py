@@ -397,6 +397,7 @@ def _attach_file_log_handler(repo_path: Path) -> None:
     agent output is too large to keep in memory.
     """
     import datetime as _dt
+
     from codelicious.logger import SanitizingFilter
 
     try:
