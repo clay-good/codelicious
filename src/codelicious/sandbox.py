@@ -380,6 +380,23 @@ class Sandbox:
                     fd.flush()
                     os.fsync(fd.fileno())
 
+                # O_NOFOLLOW re-validation: closes the TOCTOU gap between the
+                # islink() check above and os.replace below — if the target was
+                # swapped to a symlink in the interim, opening with O_NOFOLLOW
+                # raises ELOOP and we abort.
+                if os.path.exists(str(resolved)) and hasattr(os, "O_NOFOLLOW"):
+                    import errno as _errno
+
+                    try:
+                        _fd_check = os.open(str(resolved), os.O_RDONLY | os.O_NOFOLLOW)
+                        os.close(_fd_check)
+                    except OSError as _exc:
+                        if _exc.errno == _errno.ELOOP:
+                            raise PathTraversalError(
+                                "Target is a symlink (O_NOFOLLOW check failed)",
+                                path=relative_path,
+                            ) from _exc
+
                 # Now perform the atomic replace
                 logger.debug("Atomic write: temp -> target")
                 try:
