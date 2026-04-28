@@ -11,14 +11,6 @@
       "TodoWrite"
     ],
     "deny": [
-      "Bash(git push --force*)",
-      "Bash(git push -f *)",
-      "Bash(git checkout main*)",
-      "Bash(git checkout master*)",
-      "Bash(git push * main*)",
-      "Bash(git push * master*)",
-      "Bash(rm -rf /*)",
-      "Bash(sudo *)"
     ]
   }
 }

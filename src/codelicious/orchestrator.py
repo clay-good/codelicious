@@ -1232,7 +1232,11 @@ class V2Orchestrator:
         _ensure_codelicious_gitignored(self.repo_path)
 
         total_specs_in_run = len(specs)
+        rate_limited_abort = False
         for spec_run_idx, spec in enumerate(specs, 1):
+            if rate_limited_abort:
+                logger.warning("[codelicious] Aborting remaining specs due to upstream rate limit.")
+                break
             spec_id = re.match(r"^(\d+)", spec.stem)
             spec_id_str = spec_id.group(1) if spec_id else spec.stem
 
@@ -1460,6 +1464,16 @@ class V2Orchestrator:
                         chunk.title,
                         "failed",
                     )
+                    # Upstream rate-limit / quota exhaustion is not recoverable
+                    # by retrying the next chunk — every subsequent agent call
+                    # will fail the same way. Abort the run so we don't burn
+                    # through the entire spec list spamming the API.
+                    if result.message and "Rate limited" in result.message:
+                        logger.error(
+                            "[codelicious] Aborting build: Claude CLI is rate limited. Re-run after the quota resets."
+                        )
+                        rate_limited_abort = True
+                        break
 
             # ── Transition PR to review ───────────────────────────
             if all_chunks_ok:
