@@ -1141,7 +1141,7 @@ class V2Orchestrator:
         git_manager: object,
         engine: object,
         max_commits_per_pr: int = 8,
-        max_loc_per_pr: int = 400,
+        max_loc_per_pr: int = 250,
         model: str = "",
         progress_callback: object = None,
     ) -> None:

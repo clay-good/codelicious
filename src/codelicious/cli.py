@@ -411,6 +411,13 @@ def _attach_file_log_handler(repo_path: Path) -> None:
         fh.addFilter(SanitizingFilter())
         logging.getLogger().addHandler(fh)
         logging.getLogger().setLevel(logging.DEBUG)
+        latest = log_dir / "latest.log"
+        try:
+            if latest.is_symlink() or latest.exists():
+                latest.unlink()
+            latest.symlink_to(log_path.name)
+        except OSError:
+            pass
         logging.getLogger("codelicious").info("Logging build to %s", log_path)
     except OSError as e:
         logging.getLogger("codelicious").warning("Could not attach file logger: %s", e)
@@ -576,7 +583,7 @@ def _parse_args(argv: list[str]) -> dict:
         --spec PATH              Build a single spec file
         --dry-run                Plan only, no writes
         --max-commits-per-pr N   PR commit cap (default: 8, max: 100)
-        --max-loc-per-pr N       PR line-of-code cap (default: 400, range: 50-5000)
+        --max-loc-per-pr N       PR line-of-code cap (default: 250, range: 50-5000)
         --platform auto|github|gitlab
         --continuous             Re-run discovery+build until no incomplete specs remain
         --cycle-sleep-s SECS     Sleep between cycles in --continuous mode (default: 60)
@@ -603,7 +610,7 @@ def _parse_args(argv: list[str]) -> dict:
         "dry_run": False,
         "spec": "",
         "max_commits_per_pr": 8,
-        "max_loc_per_pr": 400,
+        "max_loc_per_pr": 250,
         "platform": "auto",
         "continuous": False,
         "cycle_sleep_s": 60,
@@ -662,7 +669,7 @@ def _parse_args(argv: list[str]) -> dict:
             print("  --spec PATH            Build a single spec file (skip discovery)")
             print("  --dry-run              Discover specs and print plan, no execution")
             print("  --max-commits-per-pr N PR commit cap (default: 8, max: 100)")
-            print("  --max-loc-per-pr N     PR line-of-code cap (default: 400, range: 50-5000)")
+            print("  --max-loc-per-pr N     PR line-of-code cap (default: 250, range: 50-5000)")
             print("  --platform PLATFORM    github, gitlab, or auto (default: auto)")
             print("  --continuous           Re-run discovery+build until no incomplete specs remain")
             print("  --cycle-sleep-s SECS   Sleep between cycles in --continuous mode (default: 60, 0-3600)")
@@ -831,7 +838,7 @@ def main():
                 pass
         print()
         print(f"[codelicious] Max commits per PR: {opts.get('max_commits_per_pr', 8)}")
-        print(f"[codelicious] Max LOC per PR: {opts.get('max_loc_per_pr', 400)}")
+        print(f"[codelicious] Max LOC per PR: {opts.get('max_loc_per_pr', 250)}")
         print(f"[codelicious] Platform: {opts.get('platform', 'auto')}")
         print()
         sys.exit(0)
@@ -847,7 +854,7 @@ def main():
         git_manager=git_manager,
         engine=engine,
         max_commits_per_pr=opts.get("max_commits_per_pr", 8),
-        max_loc_per_pr=opts.get("max_loc_per_pr", 400),
+        max_loc_per_pr=opts.get("max_loc_per_pr", 250),
         model=opts.get("model", ""),
         progress_callback=_print_progress,
     )
