@@ -418,13 +418,17 @@ def enforce_token_budget(
     that depth a WARNING is logged and the chunk is dispatched anyway —
     failing fast at the engine boundary is preferable to dropping work.
     """
+    import collections
+
     budget = _resolve_token_budget(engines)
     out: list[WorkChunk] = []
     # Each entry: (chunk, depth, suffix_seed). suffix_seed cycles ``b → c → ...``.
-    stack: list[tuple[WorkChunk, int, int]] = [(c, 0, 0) for c in chunks]
+    # ``deque.popleft`` is O(1); list.pop(0) was O(n) and could quadratic on
+    # 100 chunks.
+    queue: collections.deque[tuple[WorkChunk, int, int]] = collections.deque((c, 0, 0) for c in chunks)
     suffix_alphabet = "bcdefghij"
-    while stack:
-        chunk, depth, seed = stack.pop(0)
+    while queue:
+        chunk, depth, seed = queue.popleft()
         tokens = _estimate_chunk_tokens(chunk, repo)
         if tokens <= budget:
             out.append(chunk)
@@ -440,9 +444,11 @@ def enforce_token_budget(
             continue
         suffix = suffix_alphabet[min(seed, len(suffix_alphabet) - 1)]
         head, tail = _split_chunk_in_half(chunk, suffix)
-        # Push back onto the front so dependent ordering is preserved.
-        stack.insert(0, (head, depth + 1, seed + 1))
-        stack.insert(1, (tail, depth + 1, seed + 1))
+        # Re-process the split halves before any other unsplit chunks so the
+        # tail of an over-budget chunk is examined before the next original
+        # chunk's first half — preserves dependency order across recursion.
+        queue.appendleft((tail, depth + 1, seed + 1))
+        queue.appendleft((head, depth + 1, seed + 1))
     return out
 
 

@@ -146,8 +146,28 @@ class AuditLogger:
 
         try:
             import fcntl
+            import time as _time
 
-            fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+            # Non-blocking with bounded retry: if a peer process holds the lock
+            # during a slow rotation, we don't want the orchestrator's main
+            # loop to block indefinitely. After ~30 ms of contention give up
+            # and proceed with intra-process locking only.
+            acquired = False
+            for _ in range(3):
+                try:
+                    fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError:
+                    _time.sleep(0.01)
+            if not acquired:
+                if not self._cross_process_lock_warned:
+                    console_logger.warning(
+                        "AuditLogger: could not acquire cross-process audit lock; proceeding without it"
+                    )
+                    self._cross_process_lock_warned = True
+                yield
+                return
             try:
                 yield
             finally:

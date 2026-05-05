@@ -78,7 +78,11 @@ def _write_postmortem(
     if log_path and log_path.is_file():
         try:
             lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            log_tail = "\n".join(lines[-50:])
+            # Defuse any backtick fences that would prematurely close our
+            # rendered code block in the postmortem markdown. Zero-width
+            # joiner between the backticks renders identically in most
+            # markdown viewers but no longer matches the closing-fence regex.
+            log_tail = "\n".join(line.replace("```", "`‍``") for line in lines[-50:])
         except OSError:
             log_tail = ""
 
@@ -104,7 +108,10 @@ def _write_postmortem(
     if failed_titles:
         body.append("### Failed chunks")
         for title in failed_titles[:25]:
-            body.append(f"- {title}")
+            # Strip newlines and backticks so a hostile ledger entry can't
+            # break out of the markdown list or inject code fences.
+            safe = title.replace("\n", " ").replace("\r", " ").replace("`", "'")
+            body.append(f"- {safe}")
         body.append("")
     if log_tail:
         body.append("## Log tail (last 50 lines)")
@@ -197,7 +204,18 @@ def _run_lock(repo_root: Path):
         os.write(fd, f"{os.getpid()}\n".encode())
         os.fsync(fd)
 
+        # Idempotent release: ``main()`` enters the context manager and never
+        # calls ``__exit__`` until the process is exiting, so atexit handles the
+        # cleanup on the SystemExit path. The ``finally`` below catches the
+        # generator-exit / GeneratorExit case. Both paths must be safe to call
+        # multiple times — otherwise we close already-closed fds (potentially
+        # closing an unrelated reused fd on a busy process).
+        released = {"done": False}
+
         def _release() -> None:
+            if released["done"]:
+                return
+            released["done"] = True
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
@@ -1030,8 +1048,12 @@ def main():
 
     # spec v30 Step 1: per-repo advisory lock — second concurrent invocation
     # exits 75 (EX_TEMPFAIL) before any git, sandbox, or LLM call happens.
-    _run_lock_cm = _run_lock(repo_path)
-    _run_lock_cm.__enter__()
+    # Use ExitStack so the lock is released on *every* exit path (clean exit,
+    # uncaught exception, or SystemExit) — and only released once because
+    # ``_release`` itself is idempotent.
+    _run_lock_stack = contextlib.ExitStack()
+    _run_lock_stack.enter_context(_run_lock(repo_path))
+    atexit.register(_run_lock_stack.close)
 
     _attach_file_log_handler(repo_path)
 

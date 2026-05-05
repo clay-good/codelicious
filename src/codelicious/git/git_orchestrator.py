@@ -1187,27 +1187,29 @@ class GitManager:
             return False
 
     def _branch_exists_locally(self, branch: str) -> bool:
-        """Return True iff ``branch`` is a local ref."""
+        """Return True iff ``branch`` is a local ref.
+
+        ``_run_cmd`` returns the stripped stdout string; a non-empty result
+        means git printed the branch name, an empty result means it did not.
+        """
         try:
-            result = self._run_cmd(["git", "branch", "--list", branch], check=False)
-        except RuntimeError:
+            stdout = self._run_cmd(["git", "branch", "--list", branch], check=False)
+        except (RuntimeError, GitOperationError):
             return False
-        # `git branch --list <name>` prints the branch (with optional `*` prefix)
-        # when present, empty output otherwise.
-        return bool((getattr(result, "stdout", "") or "").strip())
+        return bool(stdout)
 
     def _branch_exists_remotely(self, branch: str) -> bool:
         """Return True iff ``branch`` exists on ``origin``. Network failures
         treated as "unknown / assume not present" — disambiguation is best-effort."""
         try:
-            result = self._run_cmd(
+            stdout = self._run_cmd(
                 ["git", "ls-remote", "--heads", "origin", branch],
                 check=False,
                 timeout=15,
             )
-        except (RuntimeError, TypeError):
+        except (RuntimeError, GitOperationError, TypeError):
             return False
-        return bool((getattr(result, "stdout", "") or "").strip())
+        return bool(stdout)
 
     def _disambiguate_branch(self, candidate: str, *, suffix_hint: str = "") -> str:
         """Resolve branch-name collisions (spec v30 Step 10).

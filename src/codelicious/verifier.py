@@ -1341,7 +1341,7 @@ def verify_paths(
     # ── pytest scoped to mapped tests ────────────────────────────────
     try:
         proc = _run_with_pgroup_kill(
-            ["python", "-m", "pytest", "-q", "--no-cov", *[str(p) for p in test_paths]],
+            [sys.executable, "-m", "pytest", "-q", "--no-cov", *[str(p) for p in test_paths]],
             cwd=str(repo),
             capture_output=True,
             text=True,
