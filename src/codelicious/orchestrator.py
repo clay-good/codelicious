@@ -391,18 +391,20 @@ class Orchestrator:
                 )
 
                 # ── Execute ───────────────────────────────────────
-                # spec v30 Step 5: try the primary engine, then fail over to
-                # any remaining engines on a rate-limit signal.
+                # spec v30 Step 5: try the head of the engine list, fail over
+                # to the next on a rate-limit. ``self.engine`` always tracks
+                # ``self._engines[0]`` so verify/fix paths below use the same
+                # engine that just executed the chunk.
+                self.engine = self._engines[0]
                 result = self.engine.execute_chunk(chunk, self.repo_path, context)
-                while result.message and "Rate limited" in (result.message or "") and len(self._engines) > 1:
+                while result.message and "Rate limited" in result.message and len(self._engines) > 1:
                     rate_limited = self._engines.pop(0)
-                    next_engine = self._engines[0]
+                    self.engine = self._engines[0]
                     logger.warning(
                         "%s rate-limited; failing over to %s for the remainder of this spec.",
                         getattr(rate_limited, "name", "engine"),
-                        getattr(next_engine, "name", "engine"),
+                        getattr(self.engine, "name", "engine"),
                     )
-                    self.engine = next_engine
                     result = self.engine.execute_chunk(chunk, self.repo_path, context)
 
                 # ── Verify ────────────────────────────────────────
