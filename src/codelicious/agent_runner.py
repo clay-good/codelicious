@@ -15,6 +15,7 @@ import json
 import logging
 import pathlib
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -152,11 +153,15 @@ def _build_agent_command(
     list[str]
         Command list suitable for subprocess.Popen.
     """
+    # spec v29 Step 9: chunk-level config can override the default
+    # ``--output-format`` and ``--allowedTools`` values from spec 27 §3.2.
+    output_format_attr = getattr(config, "output_format", "")
+    output_format = output_format_attr if isinstance(output_format_attr, str) and output_format_attr else "stream-json"
     cmd: list[str] = [
         claude_bin,
         "--print",
         "--output-format",
-        "stream-json",
+        output_format,
         "--verbose",
         # bypassPermissions lets the agent edit/write/run shell commands inside
         # the project working directory without per-action prompts. Codelicious
@@ -166,6 +171,15 @@ def _build_agent_command(
         "--permission-mode",
         "bypassPermissions",
     ]
+
+    allowed_tools = getattr(config, "allowed_tools", None)
+    # Accept only an explicit list/tuple of strings or a pre-joined CSV string;
+    # ignore everything else (including MagicMock attribute auto-creation).
+    if isinstance(allowed_tools, (list, tuple)) and allowed_tools:
+        allowed_tools_str = ",".join(str(t) for t in allowed_tools)
+        cmd.extend(["--allowedTools", allowed_tools_str])
+    elif isinstance(allowed_tools, str) and allowed_tools.strip():
+        cmd.extend(["--allowedTools", allowed_tools.strip()])
 
     model = getattr(config, "model", "")
     if model:
@@ -187,6 +201,51 @@ def _build_agent_command(
     cmd.extend(["-p", sanitized_prompt])
 
     return cmd
+
+
+# Bounds for parsed Claude rate-limit retry windows. Below 10 s is suspect
+# (provider noise); above 1 hour we'd rather fail fast than block a build.
+_CLAUDE_RETRY_AFTER_MIN_S: float = 10.0
+_CLAUDE_RETRY_AFTER_MAX_S: float = 3600.0
+_CLAUDE_RETRY_AFTER_DEFAULT_S: float = 60.0
+
+
+def _parse_claude_reset_seconds(text: str) -> float | None:
+    """Parse a Claude CLI rate-limit message for a reset window in seconds.
+
+    Recognises three common shapes that appear in Claude CLI output:
+
+    * ``resets in <N> seconds`` / ``reset in <N>s``
+    * ``try again in <N> minutes`` / ``try again in <N>m``
+    * ``Retry-After: <N>`` (seconds)
+
+    Returns the parsed delay clamped to
+    ``[_CLAUDE_RETRY_AFTER_MIN_S, _CLAUDE_RETRY_AFTER_MAX_S]`` or ``None`` if
+    no recognised pattern is present.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+
+    seconds_match = re.search(r"reset[s]?\s+in\s+(\d+)\s*(?:seconds?|secs?|s)\b", lowered)
+    if seconds_match:
+        return _clamp_retry_after(float(seconds_match.group(1)))
+
+    minutes_match = re.search(r"try\s+again\s+in\s+(\d+)\s*(?:minutes?|mins?|m)\b", lowered)
+    if minutes_match:
+        return _clamp_retry_after(float(minutes_match.group(1)) * 60.0)
+
+    # Retry-After header occasionally surfaces verbatim in stderr; match in
+    # the original (case-insensitive) text since header names are mixed-case.
+    header_match = re.search(r"retry-after\s*:\s*(\d+)", text, re.IGNORECASE)
+    if header_match:
+        return _clamp_retry_after(float(header_match.group(1)))
+
+    return None
+
+
+def _clamp_retry_after(value: float) -> float:
+    return max(_CLAUDE_RETRY_AFTER_MIN_S, min(_CLAUDE_RETRY_AFTER_MAX_S, value))
 
 
 def _check_agent_errors(
@@ -258,9 +317,11 @@ def _check_agent_errors(
             safe_stderr,
         )
         safe_combined = sanitize_message((stderr_text + stdout_text)[-500:])
+        retry_after = _parse_claude_reset_seconds(stderr_text + stdout_text)
+        retry_after_s = retry_after if retry_after is not None else _CLAUDE_RETRY_AFTER_DEFAULT_S
         raise ClaudeRateLimitError(
             f"Claude CLI rate limited (exit code {returncode}): {safe_combined}",
-            retry_after_s=60.0,
+            retry_after_s=retry_after_s,
         )
 
     logger.warning(

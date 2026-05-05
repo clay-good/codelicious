@@ -1,9 +1,9 @@
-"""Tests for the BuildEngine abstract base class and BuildResult dataclass.
+"""Tests for the BuildEngine abstract base class.
 
 Covers:
 - BuildEngine cannot be directly instantiated (abstract class enforcement)
-- Concrete subclasses must implement all abstract members
-- BuildResult field creation and default values
+- Concrete subclasses must implement all three abstract chunk methods
+- ChunkResult and EngineContext dataclass field creation and defaults
 - select_engine factory function
 """
 
@@ -14,52 +14,9 @@ from unittest import mock
 
 import pytest
 
-from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
+from codelicious.engines.base import BuildEngine, ChunkResult, EngineContext
 from codelicious.engines.claude_engine import ClaudeCodeEngine
 from codelicious.engines.huggingface_engine import HuggingFaceEngine
-
-# ---------------------------------------------------------------------------
-# BuildResult tests
-# ---------------------------------------------------------------------------
-
-
-class TestBuildResult:
-    """Tests for the BuildResult dataclass."""
-
-    def test_build_result_creation(self) -> None:
-        """BuildResult stores all provided field values correctly."""
-        result = BuildResult(
-            success=True,
-            message="All specs complete.",
-            session_id="abc-123",
-            elapsed_s=42.5,
-        )
-
-        assert result.success is True
-        assert result.message == "All specs complete."
-        assert result.session_id == "abc-123"
-        assert result.elapsed_s == 42.5
-
-    def test_build_result_defaults(self) -> None:
-        """BuildResult has correct default field values when only success is provided."""
-        result = BuildResult(success=False)
-
-        assert result.success is False
-        assert result.message == ""
-        assert result.session_id == ""
-        assert result.elapsed_s == 0.0
-
-    def test_build_result_success_true(self) -> None:
-        """BuildResult with success=True is truthy for the success field."""
-        result = BuildResult(success=True)
-        assert result.success is True
-
-    def test_build_result_success_false(self) -> None:
-        """BuildResult with success=False reflects a failed build."""
-        result = BuildResult(success=False, message="Exhausted iteration limit.")
-        assert result.success is False
-        assert result.message == "Exhausted iteration limit."
-
 
 # ---------------------------------------------------------------------------
 # BuildEngine abstract class enforcement tests
@@ -74,17 +31,55 @@ class TestBuildEngineAbstract:
         with pytest.raises(TypeError):
             BuildEngine()  # type: ignore[abstract]
 
-    def test_subclass_must_implement_all_abstract(self) -> None:
-        """A subclass that omits run_build_cycle cannot be instantiated."""
+    def test_subclass_must_implement_execute_chunk(self) -> None:
+        """A subclass that omits execute_chunk cannot be instantiated."""
 
         class PartialEngine(BuildEngine):
-            """Implements name but not run_build_cycle."""
+            """Implements name, verify_chunk, fix_chunk but not execute_chunk."""
 
             @property
             def name(self) -> str:
                 return "Partial"
 
-            # Intentionally omits run_build_cycle
+            def verify_chunk(self, chunk, repo_path):
+                return ChunkResult(success=True)
+
+            def fix_chunk(self, chunk, repo_path, failures):
+                return ChunkResult(success=True)
+
+        with pytest.raises(TypeError):
+            PartialEngine()  # type: ignore[abstract]
+
+    def test_subclass_must_implement_verify_chunk(self) -> None:
+        """A subclass that omits verify_chunk cannot be instantiated."""
+
+        class PartialEngine(BuildEngine):
+            @property
+            def name(self) -> str:
+                return "Partial"
+
+            def execute_chunk(self, chunk, repo_path, context):
+                return ChunkResult(success=True)
+
+            def fix_chunk(self, chunk, repo_path, failures):
+                return ChunkResult(success=True)
+
+        with pytest.raises(TypeError):
+            PartialEngine()  # type: ignore[abstract]
+
+    def test_subclass_must_implement_fix_chunk(self) -> None:
+        """A subclass that omits fix_chunk cannot be instantiated."""
+
+        class PartialEngine(BuildEngine):
+            @property
+            def name(self) -> str:
+                return "Partial"
+
+            def execute_chunk(self, chunk, repo_path, context):
+                return ChunkResult(success=True)
+
+            def verify_chunk(self, chunk, repo_path):
+                return ChunkResult(success=True)
 
         with pytest.raises(TypeError):
             PartialEngine()  # type: ignore[abstract]
@@ -93,12 +88,16 @@ class TestBuildEngineAbstract:
         """A subclass that omits the name property cannot be instantiated."""
 
         class NoNameEngine(BuildEngine):
-            """Implements run_build_cycle but not name."""
+            """Implements chunk methods but not name."""
 
-            def run_build_cycle(self, repo_path, git_manager, cache_manager, spec_filter=None, **kwargs):
-                return BuildResult(success=True)
+            def execute_chunk(self, chunk, repo_path, context):
+                return ChunkResult(success=True)
 
-            # Intentionally omits name property
+            def verify_chunk(self, chunk, repo_path):
+                return ChunkResult(success=True)
+
+            def fix_chunk(self, chunk, repo_path, failures):
+                return ChunkResult(success=True)
 
         with pytest.raises(TypeError):
             NoNameEngine()  # type: ignore[abstract]
@@ -122,28 +121,12 @@ class TestBuildEngineAbstract:
             def fix_chunk(self, chunk, repo_path, failures):
                 return ChunkResult(success=True, message="fixed")
 
-            def run_build_cycle(
-                self,
-                repo_path: pathlib.Path,
-                git_manager: object,
-                cache_manager: object,
-                spec_filter: str | None = None,
-                **kwargs,
-            ) -> BuildResult:
-                return BuildResult(success=True, message="Done", elapsed_s=1.0)
-
         engine = ConcreteEngine()
         assert engine.name == "Concrete Engine"
 
-        result = engine.run_build_cycle(
-            repo_path=pathlib.Path("/tmp"),
-            git_manager=object(),
-            cache_manager=object(),
-        )
-        assert isinstance(result, BuildResult)
+        result = engine.execute_chunk(None, pathlib.Path("/tmp"), EngineContext())
+        assert isinstance(result, ChunkResult)
         assert result.success is True
-        assert result.message == "Done"
-        assert result.elapsed_s == 1.0
 
     def test_subclass_name_property_is_accessible(self) -> None:
         """The name property on a concrete subclass returns the expected string."""
@@ -162,16 +145,12 @@ class TestBuildEngineAbstract:
             def fix_chunk(self, chunk, repo_path, failures):
                 return ChunkResult(success=True)
 
-            def run_build_cycle(self, repo_path, git_manager, cache_manager, spec_filter=None, **kwargs):
-                return BuildResult(success=False)
-
         engine = NamedEngine()
         assert engine.name == "My Engine"
 
 
 # ---------------------------------------------------------------------------
 # Engine contract tests — verify both concrete engines implement the ABC
-# (merged from test_engine_contract.py, spec-18 Phase 11)
 # ---------------------------------------------------------------------------
 
 
@@ -200,26 +179,48 @@ class TestEngineContract:
         assert isinstance(engine.name, str)
         assert len(engine.name) > 0
 
-    def test_claude_engine_has_run_build_cycle(self) -> None:
-        """ClaudeCodeEngine must expose a callable run_build_cycle method."""
+    def test_claude_engine_has_execute_chunk(self) -> None:
+        """ClaudeCodeEngine must expose a callable execute_chunk method."""
         engine = ClaudeCodeEngine()
-        assert hasattr(engine, "run_build_cycle")
-        assert callable(engine.run_build_cycle)
+        assert hasattr(engine, "execute_chunk")
+        assert callable(engine.execute_chunk)
 
-    def test_hf_engine_has_run_build_cycle(self) -> None:
-        """HuggingFaceEngine must expose a callable run_build_cycle method."""
+    def test_hf_engine_has_execute_chunk(self) -> None:
+        """HuggingFaceEngine must expose a callable execute_chunk method."""
         engine = HuggingFaceEngine()
-        assert hasattr(engine, "run_build_cycle")
-        assert callable(engine.run_build_cycle)
+        assert hasattr(engine, "execute_chunk")
+        assert callable(engine.execute_chunk)
 
+    def test_claude_engine_has_verify_chunk(self) -> None:
+        """ClaudeCodeEngine must expose a callable verify_chunk method."""
+        engine = ClaudeCodeEngine()
+        assert hasattr(engine, "verify_chunk")
+        assert callable(engine.verify_chunk)
 
-class TestBuildResultMessageType:
-    """Targeted type-check for BuildResult.message (not covered by TestBuildResult)."""
+    def test_hf_engine_has_verify_chunk(self) -> None:
+        """HuggingFaceEngine must expose a callable verify_chunk method."""
+        engine = HuggingFaceEngine()
+        assert hasattr(engine, "verify_chunk")
+        assert callable(engine.verify_chunk)
 
-    def test_build_result_message_is_str(self) -> None:
-        """BuildResult.message must be an instance of str."""
-        result = BuildResult(success=False, message="failed")
-        assert isinstance(result.message, str)
+    def test_claude_engine_has_fix_chunk(self) -> None:
+        """ClaudeCodeEngine must expose a callable fix_chunk method."""
+        engine = ClaudeCodeEngine()
+        assert hasattr(engine, "fix_chunk")
+        assert callable(engine.fix_chunk)
+
+    def test_hf_engine_has_fix_chunk(self) -> None:
+        """HuggingFaceEngine must expose a callable fix_chunk method."""
+        engine = HuggingFaceEngine()
+        assert hasattr(engine, "fix_chunk")
+        assert callable(engine.fix_chunk)
+
+    def test_engines_do_not_have_run_build_cycle(self) -> None:
+        """Neither engine should expose run_build_cycle (removed in spec v29 Step 8)."""
+        for cls in (ClaudeCodeEngine, HuggingFaceEngine):
+            assert not hasattr(cls, "run_build_cycle"), (
+                f"{cls.__name__} still has run_build_cycle — legacy method was not removed"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +298,6 @@ class TestChunkAbstractMethods:
 
             def fix_chunk(self, chunk, repo_path, failures):
                 return ChunkResult(success=True)
-
-            def run_build_cycle(self, repo_path, git_manager, cache_manager, spec_filter=None, **kwargs):
-                return BuildResult(success=True)
 
         with pytest.raises(TypeError):
             NoChunkEngine()  # type: ignore[abstract]

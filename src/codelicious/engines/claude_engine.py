@@ -1,9 +1,8 @@
 """Claude Code CLI build engine (spec-27 Phase 3.2).
 
 Delegates to the ``claude`` binary in headless mode for chunk execution.
-The v2 orchestrator (``V2Orchestrator``) drives the chunk loop — this
-engine only implements ``execute_chunk``, ``verify_chunk``, ``fix_chunk``,
-and a ``run_build_cycle`` that delegates to ``V2Orchestrator``.
+The orchestrator drives the chunk loop — this engine implements
+``execute_chunk``, ``verify_chunk``, and ``fix_chunk``.
 """
 
 from __future__ import annotations
@@ -13,9 +12,24 @@ import pathlib
 import sys
 import time
 
-from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
+from codelicious.engines.base import BuildEngine, ChunkResult, EngineContext
 
 logger = logging.getLogger("codelicious.engines.claude")
+
+# spec v29 Step 9 / spec 27 §3.2: the default Claude CLI ``--allowedTools``
+# allow-list applied to every chunk. Surfacing this list at the chunk site
+# (rather than burying it in ``agent_runner``) lets future engines tighten
+# the surface per chunk without forking the runner.
+_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Edit",
+    "Write",
+    "Bash(git status:*)",
+    "Bash(pytest:*)",
+    "Bash(ruff:*)",
+    "Read",
+    "Glob",
+    "Grep",
+)
 
 
 class ClaudeCodeEngine(BuildEngine):
@@ -79,6 +93,11 @@ class ClaudeCodeEngine(BuildEngine):
         config.max_turns = 50
         config.agent_timeout_s = max(int(context.deadline - time.monotonic()), 60) if context.deadline else 1800
         config.dry_run = False
+        # spec v29 Step 9: surface the spec 27 §3.2 Claude CLI flags at the
+        # chunk call-site so per-chunk callers can tighten the tool allow-list
+        # or switch output formats without editing agent_runner.
+        config.output_format = "stream-json"
+        config.allowed_tools = list(_DEFAULT_ALLOWED_TOOLS)
 
         try:
             result = run_agent(
@@ -162,9 +181,11 @@ class ClaudeCodeEngine(BuildEngine):
         chunk_id = getattr(chunk, "id", "unknown")
 
         try:
-            from codelicious.verifier import verify
+            from codelicious.verifier import verify, verify_paths
 
-            vresult = verify(repo_path)
+            # spec v29 Step 6: scope checks to the chunk's files when known.
+            scoped = list(getattr(chunk, "estimated_files", []) or [])
+            vresult = verify_paths(repo_path, scoped) if scoped else verify(repo_path)
             if vresult.all_passed:
                 logger.info("Verification passed for chunk %s.", chunk_id)
                 return ChunkResult(success=True, message="All checks passed.")
@@ -251,49 +272,4 @@ class ClaudeCodeEngine(BuildEngine):
             files_modified=files,
             message=f"Fix attempt for chunk {chunk_id}",
             retries_used=1,
-        )
-
-    # ------------------------------------------------------------------
-    # Legacy interface — delegates to V2Orchestrator
-    # ------------------------------------------------------------------
-
-    def run_build_cycle(
-        self,
-        repo_path: pathlib.Path,
-        git_manager: object,
-        cache_manager: object,
-        spec_filter: str | None = None,
-        **kwargs,
-    ) -> BuildResult:
-        """Run the build lifecycle by delegating to V2Orchestrator.
-
-        This method exists for backward compatibility with the ``BuildEngine``
-        interface.  The ``cli.py`` main entry point now calls ``V2Orchestrator``
-        directly, so this path is only used if an external caller invokes the
-        engine directly.
-        """
-        from codelicious.orchestrator import V2Orchestrator
-        from codelicious.spec_discovery import discover_incomplete_specs
-
-        start = time.monotonic()
-        repo_path = pathlib.Path(repo_path).resolve()
-        agent_timeout_s = kwargs.get("agent_timeout_s", 1800)
-        push_pr = kwargs.get("push_pr", False)
-        max_commits_per_pr = kwargs.get("max_commits_per_pr", 50)
-
-        specs = discover_incomplete_specs(repo_path)
-        if not specs:
-            return BuildResult(success=True, message="No incomplete specs found.", elapsed_s=time.monotonic() - start)
-
-        orch = V2Orchestrator(repo_path, git_manager, self, max_commits_per_pr=max_commits_per_pr)
-        result = orch.run(
-            specs=specs,
-            deadline=start + agent_timeout_s,
-            push_pr=push_pr,
-        )
-
-        return BuildResult(
-            success=result.success,
-            message=result.message,
-            elapsed_s=result.elapsed_s,
         )

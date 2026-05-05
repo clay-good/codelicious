@@ -1771,3 +1771,108 @@ class TestBuildSummaryAndCoverage:
         assert mock_run.called
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("timeout") == 42 or call_kwargs[1].get("timeout") == 42
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# spec v29 Step 6: chunk-scoped verify_paths
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestVerifyPaths:
+    def test_empty_paths_falls_back_to_full_verify(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import verify_paths
+
+        with patch("codelicious.verifier.verify") as mock_verify:
+            mock_verify.return_value = "fallback"
+            assert verify_paths(tmp_path, []) == "fallback"
+            mock_verify.assert_called_once_with(tmp_path)
+
+    def test_no_test_mapping_falls_back(self, tmp_path: pathlib.Path) -> None:
+        """Source file with no matching test_<module>.py falls back to full verify."""
+        from codelicious.verifier import verify_paths
+
+        (tmp_path / "src").mkdir()
+        src = tmp_path / "src" / "lonely.py"
+        src.write_text("x = 1\n")
+
+        with patch("codelicious.verifier.verify") as mock_verify:
+            mock_verify.return_value = "fallback"
+            assert verify_paths(tmp_path, [src]) == "fallback"
+            mock_verify.assert_called_once()
+
+    def test_mapped_test_file_resolved(self, tmp_path: pathlib.Path) -> None:
+        """src/<module>.py with a matching tests/test_<module>.py is mapped."""
+        from codelicious.verifier import _map_src_to_tests
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "tests").mkdir()
+        src = tmp_path / "src" / "math_utils.py"
+        src.write_text("def add(a, b):\n    return a + b\n")
+        test = tmp_path / "tests" / "test_math_utils.py"
+        test.write_text("def test_x():\n    assert True\n")
+
+        mapped = _map_src_to_tests(tmp_path, [src])
+        assert mapped == [test]
+
+    def test_map_skips_non_python_paths(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import _map_src_to_tests
+
+        (tmp_path / "tests").mkdir()
+        assert _map_src_to_tests(tmp_path, [pathlib.Path("README.md")]) == []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# spec v30 Step 8: coverage-floor enforcement
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestCoverageGate:
+    def test_default_floor_is_90(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import resolve_min_coverage
+
+        assert resolve_min_coverage(tmp_path) == 90.0
+
+    def test_pyproject_value_used_when_present(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import resolve_min_coverage
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.codelicious]\nmin_coverage = 75\n",
+            encoding="utf-8",
+        )
+        assert resolve_min_coverage(tmp_path) == 75.0
+
+    def test_cli_override_wins(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import resolve_min_coverage
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.codelicious]\nmin_coverage = 75\n",
+            encoding="utf-8",
+        )
+        assert resolve_min_coverage(tmp_path, cli_override=99.0) == 99.0
+
+    def test_below_floor_demotes_to_failure(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import (
+            CheckResult,
+            VerificationResult,
+            _enforce_coverage_floor,
+        )
+
+        cov = CheckResult(name="coverage", passed=True, message="Coverage 71.5%", details="")
+        result = VerificationResult(checks=[cov])
+        _enforce_coverage_floor(result, 90.0)
+        assert cov.passed is False
+        assert "71.5%" in cov.message
+        assert "90.0%" in cov.message
+
+    def test_above_floor_unchanged(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.verifier import (
+            CheckResult,
+            VerificationResult,
+            _enforce_coverage_floor,
+        )
+
+        cov = CheckResult(name="coverage", passed=True, message="Coverage 95%", details="")
+        result = VerificationResult(checks=[cov])
+        _enforce_coverage_floor(result, 90.0)
+        assert cov.passed is True
+        assert cov.message == "Coverage 95%"

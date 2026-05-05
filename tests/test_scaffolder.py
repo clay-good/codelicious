@@ -204,3 +204,37 @@ def test_scaffold_propagates_oserror_from_atomic_write(tmp_path: pathlib.Path) -
     with patch("codelicious.scaffolder.atomic_write_text", side_effect=OSError("disk full")):
         with pytest.raises(OSError, match="disk full"):
             scaffold(tmp_path)
+
+
+# -- spec v29 Step 18: forbidden-pattern tuple is single source of truth ---
+
+
+class TestForbiddenPatternsSingleSource:
+    def test_all_patterns_appear_in_security_rules(self) -> None:
+        from codelicious.scaffolder import _FORBIDDEN_PATTERNS_DOC, _RULES_SECURITY
+
+        for pattern in _FORBIDDEN_PATTERNS_DOC:
+            assert pattern in _RULES_SECURITY, f"missing {pattern!r} in _RULES_SECURITY"
+
+    def test_all_patterns_appear_in_verify_all_skill(self) -> None:
+        from codelicious.scaffolder import _FORBIDDEN_PATTERNS_DOC, _SKILL_VERIFY_ALL
+
+        for pattern in _FORBIDDEN_PATTERNS_DOC:
+            assert pattern in _SKILL_VERIFY_ALL
+
+    def test_all_patterns_appear_in_builder_agent(self) -> None:
+        from codelicious.scaffolder import _AGENT_BUILDER, _FORBIDDEN_PATTERNS_DOC
+
+        for pattern in _FORBIDDEN_PATTERNS_DOC:
+            assert pattern in _AGENT_BUILDER
+
+    def test_no_unsubstituted_sentinels_remain(self) -> None:
+        from codelicious.scaffolder import (
+            _AGENT_BUILDER,
+            _RULES_SECURITY,
+            _SKILL_VERIFY_ALL,
+        )
+
+        for blob in (_AGENT_BUILDER, _RULES_SECURITY, _SKILL_VERIFY_ALL):
+            assert "__FORBIDDEN_INLINE__" not in blob
+            assert "__FORBIDDEN_BULLETS__" not in blob

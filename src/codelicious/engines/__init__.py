@@ -6,11 +6,11 @@ import logging
 import os
 import shutil
 
-from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
+from codelicious.engines.base import BuildEngine, ChunkResult, EngineContext
 
 logger = logging.getLogger("codelicious.engines")
 
-__all__ = ["BuildEngine", "BuildResult", "ChunkResult", "EngineContext", "select_engine"]
+__all__ = ["BuildEngine", "ChunkResult", "EngineContext", "select_engine"]
 
 
 def select_engine(engine_preference: str = "auto") -> BuildEngine:

@@ -197,7 +197,9 @@ class BuildLoop:
                 break
             except Exception as llm_exc:
                 last_llm_error = llm_exc
-                wait_s = _LLM_BACKOFF_BASE_S * (2**_attempt)
+                from codelicious.llm_client import _jittered_backoff
+
+                wait_s = _jittered_backoff(_LLM_BACKOFF_BASE_S, _attempt)
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
                     _attempt + 1,

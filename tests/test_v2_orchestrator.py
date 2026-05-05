@@ -184,6 +184,19 @@ class TestV2Orchestrator:
         # Chunks should not have been executed
         engine.execute_chunk.assert_not_called()
 
+    def test_future_deadline_runs_all_chunks(self, tmp_path: pathlib.Path) -> None:
+        """A deadline well in the future does not interrupt chunk execution (spec v29 Step 10)."""
+        import time
+
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine(success=True)
+        git = self._mock_git()
+
+        orch = V2Orchestrator(tmp_path, git, engine)
+        orch.run(specs=[spec], deadline=time.monotonic() + 3600, push_pr=False)
+
+        assert engine.execute_chunk.call_count == 2
+
     def test_empty_spec_no_chunks(self, tmp_path: pathlib.Path) -> None:
         """A spec with no checkboxes and no body produces no chunks."""
         spec = self._make_spec(tmp_path, "# Empty Spec\n")
@@ -321,3 +334,194 @@ class TestV2OrchestratorPrSplitCaps:
         git.create_continuation_branch.assert_called_once()
         # LOC check should not have been polled on the chunk that split via commits
         assert git.get_pr_diff_loc.call_count == 0
+
+
+class TestIdempotentResume:
+    """spec v30 Step 2: persistent chunk-status ledger drives skip-on-resume."""
+
+    def _make_spec(self, tmp_path: pathlib.Path, content: str) -> pathlib.Path:
+        spec_dir = tmp_path / "docs" / "specs"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        spec = spec_dir / "01_feature.md"
+        spec.write_text(content, encoding="utf-8")
+        return spec
+
+    def _mock_engine(self):
+        engine = mock.MagicMock()
+        engine.name = "mock-engine"
+        engine.execute_chunk.return_value = ChunkResult(
+            success=True, files_modified=[pathlib.Path("src/a.py")], message="done"
+        )
+        engine.verify_chunk.return_value = ChunkResult(success=True, message="passed")
+        engine.fix_chunk.return_value = ChunkResult(success=True, message="fixed")
+        return engine
+
+    def _mock_git(self):
+        git = mock.MagicMock()
+        git.assert_safe_branch = mock.MagicMock()
+        git.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
+        git.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
+        git.get_pr_commit_count.return_value = 0
+        git.get_pr_diff_loc.return_value = 0
+        git.ensure_draft_pr_exists.return_value = 42
+        git.revert_chunk_changes.return_value = True
+        git.repo_path = pathlib.Path("/tmp/repo")
+        return git
+
+    def test_merged_chunk_skipped(self, tmp_path: pathlib.Path) -> None:
+        """A chunk previously marked 'merged' in the ledger is not re-executed."""
+        import json
+
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n- [ ] Task B\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        orch = V2Orchestrator(tmp_path, git, engine)
+        ledger_path = orch._ledger_path(spec)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "chunks": {
+                        "spec-01-chunk-01": {
+                            "status": "merged",
+                            "title": "Task A",
+                            "updated_at": "2026-05-04T00:00:00Z",
+                        }
+                    }
+                }
+            )
+        )
+
+        orch.run(specs=[spec], push_pr=False)
+        # Only chunk 02 should have been executed.
+        assert engine.execute_chunk.call_count == 1
+
+    def test_full_ledger_executes_no_chunks(self, tmp_path: pathlib.Path) -> None:
+        import json
+
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        orch = V2Orchestrator(tmp_path, git, engine)
+        ledger_path = orch._ledger_path(spec)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "chunks": {
+                        "spec-01-chunk-01": {"status": "merged", "title": "Task A"},
+                    }
+                }
+            )
+        )
+
+        orch.run(specs=[spec], push_pr=False)
+        engine.execute_chunk.assert_not_called()
+
+    def test_no_resume_ignores_ledger(self, tmp_path: pathlib.Path) -> None:
+        import json
+
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        orch = V2Orchestrator(tmp_path, git, engine, no_resume=True)
+        ledger_path = orch._ledger_path(spec)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "chunks": {
+                        "spec-01-chunk-01": {"status": "merged", "title": "Task A"},
+                    }
+                }
+            )
+        )
+
+        orch.run(specs=[spec], push_pr=False)
+        engine.execute_chunk.assert_called_once()
+
+    def test_successful_run_writes_merged_status(self, tmp_path: pathlib.Path) -> None:
+        import json
+
+        spec = self._make_spec(tmp_path, "# Feature\n\n## Phase 1\n\n- [ ] Task A\n")
+        engine = self._mock_engine()
+        git = self._mock_git()
+        orch = V2Orchestrator(tmp_path, git, engine)
+
+        orch.run(specs=[spec], push_pr=False)
+        ledger = json.loads(orch._ledger_path(spec).read_text())
+        merged = [entry for entry in ledger["chunks"].values() if entry["status"] == "merged"]
+        assert len(merged) == 1
+
+
+class TestEngineFallback:
+    """spec v30 Step 5: Claude rate-limit fails over to the next engine in the list."""
+
+    def _make_spec(self, tmp_path: pathlib.Path, content: str) -> pathlib.Path:
+        spec_dir = tmp_path / "docs" / "specs"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        spec = spec_dir / "01_feature.md"
+        spec.write_text(content, encoding="utf-8")
+        return spec
+
+    def _mock_git(self):
+        git = mock.MagicMock()
+        git.assert_safe_branch = mock.MagicMock()
+        git.push_to_origin.return_value = mock.MagicMock(success=True, error_type=None, message="")
+        git.commit_chunk.return_value = mock.MagicMock(success=True, sha="abc1234", message="ok")
+        git.get_pr_commit_count.return_value = 0
+        git.get_pr_diff_loc.return_value = 0
+        git.ensure_draft_pr_exists.return_value = 42
+        git.revert_chunk_changes.return_value = True
+        git.repo_path = pathlib.Path("/tmp/repo")
+        return git
+
+    def _engine(self, name: str, *, success: bool = True, rate_limit: bool = False) -> mock.MagicMock:
+        eng = mock.MagicMock()
+        eng.name = name
+        if rate_limit:
+            eng.execute_chunk.return_value = ChunkResult(success=False, files_modified=[], message="Rate limited")
+        else:
+            eng.execute_chunk.return_value = ChunkResult(
+                success=success,
+                files_modified=[pathlib.Path("src/a.py")] if success else [],
+                message="ok" if success else "err",
+            )
+        eng.verify_chunk.return_value = ChunkResult(success=True, message="passed")
+        eng.fix_chunk.return_value = ChunkResult(success=True, message="fixed")
+        return eng
+
+    def test_primary_rate_limit_fails_over(self, tmp_path: pathlib.Path) -> None:
+        spec = self._make_spec(tmp_path, "# Spec\n\n## P1\n\n- [ ] Task A\n")
+        primary = self._engine("claude", rate_limit=True)
+        secondary = self._engine("huggingface", success=True)
+        git = self._mock_git()
+
+        orch = V2Orchestrator(tmp_path, git, primary, engines=[primary, secondary])
+        result = orch.run(specs=[spec], push_pr=False)
+
+        assert primary.execute_chunk.call_count == 1
+        assert secondary.execute_chunk.call_count == 1
+        assert result.success is True
+
+    def test_both_rate_limit_aborts(self, tmp_path: pathlib.Path) -> None:
+        spec = self._make_spec(tmp_path, "# Spec\n\n## P1\n\n- [ ] Task A\n")
+        primary = self._engine("claude", rate_limit=True)
+        secondary = self._engine("huggingface", rate_limit=True)
+        git = self._mock_git()
+
+        orch = V2Orchestrator(tmp_path, git, primary, engines=[primary, secondary])
+        result = orch.run(specs=[spec], push_pr=False)
+
+        assert primary.execute_chunk.call_count == 1
+        assert secondary.execute_chunk.call_count == 1
+        assert result.success is False
+
+    def test_no_engines_arg_keeps_legacy_single_engine_behavior(self, tmp_path: pathlib.Path) -> None:
+        spec = self._make_spec(tmp_path, "# Spec\n\n## P1\n\n- [ ] Task A\n")
+        eng = self._engine("claude", success=True)
+        git = self._mock_git()
+
+        orch = V2Orchestrator(tmp_path, git, eng)  # no engines kwarg
+        orch.run(specs=[spec], push_pr=False)
+        assert eng.execute_chunk.call_count == 1

@@ -879,3 +879,35 @@ class TestConcurrentWriteSafety:
         failed = sum(1 for _, ok in results if not ok)
         assert succeeded == 10, f"Expected 10 successes, got {succeeded}"
         assert failed == 10, f"Expected 10 failures, got {failed}"
+
+
+# -- spec v29 Step 15: O_NOFOLLOW unavailable warning --------------------------
+
+
+class TestONoFollowWarning:
+    """spec v29 Step 15: Sandbox emits a single WARNING when O_NOFOLLOW is unavailable."""
+
+    def test_warning_emitted_when_o_nofollow_missing(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A platform without os.O_NOFOLLOW (e.g. Windows) gets a clear warning at init."""
+        with unittest.mock.patch("codelicious.sandbox.os") as mock_os:
+            # Re-expose only the attributes the constructor touches; deliberately
+            # omit O_NOFOLLOW so hasattr() returns False.
+            mock_os.path = os.path
+            mock_os.environ = os.environ
+            del mock_os.O_NOFOLLOW
+            with caplog.at_level(logging.WARNING, logger="codelicious.sandbox"):
+                Sandbox(tmp_path)
+
+        warnings = [r for r in caplog.records if "O_NOFOLLOW unavailable" in r.message]
+        assert len(warnings) == 1, f"expected exactly one O_NOFOLLOW warning, got {len(warnings)}"
+
+    def test_no_warning_on_posix(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+        """On POSIX (where os.O_NOFOLLOW exists) no warning fires."""
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("Test only meaningful on POSIX")
+        with caplog.at_level(logging.WARNING, logger="codelicious.sandbox"):
+            Sandbox(tmp_path)
+        warnings = [r for r in caplog.records if "O_NOFOLLOW unavailable" in r.message]
+        assert warnings == []

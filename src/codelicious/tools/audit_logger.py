@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import logging
+import os
 import sys
 import threading
 from enum import Enum
@@ -98,6 +100,18 @@ class AuditLogger:
         # Lock that serialises all file writes so concurrent threads cannot
         # interleave entries (Finding 51).
         self._write_lock = threading.Lock()
+        # spec v30 Step 11: cross-process append guard. When two `codelicious`
+        # processes share an audit dir (e.g. CODELICIOUS_AUDIT_DIR pointed at a
+        # shared location) we need an OS-level lock so entries don't interleave
+        # across rotation boundaries. We lock a dedicated file because
+        # rotation may move the audit log itself.
+        self._lock_path = self.log_file.parent / ".audit.lock"
+        try:
+            self._lock_fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError as exc:
+            console_logger.warning("AuditLogger: cannot open audit lock %s: %s", self._lock_path, exc)
+            self._lock_fd = None
+        self._cross_process_lock_warned: bool = False
         # Keep file handles open for the lifetime of the instance to avoid the
         # overhead of open/close on every tool call (Finding 18).
         # buffering=1 enables line-buffered mode so entries are flushed after
@@ -117,6 +131,54 @@ class AuditLogger:
             console_logger.warning("AuditLogger: cannot open security log %s: %s", self.security_log_file, exc)
             self._security_fh = None
 
+    @contextlib.contextmanager
+    def _cross_process_lock(self):
+        """Acquire an exclusive OS lock on ``.audit.lock`` for the critical
+        section (spec v30 Step 11).
+
+        On Windows, ``fcntl`` is unavailable; falls back to ``msvcrt.locking``
+        when present, otherwise logs a one-shot WARNING and proceeds with
+        intra-process locking only.
+        """
+        if self._lock_fd is None:
+            yield
+            return
+
+        try:
+            import fcntl
+
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                try:
+                    fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            return
+        except ImportError:
+            pass  # fall through to msvcrt branch
+
+        try:
+            import msvcrt
+
+            msvcrt.locking(self._lock_fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                try:
+                    # Rewind so the unlock targets the same byte we locked.
+                    os.lseek(self._lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(self._lock_fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            return
+        except ImportError:
+            if not self._cross_process_lock_warned:
+                console_logger.warning("AuditLogger: cross-process audit-log locking unavailable on this platform")
+                self._cross_process_lock_warned = True
+            yield
+
     def close(self) -> None:
         """Close the persistent file handles.
 
@@ -131,6 +193,12 @@ class AuditLogger:
         try:
             if self._security_fh is not None:
                 self._security_fh.close()
+        except OSError:
+            pass
+        try:
+            if getattr(self, "_lock_fd", None) is not None:
+                os.close(self._lock_fd)
+                self._lock_fd = None
         except OSError:
             pass
 
@@ -155,8 +223,12 @@ class AuditLogger:
     def _write_to_file(self, level: str, tag: str, message: str):
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
-            with self._write_lock:
+            # spec v30 Step 11: hold both intra- and inter-process locks so a
+            # second codelicious process sharing the audit dir cannot interleave
+            # bytes mid-line.
+            with self._write_lock, self._cross_process_lock():
                 self._audit_fh.write(f"[{timestamp}] [{level}] [{tag}] {message}\n")
+                self._audit_fh.flush()
         except Exception as e:
             # Fallback if logging fails, at least print to stdout
             print(f"FATAL: Audit log write failed: {e}")
@@ -187,11 +259,13 @@ class AuditLogger:
         full_message = f"{message} ({context})"
         log_line = f"{timestamp} [SECURITY] {event.value}: {full_message}\n"
 
-        # Write to both logs under a single lock to keep entries atomic
+        # spec v30 Step 11: dual-write under both intra- and inter-process locks.
         try:
-            with self._write_lock:
+            with self._write_lock, self._cross_process_lock():
                 self._audit_fh.write(log_line)
+                self._audit_fh.flush()
                 self._security_fh.write(log_line)
+                self._security_fh.flush()
         except Exception as e:
             print(f"FATAL: Security log write failed: {e}")
 

@@ -11,6 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codelicious.agent_runner import (
+    _CLAUDE_RETRY_AFTER_DEFAULT_S,
+    _CLAUDE_RETRY_AFTER_MAX_S,
+    _CLAUDE_RETRY_AFTER_MIN_S,
     _MAX_PROMPT_LENGTH,
     _POLL_INTERVAL_S,
     FORBIDDEN_CLI_FLAGS,
@@ -19,6 +22,7 @@ from codelicious.agent_runner import (
     _check_agent_errors,
     _enforce_timeout,
     _parse_agent_output,
+    _parse_claude_reset_seconds,
     _process_stream_event,
     _sanitize_prompt,
     _validate_command_flags,
@@ -263,6 +267,53 @@ class TestIntegration:
         assert actual_prompt == "-- --dangerous-flag"
 
 
+class TestSpec27Flags:
+    """spec v29 Step 9: chunk-level config can drive --allowedTools / --output-format."""
+
+    def test_allowed_tools_list_renders_csv(self, tmp_path: pathlib.Path) -> None:
+        import types
+
+        config = types.SimpleNamespace(
+            model="",
+            effort="",
+            max_turns=0,
+            allowed_tools=["Edit", "Write", "Bash(pytest:*)"],
+        )
+        cmd = _build_agent_command("test", tmp_path, config, "claude")
+        assert "--allowedTools" in cmd
+        idx = cmd.index("--allowedTools")
+        assert cmd[idx + 1] == "Edit,Write,Bash(pytest:*)"
+
+    def test_output_format_default_is_stream_json(self, tmp_path: pathlib.Path) -> None:
+        import types
+
+        config = types.SimpleNamespace(model="", effort="", max_turns=0)
+        cmd = _build_agent_command("test", tmp_path, config, "claude")
+        idx = cmd.index("--output-format")
+        assert cmd[idx + 1] == "stream-json"
+
+    def test_output_format_override(self, tmp_path: pathlib.Path) -> None:
+        import types
+
+        config = types.SimpleNamespace(model="", effort="", max_turns=0, output_format="text")
+        cmd = _build_agent_command("test", tmp_path, config, "claude")
+        idx = cmd.index("--output-format")
+        assert cmd[idx + 1] == "text"
+
+    def test_default_chunk_config_has_spec27_allow_list(self) -> None:
+        """ClaudeCodeEngine._DEFAULT_ALLOWED_TOOLS matches spec 27 §3.2 verbatim."""
+        from codelicious.engines.claude_engine import _DEFAULT_ALLOWED_TOOLS
+
+        assert "Edit" in _DEFAULT_ALLOWED_TOOLS
+        assert "Write" in _DEFAULT_ALLOWED_TOOLS
+        assert "Bash(git status:*)" in _DEFAULT_ALLOWED_TOOLS
+        assert "Bash(pytest:*)" in _DEFAULT_ALLOWED_TOOLS
+        assert "Bash(ruff:*)" in _DEFAULT_ALLOWED_TOOLS
+        assert "Read" in _DEFAULT_ALLOWED_TOOLS
+        assert "Glob" in _DEFAULT_ALLOWED_TOOLS
+        assert "Grep" in _DEFAULT_ALLOWED_TOOLS
+
+
 class TestDangerousFlagNeverPresent:
     """Tests for S20-P1-3: --dangerously-skip-permissions is permanently removed."""
 
@@ -407,6 +458,50 @@ class TestCheckAgentErrorsF21:
         """Returncode 0 must return cleanly even if stderr contains 'auth'."""
         # auth in stderr is irrelevant when returncode is 0
         assert _check_agent_errors(0, [], ["auth failed somehow\n"]) is None
+
+
+class TestParseClaudeResetSeconds:
+    """Spec v29 Step 5: parse Claude rate-limit reset windows from CLI output."""
+
+    def test_no_match_returns_none(self) -> None:
+        assert _parse_claude_reset_seconds("rate limit exceeded") is None
+
+    def test_empty_returns_none(self) -> None:
+        assert _parse_claude_reset_seconds("") is None
+
+    def test_resets_in_seconds(self) -> None:
+        assert _parse_claude_reset_seconds("Limit resets in 30 seconds") == 30.0
+
+    def test_resets_in_short_form(self) -> None:
+        assert _parse_claude_reset_seconds("resets in 45s") == 45.0
+
+    def test_try_again_in_minutes(self) -> None:
+        assert _parse_claude_reset_seconds("Please try again in 5 minutes.") == 300.0
+
+    def test_try_again_short_form(self) -> None:
+        assert _parse_claude_reset_seconds("try again in 2m") == 120.0
+
+    def test_retry_after_header(self) -> None:
+        assert _parse_claude_reset_seconds("Retry-After: 90") == 90.0
+
+    def test_value_below_floor_clamped(self) -> None:
+        # 5s is below the 10s floor; should clamp up.
+        assert _parse_claude_reset_seconds("resets in 5 seconds") == _CLAUDE_RETRY_AFTER_MIN_S
+
+    def test_value_above_cap_clamped(self) -> None:
+        assert _parse_claude_reset_seconds("try again in 999 minutes") == _CLAUDE_RETRY_AFTER_MAX_S
+
+    def test_check_agent_errors_uses_parsed_value(self) -> None:
+        """The rate-limit branch should pick up the parsed reset window."""
+        with pytest.raises(ClaudeRateLimitError) as exc_info:
+            _check_agent_errors(1, [], ["rate limit hit; resets in 30 seconds\n"])
+        assert exc_info.value.retry_after_s == 30.0
+
+    def test_check_agent_errors_falls_back_to_default(self) -> None:
+        """When no reset window is parseable, default retry_after_s applies."""
+        with pytest.raises(ClaudeRateLimitError) as exc_info:
+            _check_agent_errors(1, [], ["rate limit exceeded\n"])
+        assert exc_info.value.retry_after_s == _CLAUDE_RETRY_AFTER_DEFAULT_S
 
 
 class TestParseAgentOutput:

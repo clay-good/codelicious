@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import email.utils
 import ipaddress
 import json
 import logging
 import os
+import secrets
 import socket
 import ssl
 import time
@@ -23,6 +25,46 @@ logger = logging.getLogger("codelicious.llm")
 _DEFAULT_PLANNER_MODEL = "DeepSeek-V3-0324"
 _DEFAULT_CODER_MODEL = "Qwen3-235B"
 _DEFAULT_ENDPOINT = "https://router.huggingface.co/sambanova/v1/chat/completions"
+
+
+# Cap for any provider-supplied Retry-After value, in seconds. A misbehaving
+# or malicious provider could otherwise stall codelicious indefinitely.
+_RETRY_AFTER_CAP_S = 120.0
+
+
+def _jittered_backoff(base: float, attempt: int) -> float:
+    """Compute exponential backoff with multiplicative jitter in [0.5x, 1.5x].
+
+    Uses ``secrets.SystemRandom`` per project security rules.
+    """
+    return base * (2**attempt) * (0.5 + secrets.SystemRandom().random())
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse an HTTP Retry-After header value (seconds or HTTP-date).
+
+    Returns the wait in seconds, capped at ``_RETRY_AFTER_CAP_S``, or None if
+    the header is missing/unparseable/in the past.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        secs = float(value)
+        if secs >= 0:
+            return min(secs, _RETRY_AFTER_CAP_S)
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    delta = when.timestamp() - time.time()
+    if delta <= 0:
+        return None
+    return min(delta, _RETRY_AFTER_CAP_S)
 
 
 # Known-good endpoint base URLs that bypass DNS resolution checks (S20-P1-1)
@@ -218,9 +260,15 @@ class LLMClient:
                 logger.debug("LLM API error body (status %s): %s", e.code, sanitized_body)
 
                 if e.code in self._RETRYABLE_HTTP_CODES and attempt < self._MAX_RETRIES:
-                    backoff = self._BACKOFF_BASE_S * (2**attempt)
+                    retry_after = _parse_retry_after(e.headers.get("Retry-After")) if e.code == 429 else None
+                    if retry_after is not None:
+                        # Apply jitter to provider-supplied delay so concurrent runs don't thunder-herd.
+                        backoff = retry_after * (0.5 + secrets.SystemRandom().random())
+                        logger.info("Honoring Retry-After: %.1fs for HTTP 429 (%s)", retry_after, model)
+                    else:
+                        backoff = _jittered_backoff(self._BACKOFF_BASE_S, attempt)
                     logger.warning(
-                        "Transient HTTP %d from LLM API (%s); retrying in %.0fs (attempt %d/%d).",
+                        "Transient HTTP %d from LLM API (%s); retrying in %.1fs (attempt %d/%d).",
                         e.code,
                         model,
                         backoff,
@@ -235,7 +283,7 @@ class LLMClient:
                 raise RuntimeError("LLM API Error (%s): HTTP %s - see debug logs for details" % (model, e.code)) from e
             except (TimeoutError, urllib.error.URLError, ssl.SSLError, ConnectionResetError, OSError) as e:
                 if attempt < self._MAX_RETRIES:
-                    backoff = self._BACKOFF_BASE_S * (2**attempt)
+                    backoff = _jittered_backoff(self._BACKOFF_BASE_S, attempt)
                     logger.warning(
                         "Transient network error from LLM API (%s): %s; retrying in %.0fs (attempt %d/%d).",
                         model,

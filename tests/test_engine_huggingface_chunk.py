@@ -92,6 +92,82 @@ class TestHFExecuteChunk:
         assert "incomplete" in result.message.lower()
 
 
+class TestHFReflectionGate:
+    """spec v29 Step 11: post-reflection verify must pass before HF returns success=True."""
+
+    def _setup_complete_signal(self, mock_llm: mock.MagicMock) -> None:
+        mock_llm.chat_completion.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": "done. CHUNK_COMPLETE"}}]
+        }
+        mock_llm.parse_tool_calls.return_value = []
+        mock_llm.parse_content.return_value = "done. CHUNK_COMPLETE"
+        mock_llm.planner_model = "test"
+        mock_llm.coder_model = "test"
+        mock_llm.endpoint_url = "https://test"
+
+    def test_verify_fails_then_passes_after_one_fix(self, tmp_path: pathlib.Path) -> None:
+        """verify fails once, fix is invoked, second verify passes → success."""
+        engine = HuggingFaceEngine()
+        chunk = FakeChunk()
+        context = EngineContext(spec_content="# Spec", deadline=0.0)
+
+        mock_llm = mock.MagicMock()
+        self._setup_complete_signal(mock_llm)
+        mock_registry = mock.MagicMock()
+        mock_registry.generate_schema.return_value = []
+        diff_mock = mock.MagicMock(returncode=0, stdout="src/a.py\n")
+
+        verify_results = [
+            ChunkResult(success=False, message="lint failed"),
+            ChunkResult(success=True, message="ok"),
+        ]
+        fix_result = ChunkResult(success=True, message="patched")
+
+        with mock.patch("codelicious.llm_client.LLMClient", return_value=mock_llm):
+            with mock.patch("codelicious.tools.registry.ToolRegistry", return_value=mock_registry):
+                with mock.patch("codelicious.config.load_project_config", return_value={}):
+                    with mock.patch("subprocess.run", return_value=diff_mock):
+                        with mock.patch.object(engine, "verify_chunk", side_effect=verify_results) as m_verify:
+                            with mock.patch.object(engine, "fix_chunk", return_value=fix_result) as m_fix:
+                                result = engine.execute_chunk(chunk, tmp_path, context)
+
+        assert result.success is True
+        assert m_fix.call_count == 1
+        assert m_verify.call_count == 2
+
+    def test_verify_always_fails_returns_failure_after_two_attempts(self, tmp_path: pathlib.Path) -> None:
+        """When verify never passes, success=False after exactly 2 fix attempts."""
+        engine = HuggingFaceEngine()
+        chunk = FakeChunk()
+        context = EngineContext(spec_content="# Spec", deadline=0.0)
+
+        mock_llm = mock.MagicMock()
+        self._setup_complete_signal(mock_llm)
+        mock_registry = mock.MagicMock()
+        mock_registry.generate_schema.return_value = []
+        diff_mock = mock.MagicMock(returncode=0, stdout="")
+
+        with mock.patch("codelicious.llm_client.LLMClient", return_value=mock_llm):
+            with mock.patch("codelicious.tools.registry.ToolRegistry", return_value=mock_registry):
+                with mock.patch("codelicious.config.load_project_config", return_value={}):
+                    with mock.patch("subprocess.run", return_value=diff_mock):
+                        with mock.patch.object(
+                            engine,
+                            "verify_chunk",
+                            return_value=ChunkResult(success=False, message="still failing"),
+                        ) as m_verify:
+                            with mock.patch.object(
+                                engine, "fix_chunk", return_value=ChunkResult(success=True, message="x")
+                            ) as m_fix:
+                                result = engine.execute_chunk(chunk, tmp_path, context)
+
+        assert result.success is False
+        assert "fix attempts" in result.message
+        # Initial verify + 2 retries = 3 verify calls; 2 fix attempts.
+        assert m_verify.call_count == 3
+        assert m_fix.call_count == 2
+
+
 class TestHFVerifyChunk:
     """HuggingFaceEngine.verify_chunk runs the verifier."""
 
@@ -555,60 +631,3 @@ class TestVerifyChunkImportError:
 
         assert result.success is True
         assert "skipped" in result.message.lower() or "not available" in result.message.lower()
-
-
-# ---------------------------------------------------------------------------
-# run_build_cycle
-# ---------------------------------------------------------------------------
-
-
-class TestRunBuildCycle:
-    """run_build_cycle delegates to V2Orchestrator or returns early when no specs."""
-
-    def test_run_build_cycle_no_specs(self, tmp_path: pathlib.Path) -> None:
-        """When discover_incomplete_specs returns [], run_build_cycle returns success=True."""
-        from codelicious.engines.base import BuildResult
-
-        engine = HuggingFaceEngine()
-
-        with mock.patch("codelicious.spec_discovery.discover_incomplete_specs", return_value=[]):
-            result = engine.run_build_cycle(
-                repo_path=tmp_path,
-                git_manager=mock.MagicMock(),
-                cache_manager=mock.MagicMock(),
-            )
-
-        assert isinstance(result, BuildResult)
-        assert result.success is True
-        assert "No incomplete specs" in result.message
-
-    def test_run_build_cycle_delegates_to_v2(self, tmp_path: pathlib.Path) -> None:
-        """When specs are found, run_build_cycle instantiates V2Orchestrator and calls run()."""
-        from codelicious.engines.base import BuildResult
-
-        engine = HuggingFaceEngine()
-
-        fake_spec = mock.MagicMock()
-        fake_orch_result = mock.MagicMock()
-        fake_orch_result.success = True
-        fake_orch_result.message = "all done"
-        fake_orch_result.elapsed_s = 1.5
-
-        mock_orch_instance = mock.MagicMock()
-        mock_orch_instance.run.return_value = fake_orch_result
-
-        with mock.patch("codelicious.spec_discovery.discover_incomplete_specs", return_value=[fake_spec]):
-            with mock.patch(
-                "codelicious.orchestrator.V2Orchestrator", return_value=mock_orch_instance
-            ) as mock_orch_cls:
-                result = engine.run_build_cycle(
-                    repo_path=tmp_path,
-                    git_manager=mock.MagicMock(),
-                    cache_manager=mock.MagicMock(),
-                )
-
-        assert isinstance(result, BuildResult)
-        assert result.success is True
-        assert result.message == "all done"
-        mock_orch_cls.assert_called_once()
-        mock_orch_instance.run.assert_called_once()

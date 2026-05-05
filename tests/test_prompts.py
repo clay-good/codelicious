@@ -8,7 +8,9 @@ import unittest.mock
 import pytest
 
 from codelicious.prompts import (
-    AGENT_BUILD_SPEC,
+    CHUNK_EXECUTE,
+    CHUNK_FIX,
+    CHUNK_VERIFY,
     check_build_complete,
     clear_build_complete,
     render,
@@ -124,17 +126,6 @@ class TestRender:
         result = render("Hello {{name}}!", name="world", extra="ignored")
         assert result == "Hello world!"
 
-    def test_spec_filter_substitution(self):
-        """The critical fix: spec_filter is actually substituted into the prompt."""
-        result = render(
-            AGENT_BUILD_SPEC,
-            project_name="myproject",
-            spec_filter="/path/to/spec.md",
-        )
-        assert "/path/to/spec.md" in result
-        assert "{{spec_filter}}" not in result
-        assert "{{project_name}}" not in result
-
     def test_partial_kwargs_leaves_unreplaced_tokens_verbatim(self):
         """render() with only some kwargs replaces provided tokens and leaves others intact."""
         template = "Hello {{name}}, your task is {{task}}!"
@@ -236,16 +227,8 @@ class TestPromptsRenderAndConstants:
                 if isinstance(val, str):
                     assert len(val) > 0, f"Prompt constant {name} is empty"
 
-    def test_agent_build_spec_contains_template_vars(self) -> None:
-        """AGENT_BUILD_SPEC must contain {{project_name}} and {{spec_filter}}."""
-        from codelicious.prompts import AGENT_BUILD_SPEC
-
-        assert "{{project_name}}" in AGENT_BUILD_SPEC
-        assert "{{spec_filter}}" in AGENT_BUILD_SPEC
-
     def test_chunk_execute_contains_template_vars(self) -> None:
         """CHUNK_EXECUTE must contain expected template variables."""
-        from codelicious.prompts import CHUNK_EXECUTE
 
         assert "{{repo_path}}" in CHUNK_EXECUTE
         assert "{{chunk_id}}" in CHUNK_EXECUTE
@@ -256,14 +239,12 @@ class TestPromptsRenderAndConstants:
 
     def test_chunk_verify_contains_template_vars(self) -> None:
         """CHUNK_VERIFY must contain expected template variables."""
-        from codelicious.prompts import CHUNK_VERIFY
 
         assert "{{repo_path}}" in CHUNK_VERIFY
         assert "{{chunk_id}}" in CHUNK_VERIFY
 
     def test_chunk_fix_contains_template_vars(self) -> None:
         """CHUNK_FIX must contain expected template variables."""
-        from codelicious.prompts import CHUNK_FIX
 
         assert "{{repo_path}}" in CHUNK_FIX
         assert "{{chunk_id}}" in CHUNK_FIX
@@ -271,7 +252,7 @@ class TestPromptsRenderAndConstants:
 
     def test_chunk_templates_renderable(self) -> None:
         """All chunk templates can be rendered with render()."""
-        from codelicious.prompts import CHUNK_EXECUTE, CHUNK_FIX, CHUNK_VERIFY, render
+        from codelicious.prompts import render
 
         rendered = render(
             CHUNK_EXECUTE,
