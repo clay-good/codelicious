@@ -1,8 +1,10 @@
 """Abstract base class and shared dataclasses for codelicious build engines.
 
-Spec-27 Phase 3.1 adds the chunk-level interface (``execute_chunk``,
-``verify_chunk``, ``fix_chunk``) alongside the legacy ``run_build_cycle``
-so both old and new orchestration paths work during migration.
+Spec-27 Phase 3.1 defines the chunk-level interface:
+
+* ``execute_chunk`` — implement one work chunk
+* ``verify_chunk``  — lint/test/security check a completed chunk
+* ``fix_chunk``     — attempt to fix verification failures
 """
 
 from __future__ import annotations
@@ -10,21 +12,6 @@ from __future__ import annotations
 import abc
 import dataclasses
 import pathlib
-
-# ---------------------------------------------------------------------------
-# Legacy result (kept for backward compatibility during migration)
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class BuildResult:
-    """Result from a legacy full-cycle build engine run."""
-
-    success: bool
-    message: str = ""
-    session_id: str = ""
-    elapsed_s: float = 0.0
-
 
 # ---------------------------------------------------------------------------
 # spec-27 Phase 3.1: Chunk-level dataclasses
@@ -69,12 +56,10 @@ class BuildEngine(abc.ABC):
     """Abstract base for all codelicious build engines.
 
     **Chunk-level interface** (spec-27 Phase 3.1):
-    - ``execute_chunk`` — implement one work chunk
-    - ``verify_chunk``  — lint/test/security check a completed chunk
-    - ``fix_chunk``     — attempt to fix verification failures
 
-    **Legacy interface** (kept for migration):
-    - ``run_build_cycle`` — run the full build lifecycle
+    * ``execute_chunk`` — implement one work chunk
+    * ``verify_chunk``  — lint/test/security check a completed chunk
+    * ``fix_chunk``     — attempt to fix verification failures
     """
 
     @property
@@ -125,38 +110,4 @@ class BuildEngine(abc.ABC):
         ``failures`` contains error messages from a previous
         ``verify_chunk`` call.  The engine should try to resolve them
         and return the updated file list.
-        """
-
-    # ------------------------------------------------------------------
-    # Legacy interface (kept for backward compatibility)
-    # ------------------------------------------------------------------
-
-    @abc.abstractmethod
-    def run_build_cycle(
-        self,
-        repo_path: pathlib.Path,
-        git_manager: object,
-        cache_manager: object,
-        spec_filter: str | None = None,
-        **kwargs,
-    ) -> BuildResult:
-        """Run the full build cycle (legacy interface).
-
-        Parameters
-        ----------
-        repo_path:
-            Path to the target repository.
-        git_manager:
-            GitManager instance for branch/commit/PR operations.
-        cache_manager:
-            CacheManager instance for state persistence.
-        spec_filter:
-            Optional: path to a specific spec to build.
-        **kwargs:
-            Engine-specific configuration (model, timeout, etc.)
-
-        Returns
-        -------
-        BuildResult
-            Outcome of the build cycle.
         """

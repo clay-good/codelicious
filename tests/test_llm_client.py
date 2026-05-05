@@ -6,7 +6,7 @@ import socket
 import ssl
 import urllib.error
 from datetime import datetime
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -457,15 +457,18 @@ class TestLLMClientNetworkRetry:
             assert "LLM Connection Error" in str(exc_info.value)
 
     def test_network_error_exponential_backoff_intervals(self, client):
-        """Sleep durations should follow exponential backoff: 1s, 2s, 4s."""
+        """Sleep durations follow jittered exponential backoff in [0.5x, 1.5x] of 2**i (spec v29 Step 3)."""
         with patch("urllib.request.urlopen") as mock_urlopen, patch("time.sleep") as mock_sleep:
             mock_urlopen.side_effect = urllib.error.URLError("timeout")
 
             with pytest.raises(RuntimeError):
                 client.chat_completion([{"role": "user", "content": "test"}])
 
-            expected_sleeps = [call(client._BACKOFF_BASE_S * (2**i)) for i in range(client._MAX_RETRIES)]
-            assert mock_sleep.call_args_list == expected_sleeps
+            assert mock_sleep.call_count == client._MAX_RETRIES
+            for i, call_obj in enumerate(mock_sleep.call_args_list):
+                base = client._BACKOFF_BASE_S * (2**i)
+                actual = call_obj.args[0]
+                assert 0.5 * base <= actual <= 1.5 * base, f"attempt {i}: {actual} not in [{0.5 * base}, {1.5 * base}]"
 
     def test_network_error_succeeds_on_retry(self, client):
         """A transient network error should succeed once the connection recovers."""

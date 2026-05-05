@@ -2807,6 +2807,53 @@ class TestCreateContinuationBranch:
         mock_cmd.assert_any_call(["git", "checkout", "-b", "codelicious/spec-27-part-2"])
 
 
+class TestBranchDisambiguation:
+    """spec v30 Step 10: ``_disambiguate_branch`` resolves local/remote collisions."""
+
+    def _manager(self, tmp_path: Path) -> GitManager:
+        (tmp_path / ".git").mkdir()
+        return GitManager(tmp_path)
+
+    def test_unique_name_unchanged(self, tmp_path: Path) -> None:
+        m = self._manager(tmp_path)
+        with (
+            mock.patch.object(m, "_branch_exists_locally", return_value=False),
+            mock.patch.object(m, "_branch_exists_remotely", return_value=False),
+        ):
+            assert m._disambiguate_branch("codelicious/spec-27-part-2") == "codelicious/spec-27-part-2"
+
+    def test_local_collision_appends_suffix(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        m = self._manager(tmp_path)
+        with (
+            mock.patch.object(m, "_branch_exists_locally", side_effect=[True, False]),
+            mock.patch.object(m, "_branch_exists_remotely", return_value=False),
+            caplog.at_level("INFO", logger="codelicious"),
+        ):
+            disambiguated = m._disambiguate_branch("codelicious/spec-27-part-2", suffix_hint="abc123")
+        assert disambiguated == "codelicious/spec-27-part-2-abc123"
+        assert any("exists; using" in r.message for r in caplog.records)
+
+    def test_remote_only_collision_disambiguated(self, tmp_path: Path) -> None:
+        m = self._manager(tmp_path)
+        with (
+            mock.patch.object(m, "_branch_exists_locally", return_value=False),
+            mock.patch.object(m, "_branch_exists_remotely", side_effect=[True, False]),
+        ):
+            assert m._disambiguate_branch("c", suffix_hint="zz") == "c-zz"
+
+    def test_double_collision_falls_back_to_timestamp(self, tmp_path: Path) -> None:
+        m = self._manager(tmp_path)
+        with (
+            mock.patch.object(m, "_branch_exists_locally", side_effect=[True, True]),
+            mock.patch.object(m, "_branch_exists_remotely", return_value=False),
+        ):
+            disambiguated = m._disambiguate_branch("c", suffix_hint="x")
+        # Falls back to "c-<unix_ts>" — assert the prefix and that the suffix is digits.
+        assert disambiguated.startswith("c-")
+        assert disambiguated != "c-x"
+        assert disambiguated.split("-")[-1].isdigit()
+
+
 # ---------------------------------------------------------------------------
 # New coverage: push_to_origin() — all retries exhausted (transient)
 # ---------------------------------------------------------------------------
@@ -3225,6 +3272,54 @@ class TestBuildPrBody:
         # chunk-50 should NOT appear; chunk-49 SHOULD
         assert "chunk-49" in body
         assert "chunk-50" not in body
+
+
+class TestPrBodyChunkMetadata:
+    """spec v30 Step 9: ``chunk_metadata`` adds Chunk Context / Verifier Summary / Audit Log sections."""
+
+    def test_full_metadata_renders_all_sections(self, tmp_path: Path) -> None:
+        manager = GitManager(tmp_path)
+        meta = {
+            "spec_path": "docs/specs/27.md",
+            "chunk_id": "spec-27-chunk-04",
+            "chunk_title": "Wire orchestrator to engines",
+            "depends_on": ["spec-27-chunk-03"],
+            "dependents": ["spec-27-chunk-05"],
+            "verifier": {
+                "tests_passed": 1908,
+                "lint_warnings": 0,
+                "coverage_pct": 92.5,
+                "coverage_delta_pp": 0.4,
+            },
+            "audit_log_path": ".codelicious/logs/build-20260504.log",
+        }
+        body = manager._build_pr_body(spec_id="27", chunk_summaries=None, prev_pr_url="", chunk_metadata=meta)
+
+        assert "## Chunk Context" in body
+        assert "spec-27-chunk-04" in body
+        assert "spec-27-chunk-03" in body
+        assert "spec-27-chunk-05" in body
+        assert "## Verifier Summary" in body
+        assert "tests passed: 1908" in body
+        assert "92.5%" in body
+        assert "+0.4 pp" in body
+        assert "## Audit Log" in body
+        assert "build-20260504.log" in body
+
+    def test_missing_fields_render_as_n_a(self, tmp_path: Path) -> None:
+        manager = GitManager(tmp_path)
+        body = manager._build_pr_body(spec_id="27", chunk_summaries=None, prev_pr_url="", chunk_metadata={})
+        assert "## Chunk Context" in body
+        # Every renderable field falls back to "n/a" rather than raising.
+        assert body.count("n/a") >= 4
+
+    def test_no_metadata_omits_chunk_sections(self, tmp_path: Path) -> None:
+        """When chunk_metadata is None the new sections must NOT appear (back-compat)."""
+        manager = GitManager(tmp_path)
+        body = manager._build_pr_body(spec_id="27", chunk_summaries=None, prev_pr_url="", chunk_metadata=None)
+        assert "Chunk Context" not in body
+        assert "Verifier Summary" not in body
+        assert "Audit Log" not in body
 
 
 # ---------------------------------------------------------------------------

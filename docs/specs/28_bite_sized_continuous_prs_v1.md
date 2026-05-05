@@ -42,7 +42,7 @@ many small PRs rather than a few large ones.
       the old default
 - [x] Update the banner print line that echoes the cap so it reflects the
       new default
-- [x] Add a `--max-loc-per-pr` CLI flag, default `400`, range 50–5000,
+- [x] Add a `--max-loc-per-pr` CLI flag, default `250`, range 50–5000,
       mapped via the same `_INT_KEYS` mechanism as `max_commits_per_pr`
 - [x] Pass `max_loc_per_pr` into `V2Orchestrator(...)` constructor
       (constructor accepts the kwarg now; cap-enforcement logic lands in Phase 2.2)
@@ -50,9 +50,9 @@ many small PRs rather than a few large ones.
 **Claude Code prompt:**
 > Open `src/codelicious/cli.py`. In `_parse_args`, change the default
 > for `max_commits_per_pr` from 50 to 8. Add a new option
-> `max_loc_per_pr` with default 400, validated to be between 50 and 5000,
+> `max_loc_per_pr` with default 250, validated to be between 50 and 5000,
 > and add the flag `--max-loc-per-pr` to the arg map. Update `_INT_KEYS`
-> to include it. In `main()`, pass `max_loc_per_pr=opts.get("max_loc_per_pr", 400)`
+> to include it. In `main()`, pass `max_loc_per_pr=opts.get("max_loc_per_pr", 250)`
 > when constructing `V2Orchestrator`. Update the banner to print both caps.
 > Do not change behavior when the operator explicitly sets the cap.
 
@@ -97,7 +97,7 @@ many small PRs rather than a few large ones.
 
 **File:** `src/codelicious/orchestrator.py`
 
-- [x] Add `max_loc_per_pr: int = 400` parameter to `V2Orchestrator.__init__`
+- [x] Add `max_loc_per_pr: int = 250` parameter to `V2Orchestrator.__init__`
       (done in Phase 1.1)
 - [x] In `run()`, after the existing commit-cap check (around line 1204),
       add a parallel check: if `max_loc_per_pr > 0` and
@@ -111,7 +111,7 @@ many small PRs rather than a few large ones.
 
 **Claude Code prompt:**
 > In `src/codelicious/orchestrator.py`, extend `V2Orchestrator`. Add
-> `max_loc_per_pr: int = 400` to `__init__`. Extract the existing
+> `max_loc_per_pr: int = 250` to `__init__`. Extract the existing
 > commit-cap split logic in `run()` (around line 1206) into a helper
 > method `_split_pr_and_continue` that takes `spec_id_str`, `spec_title`,
 > current `pr_part`, and returns `(new_pr_part, new_pr_number)`. Then
@@ -256,7 +256,7 @@ and `TestSkipCredentialProbeFlag` (2 cases). Full suite: 1901 passed.
 ## Acceptance Criteria
 
 - [ ] Running `codelicious .` on a multi-task spec produces PRs of ≤ 8 commits
-      and ≤ 400 LOC each, splitting into part-2 / part-3 branches as needed.
+      and ≤ 250 LOC each, splitting into part-2 / part-3 branches as needed.
       *Verified via unit tests; live end-to-end run requires a real repo +
       `gh` auth and is left as a manual smoke test.*
 - [x] Existing tests still pass: `pytest` → **1901 passed**.

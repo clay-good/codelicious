@@ -1,3 +1,5 @@
+import atexit
+import contextlib
 import dataclasses
 import logging
 import os
@@ -27,6 +29,242 @@ class PreFlightResult:
     authenticated_user: str  # GitHub/GitLab username, or "" if unknown
     cli_tool: str  # "gh", "glab", or "" if not available
     skipped: bool  # True when --skip-auth-check was used
+
+
+_DEFAULT_PR_COMMIT_CAP = 8
+_DEFAULT_PR_LOC_CAP = 250
+
+
+def _write_postmortem(
+    repo_path: Path,
+    *,
+    abort_reason: str,
+    log_path: Path | None = None,
+    spec_arg: str = "",
+) -> Path | None:
+    """Write a one-page postmortem under ``.codelicious/`` (spec v30 Step 12).
+
+    Aggregates per-chunk status from any ledger files written during the run
+    (spec v30 Step 2) and the tail of the active log file. Returns the path
+    to the written file, or ``None`` if writing failed. Never raises.
+    """
+    import datetime as _dt
+    import json as _json
+
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = repo_path / ".codelicious"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    out_path = out_dir / f"postmortem-{ts}.md"
+
+    counts = {"merged": 0, "failed": 0, "in_progress": 0, "other": 0}
+    failed_titles: list[str] = []
+    state_dir = out_dir / "state"
+    if state_dir.is_dir():
+        for ledger_file in sorted(state_dir.glob("*.json")):
+            try:
+                data = _json.loads(ledger_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for entry in (data.get("chunks") or {}).values():
+                status = entry.get("status", "other")
+                counts[status] = counts.get(status, 0) + 1
+                if status == "failed":
+                    failed_titles.append(str(entry.get("title", "?")))
+
+    log_tail = ""
+    if log_path and log_path.is_file():
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            log_tail = "\n".join(lines[-50:])
+        except OSError:
+            log_tail = ""
+
+    resume_cmd = f"codelicious build {spec_arg or '.'}"
+    if abort_reason in ("rate-limit", "exception"):
+        # A re-run on the same ledger is the right move; don't suggest --reset-ledger.
+        pass
+    elif abort_reason == "ledger-corrupt":
+        resume_cmd += " --reset-ledger"
+
+    body = [
+        f"# Codelicious postmortem ({ts})",
+        "",
+        f"**Abort reason:** {abort_reason}",
+        "",
+        "## Chunk status",
+        f"- merged: {counts['merged']}",
+        f"- failed: {counts['failed']}",
+        f"- in_progress: {counts['in_progress']}",
+        f"- other: {counts['other']}",
+        "",
+    ]
+    if failed_titles:
+        body.append("### Failed chunks")
+        for title in failed_titles[:25]:
+            body.append(f"- {title}")
+        body.append("")
+    if log_tail:
+        body.append("## Log tail (last 50 lines)")
+        body.append("```")
+        body.append(log_tail)
+        body.append("```")
+        body.append("")
+    body.append("## Resume")
+    body.append(f"```\n{resume_cmd}\n```")
+
+    try:
+        out_path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return out_path
+
+
+def _atomic_symlink_update(link: Path, target_name: str) -> None:
+    """Atomically point ``link`` at ``target_name`` (spec v30 Step 7).
+
+    Creates ``link.<pid>.tmp`` as a symlink to ``target_name``, then uses
+    ``os.replace`` to swap it into place — atomic on POSIX and on NTFS for
+    symlinks since Windows 10. On platforms that disallow symlink creation
+    (e.g. Windows without developer mode), falls back to writing a plain
+    file ``<link>.txt`` containing ``target_name`` and logs an INFO once.
+    """
+    tmp = link.with_suffix(link.suffix + f".{os.getpid()}.tmp")
+    try:
+        # If a stale tmp from a prior crashed run exists, remove it.
+        if tmp.exists() or tmp.is_symlink():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        os.symlink(target_name, tmp)
+        os.replace(tmp, link)
+    except OSError:
+        # Symlink creation failed (Windows non-developer mode, or read-only
+        # parent). Fall back to a sibling text pointer; never raise.
+        try:
+            (link.with_suffix(link.suffix + ".txt")).write_text(target_name, encoding="utf-8")
+            logging.getLogger("codelicious").info(
+                "latest-log symlink unsupported on this platform; wrote %s.txt instead.", link
+            )
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def _run_lock(repo_root: Path):
+    """Acquire a per-repo advisory lock to prevent concurrent runs (spec v30 Step 1).
+
+    On POSIX uses ``fcntl.flock`` with ``LOCK_EX | LOCK_NB``; on platforms
+    without ``fcntl`` (Windows) logs a single warning and proceeds without
+    locking. Writes the holder PID into the lockfile, cleans up on normal
+    exit *and* SystemExit (atexit handler).
+    """
+    lock_dir = repo_root / ".codelicious"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "run.lock"
+
+    try:
+        import fcntl
+    except ImportError:
+        logging.getLogger("codelicious").warning("concurrent-run protection unavailable on this platform")
+        yield None
+        return
+
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Read existing PID for the diagnostic.
+            try:
+                with open(lock_path, encoding="utf-8") as fh:
+                    other_pid = fh.read().strip() or "?"
+            except OSError:
+                other_pid = "?"
+            print(
+                f"Error: another codelicious run is in progress (pid {other_pid}). "
+                f"If you believe this is stale, delete {lock_path}.",
+                file=sys.stderr,
+            )
+            os.close(fd)
+            sys.exit(75)
+
+        # Write our PID and ensure cleanup on every exit path.
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+
+        def _release() -> None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+        atexit.register(_release)
+        try:
+            yield lock_path
+        finally:
+            _release()
+    except SystemExit:
+        raise
+
+
+def _validate_endpoint_url_strict(url: str, *, source: str = "LLM_ENDPOINT") -> None:
+    """Reject non-HTTPS endpoints and credentials-in-URL at the CLI layer (spec v30 Step 3).
+
+    Raises ``SystemExit(2)`` with a clear, sanitized error before any banner
+    or downstream call site sees the value. Empty input is accepted (the
+    feature is disabled).
+    """
+    if not url:
+        return
+
+    import urllib.parse
+
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except Exception:
+        print(f"Error: --endpoint / {source} is not a parseable URL.", file=sys.stderr)
+        sys.exit(2)
+
+    # Sanitize for display: mask any user-info before echoing.
+    sanitized = url
+    if "@" in (parts.netloc or ""):
+        userinfo, _, hostpart = parts.netloc.partition("@")
+        if userinfo:
+            sanitized_netloc = f"***@{hostpart}"
+            sanitized = urllib.parse.urlunsplit(
+                (parts.scheme, sanitized_netloc, parts.path, parts.query, parts.fragment)
+            )
+
+    if parts.scheme.lower() != "https":
+        print(
+            f"Error: {source} must be an https:// URL with no embedded credentials, got: {sanitized}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if not parts.hostname:
+        print(f"Error: {source} has no hostname: {sanitized}", file=sys.stderr)
+        sys.exit(2)
+
+    if parts.username or parts.password:
+        print(
+            f"Error: {source} must be an https:// URL with no embedded credentials, got: {sanitized}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 def _handle_sigterm(signum: int, frame: object) -> None:
@@ -69,10 +307,11 @@ def _probe_git_credentials(repo_path: Path) -> dict:
       * ``gpg --list-secret-keys --with-colons`` → whether GPG agent has a usable key
 
     Returns a dict with keys: ``transport`` (``"ssh"|"https"|"unknown"``),
-    ``gpg_signing`` (bool), ``ssh_key_loaded`` (bool), ``gpg_agent_warm`` (bool).
-    On any failure the conservative value is used so the orchestrator
-    surfaces an interactive prompt rather than letting an autonomous
-    cycle hang on an invisible passphrase prompt.
+    ``gpg_signing`` (bool), ``ssh_key_loaded`` (bool), ``gpg_agent_warm`` (bool),
+    and ``ssh_agent_state`` (one of ``"keys_loaded" | "empty" | "no_agent" |
+    "unknown"``). On any failure the conservative value is used so the
+    orchestrator surfaces an interactive prompt rather than letting an
+    autonomous cycle hang on an invisible passphrase prompt.
     """
     _T = 15
     info: dict = {
@@ -80,6 +319,7 @@ def _probe_git_credentials(repo_path: Path) -> dict:
         "gpg_signing": False,
         "ssh_key_loaded": False,
         "gpg_agent_warm": False,
+        "ssh_agent_state": "unknown",
     }
 
     # ── Remote URL → transport ────────────────────────────────────────
@@ -120,13 +360,28 @@ def _probe_git_credentials(repo_path: Path) -> dict:
                 text=True,
                 timeout=_T,
             )
-            # ssh-add -l: rc 0 → keys loaded; rc 1 → no keys; rc 2 → no agent
-            info["ssh_key_loaded"] = ssh_result.returncode == 0 and bool(ssh_result.stdout.strip())
+            # ssh-add -l: rc 0 → keys loaded; rc 1 → agent running, no keys;
+            # rc 2 → no agent reachable. Any other rc is treated as "unknown"
+            # and falls into the conservative not-loaded branch.
+            if ssh_result.returncode == 0 and ssh_result.stdout.strip():
+                info["ssh_agent_state"] = "keys_loaded"
+                info["ssh_key_loaded"] = True
+            elif ssh_result.returncode == 1:
+                info["ssh_agent_state"] = "empty"
+                info["ssh_key_loaded"] = False
+            elif ssh_result.returncode == 2:
+                info["ssh_agent_state"] = "no_agent"
+                info["ssh_key_loaded"] = False
+            else:
+                info["ssh_agent_state"] = "unknown"
+                info["ssh_key_loaded"] = False
         except (subprocess.TimeoutExpired, OSError):
+            info["ssh_agent_state"] = "unknown"
             info["ssh_key_loaded"] = False
     else:
         # Not an SSH push; key state is irrelevant — treat as "ready"
         info["ssh_key_loaded"] = True
+        info["ssh_agent_state"] = "keys_loaded"
 
     # ── GPG agent probe (only meaningful when signing) ────────────────
     if info["gpg_signing"]:
@@ -181,9 +436,17 @@ def _ensure_git_credentials_unlocked(
 
     # ── SSH key prompt ───────────────────────────────────────────────
     if info["transport"] == "ssh" and not info["ssh_key_loaded"]:
-        print("\n  SSH push transport detected, but no key is loaded in the agent.")
-        print("  Codelicious will run `ssh-add` so you can unlock your key now —")
-        print("  otherwise the autonomous loop would block on a passphrase prompt.\n")
+        agent_state = info.get("ssh_agent_state", "unknown")
+        if agent_state == "no_agent":
+            print("\n  SSH push transport detected, but no ssh-agent is running.")
+            print("  Start one with `eval $(ssh-agent)` and then `ssh-add` your key,")
+            print("  otherwise the autonomous loop would block on a passphrase prompt.\n")
+        else:
+            # "empty" (agent running, no keys) or "unknown" (probe failure):
+            # running ssh-add directly is the right move in both cases.
+            print("\n  SSH push transport detected, but no key is loaded in the agent.")
+            print("  Codelicious will run `ssh-add` so you can unlock your key now —")
+            print("  otherwise the autonomous loop would block on a passphrase prompt.\n")
         try:
             subprocess.run(["ssh-add"], timeout=300)
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -411,13 +674,11 @@ def _attach_file_log_handler(repo_path: Path) -> None:
         fh.addFilter(SanitizingFilter())
         logging.getLogger().addHandler(fh)
         logging.getLogger().setLevel(logging.DEBUG)
+        # spec v30 Step 7: update ``latest.log`` atomically via tmp + rename
+        # so a fast restart (or, pre-Step 1, a concurrent run) cannot leave the
+        # symlink dangling between unlink and re-create.
         latest = log_dir / "latest.log"
-        try:
-            if latest.is_symlink() or latest.exists():
-                latest.unlink()
-            latest.symlink_to(log_path.name)
-        except OSError:
-            pass
+        _atomic_symlink_update(latest, log_path.name)
         logging.getLogger("codelicious").info("Logging build to %s", log_path)
     except OSError as e:
         logging.getLogger("codelicious").warning("Could not attach file logger: %s", e)
@@ -609,12 +870,15 @@ def _parse_args(argv: list[str]) -> dict:
         "skip_auth_check": False,
         "dry_run": False,
         "spec": "",
-        "max_commits_per_pr": 8,
-        "max_loc_per_pr": 250,
+        "max_commits_per_pr": _DEFAULT_PR_COMMIT_CAP,
+        "max_loc_per_pr": _DEFAULT_PR_LOC_CAP,
         "platform": "auto",
         "continuous": False,
         "cycle_sleep_s": 60,
         "skip_credential_probe": False,
+        "no_resume": False,
+        "reset_ledger": False,
+        "min_coverage": -1.0,
     }
 
     # Flags that take a value
@@ -629,6 +893,7 @@ def _parse_args(argv: list[str]) -> dict:
         "--max-loc-per-pr": "max_loc_per_pr",
         "--platform": "platform",
         "--cycle-sleep-s": "cycle_sleep_s",
+        "--min-coverage": "min_coverage",
     }
 
     # Integer-valued flags that need int() conversion
@@ -646,6 +911,9 @@ def _parse_args(argv: list[str]) -> dict:
         "--skip-credential-probe": "skip_credential_probe",
         "--dry-run": "dry_run",
         "--continuous": "continuous",
+        # spec v30 Step 2: idempotent-resume controls.
+        "--no-resume": "no_resume",
+        "--reset-ledger": "reset_ledger",
     }
 
     i = 0
@@ -692,6 +960,12 @@ def _parse_args(argv: list[str]) -> dict:
                     value = int(value)
                 except ValueError:
                     print(f"Error: {args[i]} requires an integer, got '{value}'")
+                    sys.exit(2)
+            elif key == "min_coverage":
+                try:
+                    value = float(value)
+                except ValueError:
+                    print(f"Error: {args[i]} requires a number, got '{value}'")
                     sys.exit(2)
             opts[key] = value
             i += 2
@@ -742,10 +1016,22 @@ def main():
 
     opts = _parse_args(sys.argv)
 
+    # spec v30 Step 3: reject insecure / credential-bearing LLM endpoints
+    # before any downstream code (or the banner) sees the value. Validates
+    # the env var the LLM client ultimately reads.
+    _validate_endpoint_url_strict(os.environ.get("LLM_ENDPOINT", ""), source="LLM_ENDPOINT")
+    if opts.get("endpoint"):
+        _validate_endpoint_url_strict(opts["endpoint"], source="--endpoint")
+
     repo_path = Path(opts["repo_path"]).resolve()
     if not repo_path.is_dir():
         logger.error("Repository path %s does not exist or is not a directory.", repo_path)
         sys.exit(1)
+
+    # spec v30 Step 1: per-repo advisory lock — second concurrent invocation
+    # exits 75 (EX_TEMPFAIL) before any git, sandbox, or LLM call happens.
+    _run_lock_cm = _run_lock(repo_path)
+    _run_lock_cm.__enter__()
 
     _attach_file_log_handler(repo_path)
 
@@ -779,6 +1065,19 @@ def main():
     except RuntimeError as e:
         logger.error(str(e))
         sys.exit(1)
+
+    # spec v30 Step 5: when the user did NOT force a specific engine and both
+    # Claude and HuggingFace credentials are configured, build a fallback list
+    # so a Claude rate-limit fails over to HF for the remainder of the spec.
+    requested_engine = opts.get("engine") or os.environ.get("CODELICIOUS_ENGINE", "auto")
+    fallback_engines: list = [engine]
+    if requested_engine in ("auto", ""):
+        hf_creds = bool(os.environ.get("HF_TOKEN") or os.environ.get("LLM_API_KEY"))
+        if engine.name == "claude" and hf_creds:
+            try:
+                fallback_engines.append(select_engine("huggingface"))
+            except RuntimeError:
+                pass
 
     # 2. Initialize Git Orchestration
     git_manager = GitManager(repo_path)
@@ -837,8 +1136,8 @@ def main():
             except OSError:
                 pass
         print()
-        print(f"[codelicious] Max commits per PR: {opts.get('max_commits_per_pr', 8)}")
-        print(f"[codelicious] Max LOC per PR: {opts.get('max_loc_per_pr', 250)}")
+        print(f"[codelicious] Max commits per PR: {opts.get('max_commits_per_pr', _DEFAULT_PR_COMMIT_CAP)}")
+        print(f"[codelicious] Max LOC per PR: {opts.get('max_loc_per_pr', _DEFAULT_PR_LOC_CAP)}")
         print(f"[codelicious] Platform: {opts.get('platform', 'auto')}")
         print()
         sys.exit(0)
@@ -849,14 +1148,28 @@ def main():
     # 5. Run the v2 chunk-based orchestration loop (spec-27 Phase 4.1)
     from codelicious.orchestrator import V2Orchestrator
 
+    # spec v30 Step 2: --reset-ledger wipes any persisted chunk state before
+    # the orchestrator runs so the next build re-executes everything.
+    if opts.get("reset_ledger"):
+        ledger_dir = repo_path / ".codelicious" / "state"
+        if ledger_dir.is_dir():
+            for ledger_file in ledger_dir.glob("*.json"):
+                try:
+                    ledger_file.unlink()
+                except OSError:
+                    pass
+            logger.info("Reset chunk-status ledger directory: %s", ledger_dir)
+
     v2_orch = V2Orchestrator(
         repo_path=repo_path,
         git_manager=git_manager,
         engine=engine,
-        max_commits_per_pr=opts.get("max_commits_per_pr", 8),
-        max_loc_per_pr=opts.get("max_loc_per_pr", 250),
+        engines=fallback_engines if len(fallback_engines) > 1 else None,
+        max_commits_per_pr=opts.get("max_commits_per_pr", _DEFAULT_PR_COMMIT_CAP),
+        max_loc_per_pr=opts.get("max_loc_per_pr", _DEFAULT_PR_LOC_CAP),
         model=opts.get("model", ""),
         progress_callback=_print_progress,
+        no_resume=opts.get("no_resume", False),
     )
 
     continuous = opts.get("continuous", False)

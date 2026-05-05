@@ -329,3 +329,157 @@ class TestChunkSpecWithLlm:
         chunks = chunk_spec_with_llm(spec, tmp_path, llm)
         assert len(chunks) == 1
         assert chunks[0].title == "Task"
+
+    def test_too_many_chunks_truncated_with_warning(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """LLM producing > _MAX_CHUNKS_PER_SPEC is truncated to the cap with a WARNING (spec v29 Step 7)."""
+        from codelicious.chunker import _MAX_CHUNKS_PER_SPEC, chunk_spec_with_llm
+
+        spec = self._write_spec(tmp_path, "# Spec\n\nMassive.\n")
+        items = ",".join(
+            f'{{"title": "T{i}", "description": "d", "files": [], "depends_on_indices": [], "validation": ""}}'
+            for i in range(_MAX_CHUNKS_PER_SPEC + 1)
+        )
+        llm = self._mock_llm(f"[{items}]")
+
+        with caplog.at_level("WARNING", logger="codelicious.chunker"):
+            chunks = chunk_spec_with_llm(spec, tmp_path, llm)
+        assert len(chunks) == _MAX_CHUNKS_PER_SPEC
+        assert any("truncating" in r.message.lower() for r in caplog.records)
+
+    def test_non_array_json_falls_back(self, tmp_path: pathlib.Path) -> None:
+        """JSON object (not array) at top level falls back to deterministic."""
+        spec = self._write_spec(tmp_path, "# Spec\n\n## P1\n\n- [ ] Single task\n")
+        llm = self._mock_llm('{"title": "wrong shape"}')
+
+        from codelicious.chunker import chunk_spec_with_llm
+
+        chunks = chunk_spec_with_llm(spec, tmp_path, llm)
+        assert len(chunks) == 1
+        assert "Single task" in chunks[0].title
+
+    def test_short_spec_uses_single_window(self, tmp_path: pathlib.Path) -> None:
+        """Short specs make exactly one LLM call (spec v29 Step 7)."""
+        spec = self._write_spec(tmp_path, "# Short\n\n## P1\n\n- [ ] X\n")
+        llm = self._mock_llm(
+            '[{"title": "X", "description": "d", "files": [], "depends_on_indices": [], "validation": ""}]'
+        )
+
+        from codelicious.chunker import chunk_spec_with_llm
+
+        chunk_spec_with_llm(spec, tmp_path, llm)
+        assert llm.chat_completion.call_count == 1
+
+    def test_oversized_spec_makes_multiple_windowed_calls(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A spec well over _LLM_WINDOW_SIZE drives multiple LLM calls (spec v29 Step 7)."""
+        from codelicious.chunker import _LLM_WINDOW_SIZE, chunk_spec_with_llm
+
+        big = "x " * (_LLM_WINDOW_SIZE * 3)
+        spec = self._write_spec(tmp_path, big)
+        llm = self._mock_llm(
+            '[{"title": "T", "description": "d", "files": [], "depends_on_indices": [], "validation": ""}]'
+        )
+
+        with caplog.at_level("WARNING", logger="codelicious.chunker"):
+            chunks = chunk_spec_with_llm(spec, tmp_path, llm)
+        assert llm.chat_completion.call_count >= 2
+        # Title is the same across windows; dedup keeps a single chunk.
+        assert len(chunks) == 1
+        assert any("splitting into" in r.message for r in caplog.records)
+
+    def test_split_spec_helper_caps_window_count(self) -> None:
+        """``_split_spec_for_llm`` never produces more than _LLM_MAX_WINDOWS windows."""
+        from codelicious.chunker import _LLM_MAX_WINDOWS, _LLM_WINDOW_SIZE, _split_spec_for_llm
+
+        huge = "y " * (_LLM_WINDOW_SIZE * 50)
+        windows = _split_spec_for_llm(huge)
+        assert len(windows) == _LLM_MAX_WINDOWS
+
+    def test_self_referential_dep_dropped(self, tmp_path: pathlib.Path) -> None:
+        """A chunk depending on itself is silently dropped (i != idx guard)."""
+        spec = self._write_spec(tmp_path, "# Spec\n\nWork.\n")
+        llm = self._mock_llm(
+            '[{"title": "Solo", "description": "d", "files": [], "depends_on_indices": [0], "validation": ""}]'
+        )
+
+        from codelicious.chunker import chunk_spec_with_llm
+
+        chunks = chunk_spec_with_llm(spec, tmp_path, llm)
+        assert len(chunks) == 1
+        assert chunks[0].depends_on == []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# spec v30 Step 6: token-budget-aware chunk sizing
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestTokenBudget:
+    def _wc(self, files: list[str], chunk_id: str = "spec-1-chunk-01") -> WorkChunk:
+        from codelicious.chunker import WorkChunk
+
+        return WorkChunk(
+            id=chunk_id,
+            spec_path=pathlib.Path("docs/specs/01.md"),
+            title="t",
+            description="d",
+            depends_on=[],
+            estimated_files=files,
+            validation="",
+        )
+
+    def test_under_budget_unchanged(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.chunker import enforce_token_budget
+
+        wc = self._wc([])
+        out = enforce_token_budget([wc], tmp_path, engines=["claude"])
+        assert out == [wc]
+
+    def test_over_budget_chunk_is_split(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.chunker import enforce_token_budget
+
+        # 4 files, each 30k chars → 120k chars / 4 = 30k tokens. HF budget 24k.
+        files = []
+        for i in range(4):
+            p = tmp_path / f"big_{i}.py"
+            p.write_text("x" * 30_000)
+            files.append(p.name)
+        wc = self._wc(files)
+        out = enforce_token_budget([wc], tmp_path, engines=["huggingface"])
+        # Splits at least once → two or more chunks; second one depends on first.
+        assert len(out) >= 2
+        assert out[0].id == wc.id
+        assert wc.id in out[1].depends_on
+
+    def test_recursive_split_caps_at_depth(self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Even a runaway chunk produces at most 2**depth+1 sub-chunks."""
+        from codelicious.chunker import _MAX_CHUNK_SPLIT_DEPTH, enforce_token_budget
+
+        # One enormous file dominates the budget; can't split below 1 file.
+        big = tmp_path / "huge.py"
+        big.write_text("y" * 200_000)
+        wc = self._wc([big.name])
+        with caplog.at_level("WARNING", logger="codelicious.chunker"):
+            out = enforce_token_budget([wc], tmp_path, engines=["huggingface"])
+        # Single-file chunk can't subdivide further; original is dispatched anyway.
+        assert len(out) == 1
+        assert any("dispatch anyway" in r.message for r in caplog.records)
+        assert _MAX_CHUNK_SPLIT_DEPTH == 3
+
+    def test_split_preserves_total_file_coverage(self, tmp_path: pathlib.Path) -> None:
+        from codelicious.chunker import enforce_token_budget
+
+        files = []
+        for i in range(4):
+            p = tmp_path / f"file_{i}.py"
+            p.write_text("z" * 30_000)
+            files.append(p.name)
+        wc = self._wc(files)
+        out = enforce_token_budget([wc], tmp_path, engines=["huggingface"])
+        covered: list[str] = []
+        for c in out:
+            covered.extend(c.estimated_files)
+        assert sorted(covered) == sorted(files)

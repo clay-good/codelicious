@@ -13,11 +13,16 @@ import pathlib
 import random
 import time
 
-from codelicious.engines.base import BuildEngine, BuildResult, ChunkResult, EngineContext
+from codelicious.engines.base import BuildEngine, ChunkResult, EngineContext
 from codelicious.errors import LLMRateLimitError
 from codelicious.loop_controller import MAX_HISTORY_TOKENS, MAX_TOOL_RESULT_BYTES, truncate_history
 
 logger = logging.getLogger("codelicious.engines.huggingface")
+
+# spec v29 Step 11: cap on the number of post-reflection fix-cycle attempts
+# the HF engine will make before giving up. Prevents infinite loops when the
+# model cannot satisfy verification.
+_HF_MAX_FIX_ATTEMPTS: int = 2
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -251,6 +256,33 @@ class HuggingFaceEngine(BuildEngine):
         except Exception:
             files = []
 
+        # spec v29 Step 11: gating verification before signalling success.
+        # The HF model can emit CHUNK_COMPLETE without actually satisfying the
+        # spec; run our own verifier and, if it fails, give the model up to two
+        # fix-cycle attempts before giving up.
+        retries_used = 0
+        if completed:
+            verification = self.verify_chunk(chunk, repo_path)
+            while not verification.success and retries_used < _HF_MAX_FIX_ATTEMPTS:
+                retries_used += 1
+                logger.info(
+                    "Chunk %s: post-reflection verification failed (attempt %d/%d); invoking fix_chunk.",
+                    chunk_id,
+                    retries_used,
+                    _HF_MAX_FIX_ATTEMPTS,
+                )
+                self.fix_chunk(chunk, repo_path, [verification.message or "verification failed"])
+                verification = self.verify_chunk(chunk, repo_path)
+            if not verification.success:
+                return ChunkResult(
+                    success=False,
+                    files_modified=files,
+                    message=(
+                        f"HF engine could not satisfy verification after "
+                        f"{_HF_MAX_FIX_ATTEMPTS} fix attempts: {verification.message}"
+                    ),
+                )
+
         return ChunkResult(
             success=completed,
             files_modified=files,
@@ -264,9 +296,11 @@ class HuggingFaceEngine(BuildEngine):
     ) -> ChunkResult:
         """Run verification checks on the repo after a chunk."""
         try:
-            from codelicious.verifier import verify
+            from codelicious.verifier import verify, verify_paths
 
-            vresult = verify(repo_path)
+            # spec v29 Step 6: scope checks to the chunk's files when known.
+            scoped = list(getattr(chunk, "estimated_files", []) or [])
+            vresult = verify_paths(repo_path, scoped) if scoped else verify(repo_path)
             if vresult.all_passed:
                 return ChunkResult(success=True, message="All checks passed.")
 
@@ -314,49 +348,4 @@ class HuggingFaceEngine(BuildEngine):
             files_modified=result.files_modified,
             message=result.message,
             retries_used=1,
-        )
-
-    # ------------------------------------------------------------------
-    # Legacy interface — delegates to V2Orchestrator
-    # ------------------------------------------------------------------
-
-    def run_build_cycle(
-        self,
-        repo_path: pathlib.Path,
-        git_manager: object,
-        cache_manager: object,
-        spec_filter: str | None = None,
-        **kwargs,
-    ) -> BuildResult:
-        """Run the build lifecycle by delegating to V2Orchestrator.
-
-        This method exists for backward compatibility with the ``BuildEngine``
-        interface.  The ``cli.py`` main entry point now calls ``V2Orchestrator``
-        directly, so this path is only used if an external caller invokes the
-        engine directly.
-        """
-        from codelicious.orchestrator import V2Orchestrator
-        from codelicious.spec_discovery import discover_incomplete_specs
-
-        start = time.monotonic()
-        repo_path = pathlib.Path(repo_path).resolve()
-        agent_timeout_s = kwargs.get("agent_timeout_s", 1800)
-        push_pr = kwargs.get("push_pr", False)
-        max_commits_per_pr = kwargs.get("max_commits_per_pr", 50)
-
-        specs = discover_incomplete_specs(repo_path)
-        if not specs:
-            return BuildResult(success=True, message="No incomplete specs found.", elapsed_s=time.monotonic() - start)
-
-        orch = V2Orchestrator(repo_path, git_manager, self, max_commits_per_pr=max_commits_per_pr)
-        result = orch.run(
-            specs=specs,
-            deadline=start + agent_timeout_s,
-            push_pr=push_pr,
-        )
-
-        return BuildResult(
-            success=result.success,
-            message=result.message,
-            elapsed_s=result.elapsed_s,
         )

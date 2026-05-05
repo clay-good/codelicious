@@ -128,7 +128,7 @@ Options:
   --spec PATH              Build a single spec file (skip discovery)
   --dry-run                Discover specs and print plan, no execution
   --max-commits-per-pr N   PR commit cap (default: 8, max: 100)
-  --max-loc-per-pr N       PR line-of-code cap (default: 400, range: 50-5000)
+  --max-loc-per-pr N       PR line-of-code cap (default: 250, range: 50-5000)
   --platform PLATFORM      github, gitlab, or auto (default: auto)
   --parallel N             Concurrent agentic loops, HF engine only (default: 1)
   --skip-auth-check        Skip gh/glab auth validation (for CI with GITHUB_TOKEN)
@@ -146,7 +146,7 @@ Environment variables:
 Codelicious produces small, focused, human-reviewable PRs by default:
 
 - **8 commits max per PR** (`--max-commits-per-pr`, range 1–100)
-- **400 LOC max per PR** (`--max-loc-per-pr`, range 50–5000)
+- **250 LOC max per PR** (`--max-loc-per-pr`, range 50–5000)
 
 When either cap is hit, the current PR is transitioned to review and a
 continuation branch (`<branch>-part-2`, `-part-3`, ...) is opened so work

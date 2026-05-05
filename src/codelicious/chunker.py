@@ -22,6 +22,27 @@ logger = logging.getLogger("codelicious.chunker")
 
 _MAX_CHUNKS_PER_SPEC = 100
 
+# spec v29 Step 7: spec-windowing constants for ``chunk_spec_with_llm``.
+# Windowing is triggered when ``len(spec_content) > _LLM_WINDOW_SIZE``. Each
+# window covers ``_LLM_WINDOW_SIZE`` characters with ``_LLM_WINDOW_OVERLAP``
+# characters of overlap to keep cross-window references intact. We cap the
+# total number of windows so an enormous spec doesn't burn 100 LLM calls.
+_LLM_WINDOW_SIZE: int = 5000
+_LLM_WINDOW_OVERLAP: int = 500
+_LLM_MAX_WINDOWS: int = 10
+
+# spec v30 Step 6: token budgets per engine. Estimated as ~4 chars/token. The
+# Claude budget leaves ~50k tokens of headroom on the 200k context window for
+# the response; HuggingFace defaults are far tighter. Resolution order:
+# explicit ``engines`` arg > "default".
+_MAX_CHUNK_TOKENS_PER_ENGINE: dict[str, int] = {
+    "claude": 150_000,
+    "huggingface": 24_000,
+    "default": 24_000,
+}
+_TOKEN_CHARS_PER_TOKEN: int = 4
+_MAX_CHUNK_SPLIT_DEPTH: int = 3
+
 # Matches a markdown checkbox line, capturing the text after the box.
 _CHECKBOX_LINE_RE = re.compile(r"^\s*-\s*\[\s*\]\s*(.+)", re.MULTILINE)
 
@@ -197,56 +218,77 @@ def chunk_spec_with_llm(
         logger.warning("Cannot read spec %s for LLM chunking; falling back.", spec_path)
         return chunk_spec(spec_path, repo_path)
 
-    # Build the prompt
-    prompt = (
-        "You are a software architect. Given the following spec, decompose it into "
-        "independent, commit-sized units of work. Each chunk should:\n"
-        "- Touch a small number of files\n"
-        "- Be independently testable\n"
-        "- Have a clear title (under 72 chars)\n"
-        "- List which files it likely modifies\n"
-        "- Specify dependencies on other chunks (by index)\n\n"
-        f"Respond ONLY with a JSON array. Each element must have:\n"
-        '  {{"title": "...", "description": "...", "files": ["..."], '
-        '"depends_on_indices": [], "validation": "..."}}\n\n'
-        f"## Spec\n{spec_content[:5000]}\n"
-    )
+    # spec v29 Step 7: window oversized specs instead of silently truncating.
+    windows = _split_spec_for_llm(spec_content)
+    raw_chunks: list[dict] = []
+    seen_titles: set[str] = set()
+    for window_idx, window_text in enumerate(windows):
+        prompt = (
+            "You are a software architect. Given the following spec, decompose it into "
+            "independent, commit-sized units of work. Each chunk should:\n"
+            "- Touch a small number of files\n"
+            "- Be independently testable\n"
+            "- Have a clear title (under 72 chars)\n"
+            "- List which files it likely modifies\n"
+            "- Specify dependencies on other chunks (by index)\n\n"
+            "Respond ONLY with a JSON array. Each element must have:\n"
+            '  {"title": "...", "description": "...", "files": ["..."], '
+            '"depends_on_indices": [], "validation": "..."}\n\n'
+            f"## Spec (window {window_idx + 1}/{len(windows)})\n{window_text}\n"
+        )
 
-    messages = [
-        {
-            "role": "system",
-            "content": "You decompose specs into commit-sized work chunks. Respond only with valid JSON.",
-        },
-        {"role": "user", "content": prompt},
-    ]
+        messages = [
+            {
+                "role": "system",
+                "content": "You decompose specs into commit-sized work chunks. Respond only with valid JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ]
 
-    try:
-        response = llm_client.chat_completion(messages, tools=[], role="planner")
-        content = ""
-        choices = response.get("choices") or []
-        if choices and isinstance(choices[0], dict):
-            msg = choices[0].get("message", {})
-            content = msg.get("content", "") if isinstance(msg, dict) else ""
-    except Exception as e:
-        logger.warning("LLM chunking failed: %s; falling back to deterministic.", e)
-        return chunk_spec(spec_path, repo_path)
+        try:
+            response = llm_client.chat_completion(messages, tools=[], role="planner")
+            content = ""
+            choices = response.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                msg = choices[0].get("message", {})
+                content = msg.get("content", "") if isinstance(msg, dict) else ""
+        except Exception as e:
+            logger.warning("LLM chunking failed on window %d: %s; falling back to deterministic.", window_idx + 1, e)
+            return chunk_spec(spec_path, repo_path)
 
-    # Parse the JSON response
-    try:
-        # Extract JSON array from the response (may be wrapped in markdown code block)
-        json_str = content.strip()
-        if json_str.startswith("```"):
-            # Strip markdown code fences
-            lines = json_str.splitlines()
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            json_str = "\n".join(lines)
+        try:
+            json_str = content.strip()
+            if json_str.startswith("```"):
+                lines = json_str.splitlines()
+                lines = [ln for ln in lines if not ln.strip().startswith("```")]
+                json_str = "\n".join(lines)
 
-        raw_chunks = json.loads(json_str)
-        if not isinstance(raw_chunks, list):
-            raise ValueError("LLM response is not a JSON array")
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.warning("LLM returned invalid JSON: %s; falling back.", e)
-        return chunk_spec(spec_path, repo_path)
+            window_raw = json.loads(json_str)
+            if not isinstance(window_raw, list):
+                raise ValueError("LLM response is not a JSON array")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("LLM returned invalid JSON on window %d: %s; falling back.", window_idx + 1, e)
+            return chunk_spec(spec_path, repo_path)
+
+        # Deduplicate on normalised title across windows: the overlap region
+        # invites the LLM to re-emit the same chunk in two adjacent windows.
+        for entry in window_raw:
+            if not isinstance(entry, dict):
+                continue
+            title_norm = str(entry.get("title", "")).strip().lower()
+            if title_norm and title_norm in seen_titles:
+                continue
+            seen_titles.add(title_norm)
+            raw_chunks.append(entry)
+
+    if len(raw_chunks) > _MAX_CHUNKS_PER_SPEC:
+        logger.warning(
+            "LLM produced %d chunks across %d windows; truncating to %d.",
+            len(raw_chunks),
+            len(windows),
+            _MAX_CHUNKS_PER_SPEC,
+        )
+        raw_chunks = raw_chunks[:_MAX_CHUNKS_PER_SPEC]
 
     # Validate and convert to WorkChunk objects
     chunks: list[WorkChunk] = []
@@ -291,9 +333,6 @@ def chunk_spec_with_llm(
             )
         )
 
-    if len(chunks) > _MAX_CHUNKS_PER_SPEC:
-        raise ValueError(f"LLM decomposed spec into {len(chunks)} chunks (max {_MAX_CHUNKS_PER_SPEC}).")
-
     # Validate no circular dependencies
     if _has_circular_deps(chunks):
         logger.warning("LLM produced circular dependencies; falling back to deterministic.")
@@ -305,6 +344,143 @@ def chunk_spec_with_llm(
 
     logger.info("LLM chunked %s into %d work chunk(s).", spec_path.name, len(chunks))
     return chunks
+
+
+def _estimate_chunk_tokens(chunk: WorkChunk, repo: pathlib.Path) -> int:
+    """Estimate the prompt token cost of dispatching ``chunk`` to an engine.
+
+    Sums the title, description, a fixed prompt-template overhead, and the
+    sizes of every existing file in ``chunk.estimated_files``. Divides the
+    total character count by ``_TOKEN_CHARS_PER_TOKEN``.
+    """
+    chars = len(chunk.title) + len(chunk.description)
+    chars += 2_000  # rough prompt-template / system-message overhead
+    for fname in chunk.estimated_files or []:
+        # Reject path traversal up-front so this helper is safe even when
+        # called on untrusted chunks (the chunker validates LLM-supplied
+        # paths but the deterministic chunker uses regex hints).
+        if ".." in fname or fname.startswith("/"):
+            continue
+        try:
+            path = repo / fname
+            if path.is_file():
+                chars += path.stat().st_size
+        except (OSError, ValueError):
+            continue
+    return max(0, chars // _TOKEN_CHARS_PER_TOKEN)
+
+
+def _resolve_token_budget(engines: list[str] | None) -> int:
+    """Return the smallest budget across the active engines (worst-case)."""
+    if not engines:
+        return _MAX_CHUNK_TOKENS_PER_ENGINE["default"]
+    budgets = [_MAX_CHUNK_TOKENS_PER_ENGINE.get(name, _MAX_CHUNK_TOKENS_PER_ENGINE["default"]) for name in engines]
+    return min(budgets) if budgets else _MAX_CHUNK_TOKENS_PER_ENGINE["default"]
+
+
+def _split_chunk_in_half(chunk: WorkChunk, suffix: str) -> tuple[WorkChunk, WorkChunk]:
+    """Split ``chunk`` by halving its file list. The second half depends on the first."""
+    files = list(chunk.estimated_files or [])
+    mid = max(1, len(files) // 2)
+    head_files = files[:mid]
+    tail_files = files[mid:]
+    head = WorkChunk(
+        id=chunk.id,
+        spec_path=chunk.spec_path,
+        title=chunk.title,
+        description=chunk.description,
+        depends_on=list(chunk.depends_on or []),
+        estimated_files=head_files,
+        validation=chunk.validation,
+    )
+    tail = WorkChunk(
+        id=f"{chunk.id}_{suffix}",
+        spec_path=chunk.spec_path,
+        title=chunk.title,
+        description=chunk.description,
+        depends_on=[head.id],
+        estimated_files=tail_files,
+        validation=chunk.validation,
+    )
+    return head, tail
+
+
+def enforce_token_budget(
+    chunks: list[WorkChunk],
+    repo: pathlib.Path,
+    *,
+    engines: list[str] | None = None,
+) -> list[WorkChunk]:
+    """Recursively split chunks that exceed the active token budget (spec v30 Step 6).
+
+    The recursion is capped at ``_MAX_CHUNK_SPLIT_DEPTH`` levels (i.e. up to 8
+    sub-chunks per original chunk). When a chunk still exceeds the budget at
+    that depth a WARNING is logged and the chunk is dispatched anyway —
+    failing fast at the engine boundary is preferable to dropping work.
+    """
+    budget = _resolve_token_budget(engines)
+    out: list[WorkChunk] = []
+    # Each entry: (chunk, depth, suffix_seed). suffix_seed cycles ``b → c → ...``.
+    stack: list[tuple[WorkChunk, int, int]] = [(c, 0, 0) for c in chunks]
+    suffix_alphabet = "bcdefghij"
+    while stack:
+        chunk, depth, seed = stack.pop(0)
+        tokens = _estimate_chunk_tokens(chunk, repo)
+        if tokens <= budget:
+            out.append(chunk)
+            continue
+        if depth >= _MAX_CHUNK_SPLIT_DEPTH or len(chunk.estimated_files or []) <= 1:
+            logger.warning(
+                "Chunk %s still %d tokens after %d splits — dispatch anyway, may fail.",
+                chunk.id,
+                tokens,
+                depth,
+            )
+            out.append(chunk)
+            continue
+        suffix = suffix_alphabet[min(seed, len(suffix_alphabet) - 1)]
+        head, tail = _split_chunk_in_half(chunk, suffix)
+        # Push back onto the front so dependent ordering is preserved.
+        stack.insert(0, (head, depth + 1, seed + 1))
+        stack.insert(1, (tail, depth + 1, seed + 1))
+    return out
+
+
+def _split_spec_for_llm(spec_content: str) -> list[str]:
+    """Split a spec body into overlapping windows for ``chunk_spec_with_llm``.
+
+    Returns ``[spec_content]`` when the body is short enough to fit in a
+    single LLM pass. Otherwise produces sliding windows of length
+    ``_LLM_WINDOW_SIZE`` with ``_LLM_WINDOW_OVERLAP`` characters of overlap,
+    capped at ``_LLM_MAX_WINDOWS``.
+    """
+    if len(spec_content) <= _LLM_WINDOW_SIZE:
+        return [spec_content]
+
+    step = max(_LLM_WINDOW_SIZE - _LLM_WINDOW_OVERLAP, 1)
+    windows: list[str] = []
+    start = 0
+    while start < len(spec_content) and len(windows) < _LLM_MAX_WINDOWS:
+        windows.append(spec_content[start : start + _LLM_WINDOW_SIZE])
+        if start + _LLM_WINDOW_SIZE >= len(spec_content):
+            break
+        start += step
+
+    if len(windows) >= _LLM_MAX_WINDOWS and (windows[-1] is not None) and start + _LLM_WINDOW_SIZE < len(spec_content):
+        logger.warning(
+            "Spec exceeded %d windows of %d chars; truncating remaining content.",
+            _LLM_MAX_WINDOWS,
+            _LLM_WINDOW_SIZE,
+        )
+
+    logger.warning(
+        "Spec too large for single LLM pass: %d chars, splitting into %d window(s) of ~%d chars with %d-char overlap.",
+        len(spec_content),
+        len(windows),
+        _LLM_WINDOW_SIZE,
+        _LLM_WINDOW_OVERLAP,
+    )
+    return windows
 
 
 def _has_circular_deps(chunks: list[WorkChunk]) -> bool:

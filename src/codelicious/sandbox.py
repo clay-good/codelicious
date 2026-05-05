@@ -108,6 +108,16 @@ class Sandbox:
         # Merge extra extensions from CODELICIOUS_EXTRA_EXTENSIONS env var
         self._allowed_extensions: frozenset[str] = self._build_allowed_extensions()
 
+        # spec v29 Step 15: explicit warning when O_NOFOLLOW is unavailable
+        # (Windows). The post-write symlink re-check is silently skipped on
+        # such platforms, downgrading TOCTOU protection to best-effort.
+        if not hasattr(os, "O_NOFOLLOW"):
+            logger.warning(
+                "Sandbox: os.O_NOFOLLOW unavailable on this platform — TOCTOU "
+                "protection on atomic writes is best-effort. Run codelicious "
+                "on a POSIX system for full guarantees."
+            )
+
     @staticmethod
     def _build_allowed_extensions() -> frozenset[str]:
         """Merge CODELICIOUS_EXTRA_EXTENSIONS into the base allowlist."""

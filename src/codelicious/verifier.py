@@ -1170,6 +1170,199 @@ def check_custom_command(
     )
 
 
+# spec v30 Step 8: project-wide coverage floor used by ``verify`` /
+# ``verify_paths`` when no explicit value is supplied. CLI flag overrides
+# pyproject value; pyproject value overrides this default.
+_DEFAULT_MIN_COVERAGE: float = 90.0
+
+
+def _read_min_coverage_from_pyproject(repo: pathlib.Path) -> float | None:
+    """Return ``[tool.codelicious].min_coverage`` from pyproject.toml or None."""
+    pyproject = repo / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        import tomllib
+    except ImportError:  # Python <3.11 — codelicious requires 3.10+, may lack tomllib
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    try:
+        with open(pyproject, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return None
+    section = data.get("tool", {}).get("codelicious", {})
+    val = section.get("min_coverage")
+    if isinstance(val, (int, float)) and val >= 0:
+        return float(val)
+    return None
+
+
+def resolve_min_coverage(
+    repo: pathlib.Path,
+    *,
+    cli_override: float | None = None,
+) -> float:
+    """Resolve the active coverage floor (CLI > pyproject > default)."""
+    if cli_override is not None and cli_override >= 0:
+        return float(cli_override)
+    pyproject_val = _read_min_coverage_from_pyproject(repo)
+    if pyproject_val is not None:
+        return pyproject_val
+    return _DEFAULT_MIN_COVERAGE
+
+
+def _enforce_coverage_floor(result: VerificationResult, min_coverage: float) -> None:
+    """Demote success → failure when measured coverage is below ``min_coverage``.
+
+    Looks for a ``coverage`` :class:`CheckResult` in ``result.checks``; if its
+    message embeds a percentage, compare against the floor. If below, mark the
+    check failed and append the explanatory message.
+    """
+    if min_coverage <= 0:
+        return
+    for check in result.checks:
+        if check.name != "coverage":
+            continue
+        # Combine the short message with details so we catch the percentage no
+        # matter where ``check_coverage`` happened to put it.
+        haystack = " ".join((check.message or "", check.details or ""))
+        match = re.search(r"(\d+(?:\.\d+)?)\s*%", haystack)
+        if not match:
+            return
+        pct = float(match.group(1))
+        if pct < min_coverage:
+            check.passed = False
+            floor_msg = f"coverage {pct:.1f}% below floor {min_coverage:.1f}%"
+            check.message = (check.message + " | " + floor_msg) if check.message else floor_msg
+
+
+def _map_src_to_tests(repo: pathlib.Path, paths: list[pathlib.Path]) -> list[pathlib.Path]:
+    """Map ``src/<module>.py`` paths to ``tests/test_<module>.py`` when present.
+
+    Returns the list of resolved test paths that exist on disk. Used by
+    ``verify_paths`` to scope pytest invocations to the modules a chunk
+    actually touched.
+    """
+    tests_dir = repo / "tests"
+    found: list[pathlib.Path] = []
+    seen: set[pathlib.Path] = set()
+    for raw in paths:
+        p = raw if isinstance(raw, pathlib.Path) else pathlib.Path(str(raw))
+        if p.suffix != ".py":
+            continue
+        candidate = tests_dir / f"test_{p.stem}.py"
+        if candidate.is_file() and candidate not in seen:
+            found.append(candidate)
+            seen.add(candidate)
+    return found
+
+
+def verify_paths(
+    repo: pathlib.Path,
+    paths: list[pathlib.Path],
+    *,
+    full_verify_kwargs: dict | None = None,
+    min_coverage: float | None = None,
+) -> VerificationResult:
+    """Run lint/security/test checks scoped to ``paths`` (spec v29 Step 6).
+
+    * ``ruff check <paths>`` and ``bandit <paths>`` are invoked with the
+      caller-supplied paths so we don't re-scan an entire repo per chunk.
+    * Tests are scoped via ``pytest <inferred-test-paths>`` derived by
+      mapping each ``src/<module>.py`` to ``tests/test_<module>.py`` when
+      that file exists.
+    * When ``paths`` is empty, or no test mapping can be inferred, the
+      function falls back to the project-wide :func:`verify`.
+    """
+    if not paths:
+        kwargs = dict(full_verify_kwargs or {})
+        return verify(repo, **kwargs)
+
+    py_paths = [pathlib.Path(p) for p in paths if str(p).endswith(".py")]
+    test_paths = _map_src_to_tests(repo, py_paths)
+
+    if not test_paths:
+        # Without a test mapping the chunk-scope test run is meaningless;
+        # fall back to the full verifier so we still catch regressions.
+        kwargs = dict(full_verify_kwargs or {})
+        return verify(repo, **kwargs)
+
+    checks: list[CheckResult] = []
+
+    # ── ruff (python only) ────────────────────────────────────────────
+    if shutil.which("ruff"):
+        ruff_targets = [str(p) for p in py_paths if (repo / p).exists() or p.is_absolute()]
+        if ruff_targets:
+            try:
+                proc = _run_with_pgroup_kill(
+                    ["ruff", "check", *ruff_targets],
+                    cwd=str(repo),
+                    capture_output=True,
+                    text=True,
+                    timeout=_LINT_TIMEOUT_S,
+                )
+                checks.append(
+                    CheckResult(
+                        name="lint",
+                        passed=proc.returncode == 0,
+                        message="ruff clean" if proc.returncode == 0 else _truncate(proc.stdout or proc.stderr),
+                    )
+                )
+            except subprocess.TimeoutExpired:
+                checks.append(CheckResult(name="lint", passed=False, message="ruff timed out"))
+
+    # ── bandit (python only) ─────────────────────────────────────────
+    if shutil.which("bandit"):
+        bandit_targets = [str(p) for p in py_paths]
+        if bandit_targets:
+            try:
+                proc = _run_with_pgroup_kill(
+                    ["bandit", "-q", *bandit_targets],
+                    cwd=str(repo),
+                    capture_output=True,
+                    text=True,
+                    timeout=_LINT_TIMEOUT_S,
+                )
+                # bandit returns 1 when issues are found; treat any non-zero
+                # exit as a failure but pass through bandit's own message.
+                checks.append(
+                    CheckResult(
+                        name="security",
+                        passed=proc.returncode == 0,
+                        message="bandit clean" if proc.returncode == 0 else _truncate(proc.stdout or proc.stderr),
+                    )
+                )
+            except subprocess.TimeoutExpired:
+                checks.append(CheckResult(name="security", passed=False, message="bandit timed out"))
+
+    # ── pytest scoped to mapped tests ────────────────────────────────
+    try:
+        proc = _run_with_pgroup_kill(
+            ["python", "-m", "pytest", "-q", "--no-cov", *[str(p) for p in test_paths]],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=_TEST_TIMEOUT_S,
+        )
+        checks.append(
+            CheckResult(
+                name="tests",
+                passed=proc.returncode == 0,
+                message="tests passed" if proc.returncode == 0 else _truncate(proc.stdout or proc.stderr),
+            )
+        )
+    except subprocess.TimeoutExpired:
+        checks.append(CheckResult(name="tests", passed=False, message="pytest timed out"))
+
+    result = VerificationResult(checks=checks)
+    floor = resolve_min_coverage(repo, cli_override=min_coverage)
+    _enforce_coverage_floor(result, floor)
+    return result
+
+
 def verify(
     project_dir: pathlib.Path,
     timeout: int = 120,
@@ -1281,12 +1474,21 @@ def verify(
             check.message,
         )
 
-    # Log summary
-    passed_count = sum(1 for c in checks if c.passed)
-    failed_count = len(checks) - passed_count
+    result = VerificationResult(checks=checks)
+
+    # spec v30 Step 8: enforce the resolved coverage floor regardless of how
+    # the underlying ``check_coverage`` reported it. ``coverage_threshold==0``
+    # means coverage was not measured this run; skip the gate.
+    if coverage_threshold > 0:
+        floor = resolve_min_coverage(project_dir, cli_override=float(coverage_threshold))
+        _enforce_coverage_floor(result, floor)
+
+    # Log summary (after floor enforcement so counts reflect any demotion)
+    passed_count = sum(1 for c in result.checks if c.passed)
+    failed_count = len(result.checks) - passed_count
     logger.info("Verification complete: %d passed, %d failed", passed_count, failed_count)
 
-    return VerificationResult(checks=checks)
+    return result
 
 
 def _pytest_cov_available() -> bool:

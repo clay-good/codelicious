@@ -643,6 +643,7 @@ class GitManager:
         part: int = 0,
         prev_pr_url: str = "",
         chunk_summaries: list[str] | None = None,
+        chunk_metadata: dict | None = None,
     ) -> int | None:
         """Ensure exactly one PR/MR exists for the current spec (spec-27 Phase 5).
 
@@ -707,7 +708,7 @@ class GitManager:
             title = f"{title} (part {part})"
         title = title.replace("\n", " ").replace("\r", " ").replace("\x00", "")[:70]
 
-        body = self._build_pr_body(spec_id, chunk_summaries, prev_pr_url)
+        body = self._build_pr_body(spec_id, chunk_summaries, prev_pr_url, chunk_metadata)
 
         if platform == "gitlab":
             return self._create_gitlab_mr(cli_tool, title, body, _TIMEOUT_S)
@@ -718,8 +719,16 @@ class GitManager:
         spec_id: str,
         chunk_summaries: list[str] | None,
         prev_pr_url: str,
+        chunk_metadata: dict | None = None,
     ) -> str:
-        """Build the PR/MR body with spec link, chunk summary, and part links."""
+        """Build the PR/MR body with spec link, chunk summary, and part links.
+
+        spec v30 Step 9: when ``chunk_metadata`` is provided, render two extra
+        sections — ``## Chunk Context`` (spec source path, chunk id/title,
+        dependency graph slice) and ``## Verifier Summary`` (test count, lint
+        warnings, coverage Δ) — so a human reviewer has full context in one
+        glance. Missing fields render as ``n/a``.
+        """
         parts = [
             "## Summary\n",
             f"Autonomous implementation by Codelicious (spec-{spec_id}).\n",
@@ -729,6 +738,39 @@ class GitManager:
             for cs in chunk_summaries[:50]:
                 parts.append(f"- {cs}")
             parts.append("")
+
+        if chunk_metadata is not None:
+            md = chunk_metadata
+            parts.append("## Chunk Context")
+            parts.append(f"- Spec source: `{md.get('spec_path') or 'n/a'}`")
+            parts.append(f"- Chunk id: `{md.get('chunk_id') or 'n/a'}`")
+            parts.append(f"- Chunk title: {md.get('chunk_title') or 'n/a'}")
+            depends_on = md.get("depends_on") or []
+            dependents = md.get("dependents") or []
+            parts.append(f"- Depends on: {', '.join(depends_on) if depends_on else 'n/a'}")
+            parts.append(f"- Dependents: {', '.join(dependents) if dependents else 'n/a'}")
+            parts.append("")
+
+            verifier = md.get("verifier") or {}
+            parts.append("## Verifier Summary")
+            tests = verifier.get("tests_passed", "n/a")
+            warnings = verifier.get("lint_warnings", "n/a")
+            coverage = verifier.get("coverage_pct", "n/a")
+            cov_delta = verifier.get("coverage_delta_pp", "n/a")
+            cov_str = f"{coverage}%" if coverage != "n/a" else "n/a"
+            delta_str = (
+                f" (Δ {'+' if isinstance(cov_delta, (int, float)) and cov_delta >= 0 else ''}{cov_delta} pp)"
+                if cov_delta != "n/a"
+                else ""
+            )
+            parts.append(f"tests passed: {tests} | lint warnings: {warnings} | coverage: {cov_str}{delta_str}")
+            parts.append("")
+
+            audit_log = md.get("audit_log_path")
+            parts.append("## Audit Log")
+            parts.append(f"- {audit_log if audit_log else 'n/a'}")
+            parts.append("")
+
         if prev_pr_url:
             parts.append(f"**Previous part:** {prev_pr_url}\n")
         parts.append("This PR updates automatically as new commits are pushed.\n")
@@ -1144,17 +1186,72 @@ class GitManager:
             logger.error("Failed to revert chunk changes: %s", e)
             return False
 
+    def _branch_exists_locally(self, branch: str) -> bool:
+        """Return True iff ``branch`` is a local ref."""
+        try:
+            result = self._run_cmd(["git", "branch", "--list", branch], check=False)
+        except RuntimeError:
+            return False
+        # `git branch --list <name>` prints the branch (with optional `*` prefix)
+        # when present, empty output otherwise.
+        return bool((getattr(result, "stdout", "") or "").strip())
+
+    def _branch_exists_remotely(self, branch: str) -> bool:
+        """Return True iff ``branch`` exists on ``origin``. Network failures
+        treated as "unknown / assume not present" — disambiguation is best-effort."""
+        try:
+            result = self._run_cmd(
+                ["git", "ls-remote", "--heads", "origin", branch],
+                check=False,
+                timeout=15,
+            )
+        except (RuntimeError, TypeError):
+            return False
+        return bool((getattr(result, "stdout", "") or "").strip())
+
+    def _disambiguate_branch(self, candidate: str, *, suffix_hint: str = "") -> str:
+        """Resolve branch-name collisions (spec v30 Step 10).
+
+        If ``candidate`` exists either locally or on origin, append ``-suffix_hint``
+        (or a 6-char hex tag derived from the current time when no hint is given).
+        If even that suffixed name collides, fall back to ``-<unix_ts>``. Logs INFO
+        on every disambiguation so reviewers can match branch back to chunk.
+        """
+        local = self._branch_exists_locally(candidate)
+        remote = self._branch_exists_remotely(candidate)
+        if not (local or remote):
+            return candidate
+
+        import secrets as _secrets
+        import time as _time
+
+        suffix = suffix_hint or _secrets.token_hex(3)
+        first = f"{candidate}-{suffix}"
+        if not (self._branch_exists_locally(first) or self._branch_exists_remotely(first)):
+            logger.info("Branch %s exists; using %s", candidate, first)
+            return first
+
+        ts = int(_time.time())
+        fallback = f"{candidate}-{ts}"
+        logger.info("Branch %s and %s exist; using %s", candidate, first, fallback)
+        return fallback
+
     def create_continuation_branch(self, spec_id: str, part: int) -> str:
         """Create a new branch for the next part of a split PR (spec-27 Phase 2.3).
 
         Returns the new branch name.
         """
-        branch_name = f"codelicious/spec-{spec_id}-part-{part}"
+        # spec v30 Step 10: disambiguate ahead of `git checkout -b` so a stale
+        # branch from a previous run doesn't get silently re-checked-out.
+        candidate = f"codelicious/spec-{spec_id}-part-{part}"
+        branch_name = self._disambiguate_branch(candidate)
         try:
             self._run_cmd(["git", "checkout", "-b", branch_name])
             logger.info("Created continuation branch: %s", branch_name)
         except RuntimeError:
-            # Branch might already exist
+            # Local checkout -b can still fail if the branch was created since
+            # our disambiguation probe; checkout the existing one rather than
+            # crashing the build.
             self._run_cmd(["git", "checkout", branch_name])
             logger.info("Checked out existing continuation branch: %s", branch_name)
         return branch_name

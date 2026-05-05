@@ -20,6 +20,29 @@ logger = logging.getLogger("codelicious.scaffolder")
 _SENTINEL_START: str = "<!-- codelicious:start -->"
 _SENTINEL_END: str = "<!-- codelicious:end -->"
 
+# spec v29 Step 18: single source of truth for the forbidden-pattern blurb
+# scaffolded into CLAUDE.md, the verify-all skill, and the security rule
+# file. Three string-literal copies previously drifted independently; any
+# future change must update this tuple, which makes the intent auditable.
+_FORBIDDEN_PATTERNS_DOC: tuple[str, ...] = (
+    "eval()",
+    "exec()",
+    "shell=True",
+    "os.system()",
+    "subprocess.call(..., shell=True)",
+)
+
+
+def _forbidden_patterns_bullets() -> str:
+    """Render ``_FORBIDDEN_PATTERNS_DOC`` as a markdown bullet list."""
+    return "\n".join(f"- {pattern}" for pattern in _FORBIDDEN_PATTERNS_DOC)
+
+
+def _forbidden_patterns_inline() -> str:
+    """Render ``_FORBIDDEN_PATTERNS_DOC`` as a comma-joined inline phrase."""
+    return ", ".join(_FORBIDDEN_PATTERNS_DOC)
+
+
 _MANAGED_BLOCK: str = f"""{_SENTINEL_START}
 
 # codelicious
@@ -145,10 +168,11 @@ code with tests. Run the test suite after your changes. Fix any failures.
 
 QUALITY:
 - Every new function needs tests.
-- No hardcoded secrets, no eval(), no shell=True.
+- No hardcoded secrets. Forbidden patterns: __FORBIDDEN_INLINE__.
 - Handle errors explicitly — no bare except.
 - Follow the project's existing patterns exactly.
 """
+_AGENT_BUILDER = _AGENT_BUILDER.replace("__FORBIDDEN_INLINE__", _forbidden_patterns_inline())
 
 _AGENT_TESTER = """\
 ---
@@ -288,13 +312,14 @@ Run the complete verification pipeline for this project.
 2. **Lint**: Run the linter. Fix all violations.
 3. **Format**: Run the formatter. Fix any formatting issues.
 4. **Security**: Grep for common security anti-patterns:
-   - eval(, exec(, shell=True, subprocess.call.*shell
+   - __FORBIDDEN_INLINE__
    - Hardcoded secrets: password\\s*=\\s*["'], api_key\\s*=\\s*["']
    - SQL injection: f"SELECT, f"INSERT, f"UPDATE, f"DELETE
 5. **State**: Update .codelicious/STATE.md with current test count and status.
 
 Report a summary of each check: pass/fail, issues found, fixes applied.
 """
+_SKILL_VERIFY_ALL = _SKILL_VERIFY_ALL.replace("__FORBIDDEN_INLINE__", _forbidden_patterns_inline())
 
 _SKILL_UPDATE_STATE = """\
 ---
@@ -332,9 +357,7 @@ paths:
 When writing or modifying code, always follow these security rules:
 
 ## Never Use
-- eval() or exec() with user-controlled input
-- shell=True in subprocess calls
-- os.system() — use subprocess with shell=False
+__FORBIDDEN_BULLETS__
 - String formatting in SQL queries — use parameterized queries
 - pickle.loads() on untrusted data
 - yaml.load() without SafeLoader
@@ -353,6 +376,7 @@ When writing or modifying code, always follow these security rules:
 - Never log secrets — use masking/redaction
 - Never commit .env files
 """
+_RULES_SECURITY = _RULES_SECURITY.replace("__FORBIDDEN_BULLETS__", _forbidden_patterns_bullets())
 
 
 def _detect_conventions(project_root: pathlib.Path) -> str:

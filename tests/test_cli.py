@@ -27,8 +27,8 @@ from codelicious.cli import (
     main,
     setup_logger,
 )
-from codelicious.engines.base import BuildResult
 from codelicious.git.git_orchestrator import GitManager
+from codelicious.orchestrator import OrchestratorResult
 
 
 @pytest.fixture
@@ -46,12 +46,6 @@ def mock_successful_engine():
 
     engine = mock.MagicMock()
     engine.name = "mock-engine"
-    engine.run_build_cycle.return_value = BuildResult(
-        success=True,
-        message="Build completed successfully",
-        session_id="test-123",
-        elapsed_s=10.5,
-    )
     # v2 orchestrator chunk methods
     engine.execute_chunk.return_value = ChunkResult(success=True, files_modified=["src/foo.py"], message="done")
     engine.verify_chunk.return_value = ChunkResult(success=True, message="passed")
@@ -66,12 +60,6 @@ def mock_failed_engine():
 
     engine = mock.MagicMock()
     engine.name = "mock-engine"
-    engine.run_build_cycle.return_value = BuildResult(
-        success=False,
-        message="Build failed: test error",
-        session_id="test-456",
-        elapsed_s=5.0,
-    )
     # v2 orchestrator chunk methods
     engine.execute_chunk.return_value = ChunkResult(success=False, message="failed")
     engine.verify_chunk.return_value = ChunkResult(success=False, message="failed")
@@ -333,7 +321,7 @@ class TestNoIncompleteSpecsEarlyExit:
     def test_no_incomplete_specs_exits_zero_without_build(
         self, mock_repo: Path, mock_successful_engine, mock_git_manager
     ):
-        """When discover_incomplete_specs returns [], main() exits 0 without running engine.run_build_cycle."""
+        """When discover_incomplete_specs returns [], main() exits 0 without dispatching any chunk."""
         # Patch both walk_for_specs (for the banner) and discover_incomplete_specs (for the guard)
         # to return empty lists, simulating a fully-complete repo.
         with mock.patch("codelicious.cli.select_engine", return_value=mock_successful_engine):
@@ -346,7 +334,7 @@ class TestNoIncompleteSpecsEarlyExit:
                                     main()
 
         assert exc_info.value.code == 0
-        mock_successful_engine.run_build_cycle.assert_not_called()
+        mock_successful_engine.execute_chunk.assert_not_called()
 
 
 class TestPrintBanner:
@@ -416,7 +404,7 @@ class TestPrintResult:
 
     def test_print_result_success(self, tmp_path: Path):
         """_print_result prints BUILD COMPLETE for a successful result."""
-        result = BuildResult(success=True, message="Done.", session_id="s1", elapsed_s=5.0)
+        result = OrchestratorResult(success=True, message="Done.", elapsed_s=5.0)
 
         captured = io.StringIO()
         with mock.patch("codelicious.cli.walk_for_specs", return_value=[]):
@@ -435,7 +423,7 @@ class TestPrintResult:
 
     def test_print_result_failure(self, tmp_path: Path):
         """_print_result prints BUILD FINISHED (with issues) for a failed result."""
-        result = BuildResult(success=False, message="Some error.", session_id="s2", elapsed_s=3.0)
+        result = OrchestratorResult(success=False, message="Some error.", elapsed_s=3.0)
 
         captured = io.StringIO()
         with mock.patch("codelicious.cli.walk_for_specs", return_value=[]), mock.patch("sys.stdout", captured):
@@ -453,7 +441,7 @@ class TestPrintResult:
 
     def test_print_result_elapsed_time_formatted(self, tmp_path: Path):
         """_print_result formats elapsed time in minutes and seconds for long runs."""
-        result = BuildResult(success=True, message="", session_id="s3", elapsed_s=90.0)
+        result = OrchestratorResult(success=True, message="", elapsed_s=90.0)
 
         captured = io.StringIO()
         with mock.patch("codelicious.cli.walk_for_specs", return_value=[]), mock.patch("sys.stdout", captured):
@@ -845,6 +833,15 @@ class TestNewCLIFlags:
             opts = _parse_args(sys.argv)
         assert opts["max_commits_per_pr"] == 8
 
+    def test_max_loc_per_pr_default_matches_constant(self):
+        """max_loc_per_pr default tracks the _DEFAULT_PR_LOC_CAP constant (spec v29 Step 1)."""
+        from codelicious.cli import _DEFAULT_PR_COMMIT_CAP, _DEFAULT_PR_LOC_CAP
+
+        with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo"]):
+            opts = _parse_args(sys.argv)
+        assert opts["max_loc_per_pr"] == _DEFAULT_PR_LOC_CAP == 250
+        assert opts["max_commits_per_pr"] == _DEFAULT_PR_COMMIT_CAP == 8
+
     def test_max_commits_per_pr_over_100_exits(self):
         """--max-commits-per-pr > 100 exits with code 2."""
         with mock.patch.object(sys, "argv", ["codelicious", "/tmp/repo", "--max-commits-per-pr", "101"]):
@@ -970,9 +967,10 @@ class TestProbeGitCredentials:
 
         assert info["transport"] == "ssh"
         assert info["ssh_key_loaded"] is True
+        assert info["ssh_agent_state"] == "keys_loaded"
 
     def test_ssh_repo_with_no_keys(self, tmp_path: Path) -> None:
-        """SSH remote with no agent keys → ssh_key_loaded False."""
+        """SSH remote with no agent keys → ssh_key_loaded False, state=empty."""
         cls = self.__class__
 
         def fake_run(args, **kw):
@@ -989,6 +987,46 @@ class TestProbeGitCredentials:
 
         assert info["transport"] == "ssh"
         assert info["ssh_key_loaded"] is False
+        assert info["ssh_agent_state"] == "empty"
+
+    def test_ssh_repo_with_no_agent(self, tmp_path: Path) -> None:
+        """SSH remote, ssh-add exit 2 → ssh_agent_state=no_agent (spec v29 Step 14)."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "git@github.com:o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(1, "")
+            if args[0] == "ssh-add":
+                return cls._result(2, "", "Could not open a connection to your authentication agent.\n")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["transport"] == "ssh"
+        assert info["ssh_key_loaded"] is False
+        assert info["ssh_agent_state"] == "no_agent"
+
+    def test_ssh_repo_probe_unknown_on_oserror(self, tmp_path: Path) -> None:
+        """OSError on ssh-add → ssh_agent_state=unknown, conservative not-loaded."""
+        cls = self.__class__
+
+        def fake_run(args, **kw):
+            if args[:2] == ["git", "-C"] and "remote.origin.url" in args:
+                return cls._result(0, "git@github.com:o/r.git\n")
+            if args[:2] == ["git", "-C"] and "commit.gpgsign" in args:
+                return cls._result(1, "")
+            if args[0] == "ssh-add":
+                raise OSError("ssh-add binary missing")
+            raise AssertionError(f"unexpected call {args}")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            info = _probe_git_credentials(tmp_path)
+
+        assert info["ssh_key_loaded"] is False
+        assert info["ssh_agent_state"] == "unknown"
 
     def test_gpgsign_true_with_warm_agent(self, tmp_path: Path) -> None:
         """commit.gpgsign=true + secret keys present → gpg_agent_warm True."""
@@ -1392,3 +1430,267 @@ class TestSpecOverrideMainPath:
                         main()
 
         mock_successful_engine.execute_chunk.assert_called()
+
+
+# -- spec v30 Step 4: SIGTERM graceful shutdown -----------------------------
+
+
+class TestSigtermIntegration:
+    """spec v30 Step 4: SIGTERM raises SystemExit(143) and releases the run lock."""
+
+    def test_sigterm_handler_raises_system_exit_143(self) -> None:
+        """The handler exits with code 143 (128 + SIGTERM=15) per CLAUDE.md."""
+        from codelicious.cli import _handle_sigterm
+
+        with pytest.raises(SystemExit) as exc:
+            _handle_sigterm(15, None)
+        assert exc.value.code == 143
+
+    def test_subprocess_exits_within_grace_window(self, tmp_path: Path) -> None:
+        """A child process holding the run lock terminates cleanly on SIGTERM."""
+        import signal as _signal
+        import subprocess
+        import sys as _sys
+        import time as _time
+
+        if _sys.platform == "win32":
+            pytest.skip("POSIX-only test")
+
+        repo_root = Path(__file__).resolve().parent.parent
+        script = (
+            "import sys, time, signal;"
+            "sys.path.insert(0, 'src');"
+            "from codelicious.cli import _handle_sigterm, _run_lock;"
+            "import pathlib;"
+            "signal.signal(signal.SIGTERM, _handle_sigterm);"
+            f"cm = _run_lock(pathlib.Path({str(tmp_path)!r}));"
+            "cm.__enter__();"
+            "time.sleep(30)"
+        )
+        proc = subprocess.Popen(
+            [_sys.executable, "-c", script],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Give the child time to acquire the lock.
+        for _ in range(40):
+            if (tmp_path / ".codelicious" / "run.lock").exists():
+                break
+            _time.sleep(0.05)
+
+        proc.send_signal(_signal.SIGTERM)
+        try:
+            _stdout, stderr = proc.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _stdout, stderr = proc.communicate()
+            pytest.fail(f"Child did not exit within 8 s after SIGTERM. stderr={stderr.decode(errors='replace')[:500]}")
+
+        assert proc.returncode == 143, f"expected 143, got {proc.returncode}: {stderr.decode(errors='replace')[:500]}"
+        # The atexit hook in _run_lock should have removed the lockfile.
+        assert not (tmp_path / ".codelicious" / "run.lock").exists()
+
+
+# -- spec v30 Step 12: postmortem dump on abnormal exit ---------------------
+
+
+class TestPostmortem:
+    """spec v30 Step 12: ``_write_postmortem`` summarises run state on abort."""
+
+    def test_writes_markdown_with_counts_and_resume(self, tmp_path: Path) -> None:
+        import json
+
+        from codelicious.cli import _write_postmortem
+
+        state = tmp_path / ".codelicious" / "state"
+        state.mkdir(parents=True)
+        (state / "spec-27.json").write_text(
+            json.dumps(
+                {
+                    "chunks": {
+                        "spec-27-chunk-01": {"status": "merged", "title": "A"},
+                        "spec-27-chunk-02": {"status": "failed", "title": "B"},
+                        "spec-27-chunk-03": {"status": "failed", "title": "C"},
+                    }
+                }
+            )
+        )
+
+        log = tmp_path / "build.log"
+        log.write_text("\n".join(f"line-{i}" for i in range(75)), encoding="utf-8")
+
+        path = _write_postmortem(tmp_path, abort_reason="rate-limit", log_path=log, spec_arg=".")
+        assert path is not None
+        body = path.read_text()
+        assert "Abort reason:** rate-limit" in body
+        assert "merged: 1" in body
+        assert "failed: 2" in body
+        assert "Failed chunks" in body
+        assert "- B" in body
+        assert "Log tail" in body
+        assert "line-74" in body
+        # Resume hint is present and uses the no-reset form for rate-limit.
+        assert "codelicious build ." in body
+        assert "--reset-ledger" not in body
+
+    def test_handles_missing_state_dir(self, tmp_path: Path) -> None:
+        from codelicious.cli import _write_postmortem
+
+        path = _write_postmortem(tmp_path, abort_reason="exception", log_path=None)
+        assert path is not None
+        body = path.read_text()
+        # Empty state → all counts zero, but the file still writes cleanly.
+        assert "merged: 0" in body
+        assert "failed: 0" in body
+
+    def test_corrupt_ledger_suggests_reset(self, tmp_path: Path) -> None:
+        from codelicious.cli import _write_postmortem
+
+        path = _write_postmortem(tmp_path, abort_reason="ledger-corrupt", log_path=None)
+        body = path.read_text()
+        assert "--reset-ledger" in body
+
+
+# -- spec v30 Step 7: atomic latest.log symlink update ----------------------
+
+
+class TestAtomicSymlinkUpdate:
+    """spec v30 Step 7: ``_atomic_symlink_update`` swaps via tmp + os.replace."""
+
+    def test_creates_link_when_missing(self, tmp_path: Path) -> None:
+        from codelicious.cli import _atomic_symlink_update
+
+        target = tmp_path / "build-1.log"
+        target.write_text("hi")
+        link = tmp_path / "latest.log"
+        _atomic_symlink_update(link, target.name)
+        assert link.is_symlink()
+        assert link.resolve() == target.resolve()
+
+    def test_repeated_update_replaces_target(self, tmp_path: Path) -> None:
+        from codelicious.cli import _atomic_symlink_update
+
+        a = tmp_path / "build-1.log"
+        b = tmp_path / "build-2.log"
+        a.write_text("1")
+        b.write_text("2")
+        link = tmp_path / "latest.log"
+        _atomic_symlink_update(link, a.name)
+        _atomic_symlink_update(link, b.name)
+        assert link.is_symlink()
+        assert link.resolve() == b.resolve()
+
+    def test_no_dangling_tmp_after_update(self, tmp_path: Path) -> None:
+        from codelicious.cli import _atomic_symlink_update
+
+        target = tmp_path / "build-1.log"
+        target.write_text("hi")
+        link = tmp_path / "latest.log"
+        _atomic_symlink_update(link, target.name)
+        # No leftover *.tmp siblings.
+        leftovers = list(tmp_path.glob("latest.log.*.tmp"))
+        assert leftovers == []
+
+
+# -- spec v30 Step 1: per-repo run lockfile ---------------------------------
+
+
+class TestRunLock:
+    """spec v30 Step 1: ``_run_lock`` prevents concurrent codelicious runs on a repo."""
+
+    def test_acquires_and_releases(self, tmp_path: Path) -> None:
+        import os as _os
+
+        from codelicious.cli import _run_lock
+
+        with _run_lock(tmp_path) as lock_path:
+            assert lock_path is not None
+            assert lock_path.exists()
+            assert lock_path.read_text().strip() == str(_os.getpid())
+
+        # After exit the lock file is removed.
+        assert not (tmp_path / ".codelicious" / "run.lock").exists()
+
+    def test_second_acquire_in_subprocess_exits_75(self, tmp_path: Path) -> None:
+        """A second invocation while the first holds the lock exits 75 (EX_TEMPFAIL)."""
+        import subprocess
+        import sys
+
+        from codelicious.cli import _run_lock
+
+        # Hold the lock and try to grab it again from a child Python process.
+        with _run_lock(tmp_path):
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; sys.path.insert(0, 'src'); "
+                        "from codelicious.cli import _run_lock; "
+                        f"cm = _run_lock(__import__('pathlib').Path({str(tmp_path)!r})); cm.__enter__()"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                cwd=Path(__file__).resolve().parent.parent,
+                timeout=10,
+            )
+        assert child.returncode == 75
+        assert "another codelicious run is in progress" in child.stderr
+
+
+# -- spec v30 Step 3: --endpoint / LLM_ENDPOINT validation -------------------
+
+
+class TestEndpointValidation:
+    """spec v30 Step 3: insecure or credential-bearing endpoints rejected at CLI layer."""
+
+    def test_empty_url_accepted(self) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        # Should not raise / sys.exit
+        _validate_endpoint_url_strict("")
+
+    def test_https_url_accepted(self) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        _validate_endpoint_url_strict("https://api.example.com/v1/chat")
+
+    def test_http_url_rejected(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        with pytest.raises(SystemExit) as exc:
+            _validate_endpoint_url_strict("http://internal-proxy/v1")
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "https://" in err
+        assert "http://internal-proxy/v1" in err
+
+    def test_user_info_rejected_and_masked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        with pytest.raises(SystemExit) as exc:
+            _validate_endpoint_url_strict("https://user:secret@host/v1")
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "***@host" in err
+        assert "secret" not in err
+
+    def test_empty_host_rejected(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        with pytest.raises(SystemExit) as exc:
+            _validate_endpoint_url_strict("https:///path-only")
+        assert exc.value.code == 2
+        assert "no hostname" in capsys.readouterr().err
+
+    def test_malformed_url_rejected(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from codelicious.cli import _validate_endpoint_url_strict
+
+        with pytest.raises(SystemExit) as exc:
+            # a scheme-less garbage string parses but has no scheme → http rejected branch
+            _validate_endpoint_url_strict("not a url at all")
+        assert exc.value.code == 2
+        assert "https://" in capsys.readouterr().err
